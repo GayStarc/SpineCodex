@@ -226,7 +226,6 @@ pub(crate) type InFlightFuture<'f> =
 pub(crate) struct OutputItemResult {
     pub last_agent_message: Option<String>,
     pub needs_follow_up: bool,
-    pub spine_control_call: bool,
     pub tool_future: Option<InFlightFuture<'static>>,
 }
 
@@ -327,12 +326,7 @@ pub(crate) async fn handle_output_item_done(
     match ToolRouter::build_tool_call(item.clone()) {
         // The model emitted a tool call; log it, persist the item immediately, and queue the tool execution.
         Ok(Some(call)) => {
-            output.spine_control_call = ctx
-                .turn_context
-                .config
-                .features
-                .enabled(codex_features::Feature::SpineJit)
-                && crate::spine::SpineControlKind::from_tool_name(&call.tool_name).is_some();
+            ctx.tool_runtime.register_response_call(&call);
             ctx.sess
                 .input_queue
                 .accept_mailbox_delivery_for_current_turn(

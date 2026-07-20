@@ -276,7 +276,7 @@ impl SpineReducer {
         self.cursor = sibling_id;
     }
 
-    fn spawn(&mut self, group: ToolCallGroup, calls: Vec<ValidSpawnCall>) {
+    fn spawn(&mut self, group: ToolCallGroup, calls: Vec<(Vec<SpawnTask>, SpawnReceipt)>) {
         let parent_id = self.cursor.clone();
         let parent_index = self.node_index(&parent_id);
         let first_child_ordinal = self.nodes[parent_index].children.len() as u32 + 1;
@@ -284,13 +284,12 @@ impl SpineReducer {
             start: group.start,
             end: group.end,
         };
-        let child_count = calls.iter().map(|call| call.tasks.len()).sum();
-        let mut child_ids = Vec::with_capacity(child_count);
-        let mut children = Vec::with_capacity(child_count);
-        let mut child_offset = 0usize;
-        for call in calls {
-            for (task, result) in call.tasks.into_iter().zip(call.receipt.results) {
-                let offset = u32::try_from(child_offset).unwrap_or(u32::MAX);
+        let total = calls.iter().map(|(tasks, _)| tasks.len()).sum();
+        let mut child_ids = Vec::with_capacity(total);
+        let mut children = Vec::with_capacity(total);
+        let mut offset = 0u32;
+        for (tasks, receipt) in calls {
+            for (task, result) in tasks.into_iter().zip(receipt.results) {
                 let child_id = parent_id.child(first_child_ordinal.saturating_add(offset));
                 let memory = vec![
                     MemorySlot::SpawnEvidence {
@@ -321,7 +320,7 @@ impl SpineReducer {
                     baseline: Vec::new(),
                     entries: Vec::new(),
                 });
-                child_offset = child_offset.saturating_add(1);
+                offset += 1;
             }
         }
         self.nodes[parent_index]
@@ -490,17 +489,19 @@ struct SpawnArgs {
 }
 
 enum Control {
-    Open { summary: String },
-    Close { memory: String },
-    Next { summary: String, memory: String },
-    Spawn { calls: Vec<ValidSpawnCall> },
-}
-
-#[derive(Debug)]
-struct ValidSpawnCall {
-    call_ordinal: u64,
-    tasks: Vec<SpawnTask>,
-    receipt: SpawnReceipt,
+    Open {
+        summary: String,
+    },
+    Close {
+        memory: String,
+    },
+    Next {
+        summary: String,
+        memory: String,
+    },
+    Spawn {
+        calls: Vec<(Vec<SpawnTask>, SpawnReceipt)>,
+    },
 }
 
 fn classify_control(group: &ToolCallGroup) -> Option<Control> {
@@ -535,43 +536,29 @@ fn classify_control(group: &ToolCallGroup) -> Option<Control> {
 }
 
 fn classify_spawn(group: &ToolCallGroup) -> Option<Control> {
-    if !group.calls.iter().any(|call| call.name == SPINE_SPAWN) {
-        return None;
-    }
-
     if group
         .calls
         .iter()
         .any(|call| matches!(call.name.as_str(), SPINE_OPEN | SPINE_CLOSE | SPINE_NEXT))
     {
-        return Some(Control::Spawn { calls: Vec::new() });
+        return None;
     }
-
-    let mut calls = group
+    let calls = group
         .calls
         .iter()
-        .enumerate()
-        .filter_map(|(native_ordinal, call)| {
+        .filter_map(|call| {
             if call.name != SPINE_SPAWN || call.outcome != Some(ToolOutcome::Succeeded) {
                 return None;
             }
-            let call_ordinal = call
-                .call_ordinal
-                .unwrap_or_else(|| u64::try_from(native_ordinal).unwrap_or(u64::MAX));
             let tasks = serde_json::from_str::<SpawnArgs>(&call.arguments)
                 .ok()?
                 .tasks;
             let receipt = serde_json::from_str::<SpawnReceipt>(call.output.as_deref()?).ok()?;
             receipt.validate_for(&tasks).ok()?;
-            Some(ValidSpawnCall {
-                call_ordinal,
-                tasks,
-                receipt,
-            })
+            Some((tasks, receipt))
         })
         .collect::<Vec<_>>();
-    calls.sort_by_key(|call| call.call_ordinal);
-    Some(Control::Spawn { calls })
+    (!calls.is_empty()).then_some(Control::Spawn { calls })
 }
 
 fn non_empty(value: String) -> Option<String> {

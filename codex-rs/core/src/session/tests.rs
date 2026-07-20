@@ -196,13 +196,15 @@ use std::time::Duration as StdDuration;
 impl StepContext {
     pub(crate) fn for_test(turn: Arc<TurnContext>) -> Arc<Self> {
         let environments = turn.environments.clone();
-        Arc::new(Self::new(
+        let step = Arc::new(Self::new(
             Arc::clone(&turn),
             environments,
             Vec::new(),
             crate::session::McpRuntimeSnapshot::new_uninitialized_for_test(&turn.config),
             /*loaded_agents_md*/ None,
-        ))
+        ));
+        step.spine_spawn_group.finish();
+        step
     }
 }
 

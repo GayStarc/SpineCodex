@@ -258,6 +258,24 @@ impl ToolCallRuntime {
         self.router.create_diff_consumer(tool_name)
     }
 
+    pub(crate) fn register_response_call(&self, call: &ToolCall) {
+        let name = match call.tool_name.namespace.as_deref() {
+            Some(namespace) => format!("{namespace}.{}", call.tool_name.name),
+            None => call.tool_name.name.clone(),
+        };
+        let arguments = match &call.payload {
+            ToolPayload::Function { arguments } => arguments.as_str(),
+            _ => "",
+        };
+        self.step_context
+            .spine_spawn_group
+            .register(&call.call_id, &name, arguments);
+    }
+
+    pub(crate) fn finish_response_group(&self) {
+        self.step_context.spine_spawn_group.finish();
+    }
+
     #[instrument(level = "trace", skip_all)]
     pub(crate) fn handle_tool_call(
         self,

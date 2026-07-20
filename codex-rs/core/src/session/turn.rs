@@ -2376,6 +2376,7 @@ async fn try_run_sampling_request(
                 end_turn,
                 ..
             } => {
+                tool_runtime.finish_response_group();
                 flush_assistant_text_segments_all(
                     &sess,
                     &turn_context,
@@ -2555,6 +2556,7 @@ async fn try_run_sampling_request(
             }
         }
     };
+    tool_runtime.finish_response_group();
     drop(sampling_timing_guard);
 
     flush_assistant_text_segments_all(

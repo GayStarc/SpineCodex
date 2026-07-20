@@ -176,6 +176,7 @@ impl SpineHandler {
         let ToolInvocation {
             session,
             turn,
+            step_context,
             call_id,
             cancellation_token,
             payload,
@@ -211,6 +212,7 @@ impl SpineHandler {
                 SpineToolResponse::from(kind)
             }
             SpineHandlerKind::Spawn => {
+<<<<<<< HEAD
                 let tasks = crate::spine::spawn::parse_tasks(&arguments)
                     .map_err(FunctionCallError::RespondToModel)?;
 <<<<<<< HEAD
@@ -241,6 +243,18 @@ impl SpineHandler {
 >>>>>>> refactor(spine): move config and tool contracts into sdk
                         .await
                         .map_err(FunctionCallError::RespondToModel)?;
+=======
+                let receipt = crate::spine::spawn::execute(
+                    session,
+                    turn,
+                    step_context,
+                    call_id,
+                    cancellation_token,
+                    arguments,
+                )
+                .await
+                .map_err(FunctionCallError::RespondToModel)?;
+>>>>>>> refactor(spine): align spawn lifecycle with sdk contract
                 let body = crate::spine::spawn::encode_receipt(&receipt).map_err(|error| {
                     FunctionCallError::RespondToModel(format!(
                         "failed to encode spine.spawn receipt: {error}"

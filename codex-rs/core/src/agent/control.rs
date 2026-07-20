@@ -50,6 +50,7 @@ use tracing::warn;
 pub(crate) use self::execution::AgentExecutionGuard;
 use self::execution::AgentExecutionLimiter;
 use self::residency::V2Residency;
+pub(crate) use self::spawn::PreparedAgentSpawn;
 
 const ROOT_LAST_TASK_MESSAGE: &str = "Main thread";
 

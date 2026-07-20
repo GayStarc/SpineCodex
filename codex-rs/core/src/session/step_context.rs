@@ -4,6 +4,7 @@ use crate::agents_md::LoadedAgentsMd;
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::session::McpRuntimeSnapshot;
 use crate::session::turn_context::TurnContext;
+use crate::spine::spawn::SpineSpawnGroup;
 use codex_exec_server::ResolvedSelectedCapabilityRoot;
 use codex_mcp::ToolInfo;
 use tokio::sync::OnceCell;
@@ -21,6 +22,8 @@ pub(crate) struct StepContext {
     mcp_tool_snapshot: OnceCell<Vec<ToolInfo>>,
     /// The canonical AGENTS.md value observed with this environment snapshot.
     pub(crate) loaded_agents_md: Option<Arc<LoadedAgentsMd>>,
+    /// All model tool calls in this sampling response share one admission boundary.
+    pub(crate) spine_spawn_group: Arc<SpineSpawnGroup>,
 }
 
 impl StepContext {
@@ -38,6 +41,7 @@ impl StepContext {
             mcp,
             mcp_tool_snapshot: OnceCell::new(),
             loaded_agents_md,
+            spine_spawn_group: Arc::new(SpineSpawnGroup::default()),
         }
     }
 
