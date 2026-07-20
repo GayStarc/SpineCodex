@@ -481,6 +481,9 @@ pub enum MemorySlot {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NativeItemRef {
+    /// A source item in the persisted native rollout, identified by the
+    /// stable source ordinal assigned by the host adapter.
+    Rollout { ordinal: RawBoundary },
     CompactReplacement {
         compact_boundary: RawBoundary,
         index: u32,

@@ -217,6 +217,20 @@ fn set_feature(turn: &mut TurnContext, feature: Feature, enabled: bool) {
             .expect("test feature should be disableable in config");
     }
     turn.multi_agent_version = config.multi_agent_version_from_features();
+    let mut registration = spine_core::SpineRegistration::builder();
+    if config.features.enabled(Feature::SpineJit) {
+        registration = registration.enable(spine_core::Feature::Jit);
+    }
+    if config.features.enabled(Feature::SpineTrim) {
+        registration = registration.enable(spine_core::Feature::Trim);
+    }
+    if config.features.enabled(Feature::SpineSpawn) && config.features.enabled(Feature::SpineJit) {
+        registration = registration.enable(spine_core::Feature::Spawn);
+    }
+    config.spine_registration = registration.build().expect("test registration");
+    config.spine_tools =
+        spine_core::ToolCatalog::new(&config.spine_config, &config.spine_registration)
+            .expect("test tool catalog");
     turn.config = Arc::new(config);
 }
 

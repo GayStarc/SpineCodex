@@ -176,6 +176,14 @@ impl SessionConfiguration {
         &self.base_instructions
     }
 
+    pub(crate) fn spine_sdk_config(&self) -> spine_core::SpineConfig {
+        self.original_config_do_not_use.spine_config.clone()
+    }
+
+    pub(crate) fn spine_sdk_registration(&self) -> spine_core::SpineRegistration {
+        self.original_config_do_not_use.spine_registration.clone()
+    }
+
     pub(super) fn cwd(&self) -> &AbsolutePathBuf {
         &self.environments.legacy_fallback_cwd
     }

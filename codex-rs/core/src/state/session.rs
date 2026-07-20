@@ -27,6 +27,14 @@ use codex_protocol::protocol::TokenUsage;
 use codex_protocol::protocol::TokenUsageInfo;
 use codex_protocol::protocol::TurnContextItem;
 use codex_utils_output_truncation::TruncationPolicy;
+use spine_core::SpineRuntime;
+
+use crate::spine::host::{CodexSpineHost, CodexSpineInput, selected_inputs};
+
+struct SessionSpineRuntime {
+    runtime: SpineRuntime<CodexSpineHost>,
+    projected_history: ContextManager,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ProjectedUsageBasis {
@@ -65,6 +73,7 @@ pub(crate) struct SessionState {
     spine_rollout: Option<Vec<RolloutItem>>,
     projected_usage_basis: ProjectedUsageBasis,
     projected_usage_model: Option<String>,
+    spine_runtime: Option<SessionSpineRuntime>,
 }
 
 impl SessionState {
@@ -85,6 +94,23 @@ impl SessionState {
         let spine_rollout = (session_configuration.spine_jit_enabled()
             || session_configuration.spine_trim_enabled())
         .then(Vec::new);
+        let spine_runtime = spine_rollout.as_ref().map(|_| {
+            let host = CodexSpineHost {
+                jit_enabled: session_configuration.spine_jit_enabled(),
+                trim_enabled: session_configuration.spine_trim_enabled(),
+                spawn_enabled: session_configuration.spine_spawn_enabled(),
+            };
+            let runtime = SpineRuntime::new(
+                session_configuration.spine_sdk_config(),
+                session_configuration.spine_sdk_registration(),
+                host,
+            )
+            .expect("validated session Spine configuration must initialize");
+            SessionSpineRuntime {
+                runtime,
+                projected_history: history.clone(),
+            }
+        });
         Self {
             session_configuration,
             history,
@@ -103,6 +129,7 @@ impl SessionState {
             spine_rollout,
             projected_usage_basis: ProjectedUsageBasis::ProviderValid,
             projected_usage_model: None,
+            spine_runtime,
         }
     }
 
@@ -177,6 +204,9 @@ impl SessionState {
     }
 
     pub(crate) fn clone_history(&self) -> ContextManager {
+        if let Some(runtime) = &self.spine_runtime {
+            return runtime.projected_history.clone();
+        }
         let history = self.history.clone();
         let Some(rollout) = self.spine_rollout.as_deref() else {
             return history;
@@ -352,7 +382,38 @@ impl SessionState {
 
     pub(crate) fn append_spine_rollout_items(&mut self, items: &[RolloutItem]) {
         if let Some(rollout) = &mut self.spine_rollout {
+            let first_ordinal = rollout.len();
             rollout.extend_from_slice(items);
+            if let Some(spine) = &mut self.spine_runtime {
+                let changes_selected_prefix = items.iter().any(|item| {
+                    matches!(
+                        item,
+                        RolloutItem::EventMsg(
+                            codex_protocol::protocol::EventMsg::ThreadRolledBack(_)
+                        )
+                    )
+                });
+                if changes_selected_prefix {
+                    let inputs = selected_inputs(rollout);
+                    let output = spine
+                        .runtime
+                        .replay(inputs.iter(), rollout.as_slice(), &self.history)
+                        .expect("selected rollout replacement must replay deterministically");
+                    spine.projected_history = output.into_context();
+                    return;
+                }
+                for (offset, item) in items.iter().enumerate() {
+                    let input = CodexSpineInput {
+                        ordinal: first_ordinal + offset,
+                        item: item.clone(),
+                    };
+                    let output = spine
+                        .runtime
+                        .eat(&input, rollout.as_slice(), &self.history)
+                        .expect("native rollout append must produce a valid Spine projection");
+                    spine.projected_history = output.into_context();
+                }
+            }
         }
     }
 
@@ -367,6 +428,14 @@ impl SessionState {
         if let Some(rollout) = &mut self.spine_rollout {
             rollout.clear();
             rollout.extend_from_slice(items);
+            if let Some(spine) = &mut self.spine_runtime {
+                let inputs = selected_inputs(rollout);
+                let output = spine
+                    .runtime
+                    .replay(inputs.iter(), rollout.as_slice(), &self.history)
+                    .expect("native rollout replacement must replay deterministically");
+                spine.projected_history = output.into_context();
+            }
         }
         self.mark_projected_usage_stale();
     }
