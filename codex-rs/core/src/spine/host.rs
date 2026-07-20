@@ -117,6 +117,7 @@ impl SpineHost for CodexSpineHost {
                 rollout,
                 trim.as_ref(),
                 Some(base),
+                self.spawn_enabled,
             )
             .map_err(CodexSpineHostError)?
         } else {
