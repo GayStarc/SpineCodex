@@ -1,9 +1,9 @@
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::RolloutItem;
-use codex_spine_core::NodeId;
-use codex_spine_core::NodeStatus;
-use codex_spine_core::RawBoundary;
-use codex_spine_core::SpineProjection;
+use spine_core::NodeId;
+use spine_core::NodeStatus;
+use spine_core::RawBoundary;
+use spine_core::SpineProjection;
 use std::collections::BTreeMap;
 
 use super::effective_rollout;

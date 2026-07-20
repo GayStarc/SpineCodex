@@ -736,7 +736,7 @@ fn spawn_arguments() -> String {
 
 fn spawn_receipt() -> String {
     serde_json::json!({
-        "schema": codex_spine_core::SPINE_SPAWN_RESULT_SCHEMA,
+        "schema": spine_core::SPINE_SPAWN_RESULT_SCHEMA,
         "results": [
             {
                 "ordinal": 0,
@@ -780,7 +780,7 @@ fn response_items(rollout: &[RolloutItem]) -> Vec<ResponseItem> {
 
 fn trim_candidate_text(fragment: &str) -> String {
     assert!(!fragment.is_empty());
-    let minimum_bytes = codex_spine_core::TOOL_RESPONSE_TRIM_THRESHOLD_BYTES + 1;
+    let minimum_bytes = spine_core::TOOL_RESPONSE_TRIM_THRESHOLD_BYTES + 1;
     fragment.repeat(minimum_bytes.div_ceil(fragment.len()))
 }
 
@@ -1185,11 +1185,15 @@ fn spawn_bridge_keeps_toolcall_and_reduces_only_spawn_output_in_context() {
 
     let effective = effective_rollout(&rollout);
     let events = lex_rollout(&effective, true);
-    let mut live = SpineReducer::new();
+    let registration = SpineRegistration::builder()
+        .enable(Feature::Jit)
+        .build()
+        .unwrap();
+    let mut live = SpineCompiler::new(SpineConfig::v1(), registration).unwrap();
     for event in events {
-        live.apply(event);
+        live.eat(event).unwrap();
     }
-    assert_eq!(live.projection(), projection.spine);
+    assert_eq!(live.projection(), &projection.spine);
     assert_eq!(
         materialize_context(
             &live.projection().visible_context,

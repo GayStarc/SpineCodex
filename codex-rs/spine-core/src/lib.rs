@@ -1,5 +1,27 @@
+mod artifact;
+mod bootstrap;
+mod compiler;
+mod config;
+mod host;
 mod model;
+mod prompt;
 mod reducer;
+mod status;
+mod tools;
+
+pub use bootstrap::Feature;
+pub use bootstrap::InitError;
+pub use bootstrap::SpineRegistration;
+pub use bootstrap::SpineRegistrationBuilder;
+pub use compiler::SpineCompiler;
+pub use compiler::SpineError;
+pub use config::SpineConfig;
+pub use host::HostStep;
+pub use host::RuntimeError;
+pub use host::RuntimeProjection;
+pub use host::SpineHost;
+pub use host::SpineOutput;
+pub use host::SpineRuntime;
 
 pub use model::ContextEdit;
 pub use model::ContextItem;
@@ -30,8 +52,8 @@ pub use model::TrimOperation;
 pub use model::TrimProjection;
 pub use model::TrimRequest;
 pub use model::TrimSlice;
-pub use reducer::SpineReducer;
 pub use reducer::TOOL_RESPONSE_TRIM_THRESHOLD_BYTES;
+pub use tools::ToolCatalog;
 
 #[cfg(test)]
 mod tests;

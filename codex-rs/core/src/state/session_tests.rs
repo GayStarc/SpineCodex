@@ -55,7 +55,7 @@ fn spawn_call_and_output() -> (ResponseItem, ResponseItem) {
     })
     .to_string();
     let receipt = serde_json::json!({
-        "schema": codex_spine_core::SPINE_SPAWN_RESULT_SCHEMA,
+        "schema": spine_core::SPINE_SPAWN_RESULT_SCHEMA,
         "results": [
             {"ordinal": 0, "outcome": "completed", "memory_body": "first memory"},
             {
@@ -96,7 +96,7 @@ fn spawn_call_and_output() -> (ResponseItem, ResponseItem) {
 
 fn trim_candidate_text(fragment: &str) -> String {
     assert!(!fragment.is_empty());
-    let minimum_bytes = codex_spine_core::TOOL_RESPONSE_TRIM_THRESHOLD_BYTES + 1;
+    let minimum_bytes = spine_core::TOOL_RESPONSE_TRIM_THRESHOLD_BYTES + 1;
     fragment.repeat(minimum_bytes.div_ceil(fragment.len()))
 }
 
@@ -1517,11 +1517,9 @@ async fn spine_trim_validation_uses_only_the_previous_completed_toolcall() {
         }),
     ]);
 
-    let valid =
-        codex_spine_core::TrimRequest::parse(r#"{"TRIM_ID":"trim_5","op":"snip"}"#).unwrap();
+    let valid = spine_core::TrimRequest::parse(r#"{"TRIM_ID":"trim_5","op":"snip"}"#).unwrap();
     assert!(state.validate_spine_trim("trim", &valid).is_ok());
-    let missed =
-        codex_spine_core::TrimRequest::parse(r#"{"TRIM_ID":"trim_1","op":"snip"}"#).unwrap();
+    let missed = spine_core::TrimRequest::parse(r#"{"TRIM_ID":"trim_1","op":"snip"}"#).unwrap();
     assert!(
         state
             .validate_spine_trim("trim", &missed)

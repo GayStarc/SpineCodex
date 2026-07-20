@@ -2,7 +2,7 @@ use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::num_format::format_si_suffix;
 use codex_protocol::protocol::RolloutItem;
-use codex_spine_core::SpineProjection;
+use spine_core::SpineProjection;
 
 use super::effective_rollout;
 use super::pressure;

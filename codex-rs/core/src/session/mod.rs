@@ -1378,7 +1378,7 @@ impl Session {
     pub(crate) async fn validate_spine_trim(
         &self,
         current_call_id: &str,
-        request: &codex_spine_core::TrimRequest,
+        request: &spine_core::TrimRequest,
     ) -> Result<(), String> {
         let state = self.state.lock().await;
         state.validate_spine_trim(current_call_id, request)

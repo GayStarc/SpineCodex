@@ -13,23 +13,25 @@ use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::RolloutItem;
-use codex_spine_core::ContextItem;
-use codex_spine_core::MemorySlot;
-use codex_spine_core::Message;
-use codex_spine_core::MessageRole;
-use codex_spine_core::NativeItemRef;
-use codex_spine_core::NodeStatus;
-use codex_spine_core::RawBoundary;
-use codex_spine_core::RolloutEvent;
-use codex_spine_core::SpineProjection;
-use codex_spine_core::SpineReducer;
-use codex_spine_core::ToolCallGroup;
-use codex_spine_core::ToolOutcome;
-use codex_spine_core::ToolUse;
-use codex_spine_core::TrimEdit;
-use codex_spine_core::TrimProjection;
-use codex_spine_core::TrimRequest;
-use serde::Deserialize;
+use spine_core::ContextItem;
+use spine_core::Feature;
+use spine_core::MemorySlot;
+use spine_core::Message;
+use spine_core::MessageRole;
+use spine_core::NativeItemRef;
+use spine_core::NodeStatus;
+use spine_core::RawBoundary;
+use spine_core::RolloutEvent;
+use spine_core::SpineCompiler;
+use spine_core::SpineConfig;
+use spine_core::SpineProjection;
+use spine_core::SpineRegistration;
+use spine_core::ToolCallGroup;
+use spine_core::ToolOutcome;
+use spine_core::ToolUse;
+use spine_core::TrimEdit;
+use spine_core::TrimProjection;
+use spine_core::TrimRequest;
 
 pub(crate) mod instructions;
 pub(crate) mod memory_projection;
@@ -84,7 +86,7 @@ pub(crate) fn closed_memory_projection_entries(
         .nodes
         .into_iter()
         .filter_map(|node| {
-            if node.kind != codex_spine_core::NodeKind::Task || node.status != NodeStatus::Closed {
+            if node.kind != spine_core::NodeKind::Task || node.status != NodeStatus::Closed {
                 return None;
             }
             let node_id = node.id;
@@ -177,11 +179,7 @@ fn projection_from_effective_rollout(
 ) -> CodexSpineProjection {
     let events = lex_rollout(effective, spawn_enabled);
     let trim = trim_enabled.then(|| TrimProjection::derive(&events));
-    let spine = if jit_enabled {
-        SpineReducer::derive(&events)
-    } else {
-        SpineReducer::derive(&[])
-    };
+    let spine = derive_spine_projection(jit_enabled.then_some(events.as_slice()).unwrap_or(&[]));
     let context = if jit_enabled {
         materialize_context(
             &spine.visible_context,
@@ -194,6 +192,19 @@ fn projection_from_effective_rollout(
         materialize_trim_only_context(effective, &events, rollout, trim.as_ref(), host_history)
     };
     CodexSpineProjection { spine, context }
+}
+
+fn derive_spine_projection(events: &[RolloutEvent]) -> SpineProjection {
+    let registration = SpineRegistration::builder()
+        .enable(Feature::Jit)
+        .build()
+        .expect("JIT registration is valid");
+    let mut compiler = SpineCompiler::new(SpineConfig::v1(), registration)
+        .expect("the built-in Spine config is valid");
+    compiler
+        .replay(events.iter().cloned())
+        .expect("Codex adapter emits monotonic event boundaries")
+        .projection
 }
 
 pub(crate) fn validate_trim_request(
@@ -1372,9 +1383,9 @@ fn render_memory_artifact(node_id: &str, body: &str) -> String {
 }
 
 fn render_spawn_evidence(
-    owner_node: &codex_spine_core::NodeId,
-    task: &codex_spine_core::SpawnTask,
-    outcome: codex_spine_core::SpawnOutcome,
+    owner_node: &spine_core::NodeId,
+    task: &spine_core::SpawnTask,
+    outcome: spine_core::SpawnOutcome,
     diagnostic: Option<&str>,
     execution_ref: Option<&str>,
 ) -> String {
@@ -1385,8 +1396,8 @@ fn render_spawn_evidence(
 }
 
 fn render_spawn_evidence_body(
-    task: &codex_spine_core::SpawnTask,
-    outcome: codex_spine_core::SpawnOutcome,
+    task: &spine_core::SpawnTask,
+    outcome: spine_core::SpawnOutcome,
     diagnostic: Option<&str>,
     execution_ref: Option<&str>,
 ) -> String {

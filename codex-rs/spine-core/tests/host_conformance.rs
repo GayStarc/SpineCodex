@@ -1,14 +1,29 @@
-use codex_spine_core::ContextItem;
-use codex_spine_core::Message;
-use codex_spine_core::MessageRole;
-use codex_spine_core::RawBoundary;
-use codex_spine_core::RolloutEvent;
-use codex_spine_core::SpineProjection;
-use codex_spine_core::SpineReducer;
-use codex_spine_core::ToolCallGroup;
-use codex_spine_core::ToolOutcome;
-use codex_spine_core::ToolUse;
 use pretty_assertions::assert_eq;
+use spine_core::ContextItem;
+use spine_core::Feature;
+use spine_core::Message;
+use spine_core::MessageRole;
+use spine_core::RawBoundary;
+use spine_core::RolloutEvent;
+use spine_core::SpineCompiler;
+use spine_core::SpineConfig;
+use spine_core::SpineProjection;
+use spine_core::ToolCallGroup;
+use spine_core::ToolOutcome;
+use spine_core::ToolUse;
+
+fn derive(events: Vec<RolloutEvent>) -> SpineProjection {
+    let registration = spine_core::SpineRegistration::builder()
+        .enable(Feature::Jit)
+        .build()
+        .expect("valid test registration");
+    let mut compiler =
+        SpineCompiler::new(SpineConfig::v1(), registration).expect("valid test compiler");
+    compiler
+        .replay(events)
+        .expect("valid event order")
+        .projection
+}
 
 #[derive(Clone)]
 enum LogicalEvent {
@@ -417,8 +432,8 @@ fn message_context(ordinal: u64, item: &CodexResponseItem) -> ContextItem {
 }
 
 fn projections(events: &[LogicalEvent]) -> (SpineProjection, SpineProjection) {
-    let codex = SpineReducer::derive(&adapt_codex(&encode_codex(events)));
-    let kimi = SpineReducer::derive(&adapt_kimi(&encode_kimi(events)));
+    let codex = derive(adapt_codex(&encode_codex(events)));
+    let kimi = derive(adapt_kimi(&encode_kimi(events)));
     (codex, kimi)
 }
 
@@ -562,8 +577,8 @@ fn codex_and_kimi_resume_from_full_native_transcript() {
         },
     ];
     let (live_codex, live_kimi) = projections(&events);
-    let resumed_codex = SpineReducer::derive(&adapt_codex(&encode_codex(&events)));
-    let resumed_kimi = SpineReducer::derive(&adapt_kimi(&encode_kimi(&events)));
+    let resumed_codex = derive(adapt_codex(&encode_codex(&events)));
+    let resumed_kimi = derive(adapt_kimi(&encode_kimi(&events)));
     assert_eq!(live_codex, resumed_codex);
     assert_eq!(live_kimi, resumed_kimi);
     assert_eq!(resumed_codex, resumed_kimi);

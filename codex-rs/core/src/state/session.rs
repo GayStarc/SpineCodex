@@ -216,59 +216,59 @@ impl SessionState {
             .map(|node| {
                 let spawn_outcome = node.memory.as_ref().and_then(|slots| {
                     slots.iter().find_map(|slot| match slot {
-                        codex_spine_core::MemorySlot::SpawnEvidence {
+                        spine_core::MemorySlot::SpawnEvidence {
                             owner_node,
                             outcome,
                             ..
                         } if owner_node == &node.id => {
                             Some(match outcome {
-                                codex_spine_core::SpawnOutcome::Completed => {
+                                spine_core::SpawnOutcome::Completed => {
                                     codex_protocol::spine_tree::SpineSpawnOutcome::Completed
                                 }
-                                codex_spine_core::SpawnOutcome::Errored => {
+                                spine_core::SpawnOutcome::Errored => {
                                     codex_protocol::spine_tree::SpineSpawnOutcome::Errored
                                 }
-                                codex_spine_core::SpawnOutcome::Aborted => {
+                                spine_core::SpawnOutcome::Aborted => {
                                     codex_protocol::spine_tree::SpineSpawnOutcome::Aborted
                                 }
                             })
                         }
-                        codex_spine_core::MemorySlot::User { .. }
-                        | codex_spine_core::MemorySlot::Summary { .. }
-                        | codex_spine_core::MemorySlot::SpawnEvidence { .. } => None,
+                        spine_core::MemorySlot::User { .. }
+                        | spine_core::MemorySlot::Summary { .. }
+                        | spine_core::MemorySlot::SpawnEvidence { .. } => None,
                     })
                 });
                 codex_protocol::protocol::SpineTreeNodeSnapshot {
                     node_id: node.id.to_string(),
                     parent_id: node.parent.map(|id| id.to_string()),
                     kind: match node.kind {
-                        codex_spine_core::NodeKind::RootEpoch => {
+                        spine_core::NodeKind::RootEpoch => {
                             codex_protocol::spine_tree::SpineTreeNodeKind::RootEpoch
                         }
-                        codex_spine_core::NodeKind::Task => {
+                        spine_core::NodeKind::Task => {
                             codex_protocol::spine_tree::SpineTreeNodeKind::Task
                         }
                     },
                     status: match node.status {
-                        codex_spine_core::NodeStatus::Live => {
+                        spine_core::NodeStatus::Live => {
                             codex_protocol::spine_tree::SpineTreeNodeStatus::Live
                         }
-                        codex_spine_core::NodeStatus::Opened => {
+                        spine_core::NodeStatus::Opened => {
                             codex_protocol::spine_tree::SpineTreeNodeStatus::Opened
                         }
-                        codex_spine_core::NodeStatus::Closed => {
+                        spine_core::NodeStatus::Closed => {
                             codex_protocol::spine_tree::SpineTreeNodeStatus::Closed
                         }
-                        codex_spine_core::NodeStatus::Compacted => {
+                        spine_core::NodeStatus::Compacted => {
                             codex_protocol::spine_tree::SpineTreeNodeStatus::Compacted
                         }
                     },
                     summary: node.summary,
                     memory_summary: node.memory.and_then(|slots| {
                         slots.into_iter().last().and_then(|slot| match slot {
-                            codex_spine_core::MemorySlot::Summary { body, .. } => Some(body),
-                            codex_spine_core::MemorySlot::User { .. }
-                            | codex_spine_core::MemorySlot::SpawnEvidence { .. } => None,
+                            spine_core::MemorySlot::Summary { body, .. } => Some(body),
+                            spine_core::MemorySlot::User { .. }
+                            | spine_core::MemorySlot::SpawnEvidence { .. } => None,
                         })
                     }),
                     spawn_outcome,
@@ -388,7 +388,7 @@ impl SessionState {
                 .iter()
                 .find(|node| node.id == projection.cursor)
                 .ok_or_else(|| "Spine cursor is missing from the derived tree".to_string())?;
-            if cursor.kind == codex_spine_core::NodeKind::RootEpoch {
+            if cursor.kind == spine_core::NodeKind::RootEpoch {
                 return Err("no open Spine node is available to close".to_string());
             }
         }
@@ -406,7 +406,7 @@ impl SessionState {
     pub(crate) fn validate_spine_trim(
         &self,
         current_call_id: &str,
-        request: &codex_spine_core::TrimRequest,
+        request: &spine_core::TrimRequest,
     ) -> Result<(), String> {
         if !self.session_configuration.spine_trim_enabled() {
             return Err("Spine trim is not enabled for this session".to_string());

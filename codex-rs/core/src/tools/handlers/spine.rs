@@ -22,15 +22,15 @@ use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolExecutor;
 use codex_code_mode::CellId;
 use codex_protocol::config_types::ModeKind;
-#[cfg(test)]
-use codex_spine_core::TrimOperation;
-use codex_spine_core::TrimRequest;
-#[cfg(test)]
-use codex_spine_core::TrimSlice;
 use codex_tools::ToolExposure;
 use codex_tools::ToolName;
 use codex_tools::ToolSpec;
 use serde::Deserialize;
+#[cfg(test)]
+use spine_core::TrimOperation;
+use spine_core::TrimRequest;
+#[cfg(test)]
+use spine_core::TrimSlice;
 
 pub(crate) struct SpineHandler {
     kind: SpineHandlerKind,

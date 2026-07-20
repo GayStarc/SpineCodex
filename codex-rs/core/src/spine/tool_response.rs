@@ -7,7 +7,7 @@ use crate::tools::handlers::spine_spec::SPINE_OPEN;
 use crate::tools::handlers::spine_spec::SPINE_TRIM;
 use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::FunctionCallOutputPayload;
-use codex_spine_core::ToolOutcome;
+use spine_core::ToolOutcome;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SpineToolResponse {

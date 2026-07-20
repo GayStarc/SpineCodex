@@ -67,7 +67,7 @@ impl RuntimeNode {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SpineReducer {
+pub(crate) struct SpineReducer {
     nodes: Vec<RuntimeNode>,
     root_epochs: Vec<NodeId>,
     cursor: NodeId,
@@ -83,7 +83,7 @@ impl Default for SpineReducer {
 }
 
 impl SpineReducer {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let root_id = NodeId::root_epoch(1);
         Self {
             nodes: vec![RuntimeNode {
@@ -107,7 +107,8 @@ impl SpineReducer {
         }
     }
 
-    pub fn derive(events: &[RolloutEvent]) -> SpineProjection {
+    #[cfg(test)]
+    pub(crate) fn derive(events: &[RolloutEvent]) -> SpineProjection {
         let mut reducer = Self::new();
         for event in events {
             reducer.apply(event.clone());
@@ -115,7 +116,7 @@ impl SpineReducer {
         reducer.projection()
     }
 
-    pub fn apply(&mut self, event: RolloutEvent) -> ProjectionDelta {
+    pub(crate) fn apply(&mut self, event: RolloutEvent) -> ProjectionDelta {
         let before = self.projection().visible_context;
         self.last_boundary = Some(event.boundary());
         self.settled_spawn_call_ids.clear();
@@ -134,7 +135,7 @@ impl SpineReducer {
         }
     }
 
-    pub fn projection(&self) -> SpineProjection {
+    pub(crate) fn projection(&self) -> SpineProjection {
         SpineProjection {
             nodes: self.nodes.iter().map(RuntimeNode::snapshot).collect(),
             cursor: self.cursor.clone(),

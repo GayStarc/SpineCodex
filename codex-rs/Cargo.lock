@@ -2678,7 +2678,6 @@ dependencies = [
  "codex-sandboxing",
  "codex-shell-command",
  "codex-shell-escalation",
- "codex-spine-core",
  "codex-state",
  "codex-terminal-detection",
  "codex-test-binary-support",
@@ -2728,6 +2727,7 @@ dependencies = [
  "sha1 0.10.6",
  "shlex",
  "similar",
+ "spine-core",
  "tempfile",
  "test-case",
  "test-log",
@@ -12735,6 +12735,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6980e8d7511241f8acf4aebddbb1ff938df5eebe98691418c4468d0b72a96a67"
 dependencies = [
  "lock_api",
+]
+
+[[package]]
+name = "spine-core"
+version = "0.1.0"
+dependencies = [
+ "pretty_assertions",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

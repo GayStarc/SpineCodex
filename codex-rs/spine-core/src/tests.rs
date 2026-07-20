@@ -1,4 +1,5 @@
 use super::*;
+use crate::reducer::SpineReducer;
 use pretty_assertions::assert_eq;
 
 fn boundary(value: u64) -> RawBoundary {

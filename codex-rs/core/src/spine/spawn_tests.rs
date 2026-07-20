@@ -4,10 +4,10 @@ use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ReasoningItemReasoningSummary;
 use codex_protocol::models::ResponseItem;
-use codex_spine_core::SPINE_SPAWN_RESULT_SCHEMA;
-use codex_spine_core::SpawnOutcome;
-use codex_spine_core::SpawnResult;
 use pretty_assertions::assert_eq;
+use spine_core::SPINE_SPAWN_RESULT_SCHEMA;
+use spine_core::SpawnOutcome;
+use spine_core::SpawnResult;
 
 #[test]
 fn task_arguments_require_two_exact_non_empty_tasks() {
@@ -18,11 +18,11 @@ fn task_arguments_require_two_exact_non_empty_tasks() {
     assert_eq!(
         tasks,
         vec![
-            codex_spine_core::SpawnTask {
+            spine_core::SpawnTask {
                 summary: "one".to_string(),
                 prompt: "first".to_string(),
             },
-            codex_spine_core::SpawnTask {
+            spine_core::SpawnTask {
                 summary: " two ".to_string(),
                 prompt: " second ".to_string(),
             },
@@ -280,7 +280,7 @@ fn initial_progress_normalizes_fast_terminal_statuses() {
 #[test]
 fn terminal_status_matrix_produces_one_total_ordered_receipt() {
     let tasks = (0..4)
-        .map(|ordinal| codex_spine_core::SpawnTask {
+        .map(|ordinal| spine_core::SpawnTask {
             summary: format!("task {ordinal}"),
             prompt: format!("prompt {ordinal}"),
         })
@@ -374,15 +374,15 @@ fn partial_start_failure_is_total_and_keeps_input_ordinals() {
         ));
     }
     let tasks = vec![
-        codex_spine_core::SpawnTask {
+        spine_core::SpawnTask {
             summary: "zero".to_string(),
             prompt: "zero task".to_string(),
         },
-        codex_spine_core::SpawnTask {
+        spine_core::SpawnTask {
             summary: "one".to_string(),
             prompt: "one task".to_string(),
         },
-        codex_spine_core::SpawnTask {
+        spine_core::SpawnTask {
             summary: "two".to_string(),
             prompt: "two task".to_string(),
         },

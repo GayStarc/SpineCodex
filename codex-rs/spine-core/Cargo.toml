@@ -1,11 +1,11 @@
 [package]
-name = "codex-spine-core"
+name = "spine-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [lib]
-name = "codex_spine_core"
+name = "spine_core"
 path = "src/lib.rs"
 doctest = false
 
