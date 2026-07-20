@@ -278,7 +278,7 @@ fn effective_rollout(rollout: &[RolloutItem]) -> Vec<(usize, &RolloutItem)> {
     effective
 }
 
-fn is_spine_source_item(item: &RolloutItem) -> bool {
+pub(crate) fn is_spine_source_item(item: &RolloutItem) -> bool {
     matches!(
         item,
         RolloutItem::ResponseItem(_)

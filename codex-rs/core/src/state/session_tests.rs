@@ -968,6 +968,50 @@ async fn spine_feature_on_projects_live_native_rollout_at_clone_boundary() {
 }
 
 #[tokio::test]
+async fn spine_live_append_uses_source_ordinals_across_event_items() {
+    let mut session_configuration = make_session_configuration_for_tests().await;
+    session_configuration.enable_spine_jit_for_test();
+    let mut state = SessionState::new(session_configuration);
+    let user = response_message("user", "request");
+    state.record_items(std::iter::once(&user), TruncationPolicy::Tokens(10_000));
+    state.append_spine_rollout_items(&[RolloutItem::ResponseItem(user)]);
+    state.append_spine_rollout_items(&[token_count(1_000)]);
+
+    let call = ResponseItem::FunctionCall {
+        id: None,
+        name: "open".to_string(),
+        namespace: Some("spine".to_string()),
+        arguments: r#"{"summary":"task"}"#.to_string(),
+        call_id: "open".to_string(),
+        internal_chat_message_metadata_passthrough: None,
+    };
+    state.record_items(std::iter::once(&call), TruncationPolicy::Tokens(10_000));
+    state.append_spine_rollout_items(&[RolloutItem::ResponseItem(call)]);
+
+    let output = ResponseItem::FunctionCallOutput {
+        id: None,
+        call_id: "open".to_string(),
+        output: FunctionCallOutputPayload {
+            body: FunctionCallOutputBody::Text("Spine open accepted.".to_string()),
+            success: Some(true),
+        },
+        internal_chat_message_metadata_passthrough: None,
+    };
+    state.record_items(std::iter::once(&output), TruncationPolicy::Tokens(10_000));
+    state.append_spine_rollout_items(&[RolloutItem::ResponseItem(output)]);
+
+    let projected = state.clone_history();
+    assert!(response_text(&projected.raw_items()[0]).contains("request"));
+    assert_eq!(
+        state
+            .spine_tree_update()
+            .expect("Spine tree snapshot should be enabled")
+            .active_node_id,
+        "1.1"
+    );
+}
+
+#[tokio::test]
 async fn spine_projection_reuses_host_truncated_tool_output() {
     let mut session_configuration = make_session_configuration_for_tests().await;
     session_configuration.enable_spine_jit_for_test();

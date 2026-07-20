@@ -361,7 +361,10 @@ impl SessionState {
 
     pub(crate) fn append_spine_rollout_items(&mut self, items: &[RolloutItem]) {
         if let Some(rollout) = &mut self.spine_rollout {
-            let first_ordinal = rollout.len();
+            let first_ordinal = rollout
+                .iter()
+                .filter(|item| crate::spine::is_spine_source_item(item))
+                .count();
             rollout.extend_from_slice(items);
             if let Some(spine) = &mut self.spine_runtime {
                 let changes_selected_prefix = items.iter().any(|item| {
@@ -381,11 +384,15 @@ impl SessionState {
                     spine.projected_history = output.into_context();
                     return;
                 }
-                for (offset, item) in items.iter().enumerate() {
+                let mut next_ordinal = first_ordinal;
+                for item in items {
                     let input = CodexSpineInput {
-                        ordinal: first_ordinal + offset,
+                        ordinal: next_ordinal,
                         item: item.clone(),
                     };
+                    if crate::spine::is_spine_source_item(item) {
+                        next_ordinal += 1;
+                    }
                     let output = spine
                         .runtime
                         .eat(&input, rollout.as_slice(), &self.history)
