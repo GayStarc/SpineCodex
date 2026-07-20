@@ -80,7 +80,10 @@ const fn default_trim_threshold() -> u64 {
 
 impl SpineConfig {
     pub fn v1() -> Self {
-        Self::parse_toml(DEFAULT_CONFIG_TOML).expect("embedded Spine config is valid")
+        match Self::parse_toml(DEFAULT_CONFIG_TOML) {
+            Ok(config) => config,
+            Err(error) => panic!("embedded Spine config is invalid: {error}"),
+        }
     }
 
     pub fn parse_toml(source: &str) -> Result<Self, ConfigError> {
