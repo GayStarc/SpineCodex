@@ -99,6 +99,9 @@ impl SessionState {
                 jit_enabled: session_configuration.spine_jit_enabled(),
                 trim_enabled: session_configuration.spine_trim_enabled(),
                 spawn_enabled: session_configuration.spine_spawn_enabled(),
+                trim_threshold_bytes: session_configuration
+                    .spine_sdk_config()
+                    .trim_threshold_bytes(),
             };
             let runtime = SpineRuntime::new(
                 session_configuration.spine_sdk_config(),
@@ -236,93 +239,72 @@ impl SessionState {
             self.session_configuration.spine_spawn_enabled(),
         )
         .spine;
-        let pressures = crate::spine::pressure::project(rollout, &projection);
-        let snapshot_seq = projection.last_boundary.map_or(0, |boundary| boundary.0);
-        let active_node_id = projection.cursor.to_string();
         let settled_spawn_call_ids = projection.settled_spawn_call_ids.clone();
-        let nodes = projection
+        let samples = crate::spine::pressure::token_usage_samples(rollout);
+        let snapshot = spine_core::tree_snapshot(&projection, &samples);
+        let snapshot_seq = snapshot.last_boundary.map_or(0, |boundary| boundary.0);
+        let active_node_id = snapshot.cursor.to_string();
+        let nodes = snapshot
             .nodes
             .into_iter()
-            .map(|node| {
-                let spawn_outcome = node.memory.as_ref().and_then(|slots| {
-                    slots.iter().find_map(|slot| match slot {
-                        spine_core::MemorySlot::SpawnEvidence {
-                            owner_node,
-                            outcome,
-                            ..
-                        } if owner_node == &node.id => {
-                            Some(match outcome {
-                                spine_core::SpawnOutcome::Completed => {
-                                    codex_protocol::spine_tree::SpineSpawnOutcome::Completed
-                                }
-                                spine_core::SpawnOutcome::Errored => {
-                                    codex_protocol::spine_tree::SpineSpawnOutcome::Errored
-                                }
-                                spine_core::SpawnOutcome::Aborted => {
-                                    codex_protocol::spine_tree::SpineSpawnOutcome::Aborted
-                                }
-                            })
-                        }
-                        spine_core::MemorySlot::User { .. }
-                        | spine_core::MemorySlot::Summary { .. }
-                        | spine_core::MemorySlot::SpawnEvidence { .. } => None,
-                    })
-                });
-                codex_protocol::protocol::SpineTreeNodeSnapshot {
-                    node_id: node.id.to_string(),
-                    parent_id: node.parent.map(|id| id.to_string()),
-                    kind: match node.kind {
-                        spine_core::NodeKind::RootEpoch => {
-                            codex_protocol::spine_tree::SpineTreeNodeKind::RootEpoch
-                        }
-                        spine_core::NodeKind::Task => {
-                            codex_protocol::spine_tree::SpineTreeNodeKind::Task
-                        }
-                    },
-                    status: match node.status {
-                        spine_core::NodeStatus::Live => {
-                            codex_protocol::spine_tree::SpineTreeNodeStatus::Live
-                        }
-                        spine_core::NodeStatus::Opened => {
-                            codex_protocol::spine_tree::SpineTreeNodeStatus::Opened
-                        }
-                        spine_core::NodeStatus::Closed => {
-                            codex_protocol::spine_tree::SpineTreeNodeStatus::Closed
-                        }
-                        spine_core::NodeStatus::Compacted => {
-                            codex_protocol::spine_tree::SpineTreeNodeStatus::Compacted
-                        }
-                    },
-                    summary: node.summary,
-                    memory_summary: node.memory.and_then(|slots| {
-                        slots.into_iter().last().and_then(|slot| match slot {
-                            spine_core::MemorySlot::Summary { body, .. } => Some(body),
-                            spine_core::MemorySlot::User { .. }
-                            | spine_core::MemorySlot::SpawnEvidence { .. } => None,
-                        })
-                    }),
-                    spawn_outcome,
-                    start: node.start.0,
-                    end: node.end.map(|boundary| boundary.0),
-                    context_pressure: pressures.get(&node.id).map(|pressure| {
-                        codex_protocol::spine_tree::SpineNodeContextPressureSnapshot {
-                            open_input_tokens: pressure.open_input_tokens,
-                            current_input_tokens: pressure.current_input_tokens,
-                            context_tokens: pressure.context_tokens,
-                            problem: pressure.problem.map(|problem| match problem {
-                                crate::spine::pressure::NodeContextPressureProblem::MissingCurrentUsage => {
-                                    codex_protocol::spine_tree::SpineNodeContextPressureProblem::MissingCurrentUsage
-                                }
-                                crate::spine::pressure::NodeContextPressureProblem::MissingOpenContextBaseline => {
-                                    codex_protocol::spine_tree::SpineNodeContextPressureProblem::MissingOpenContextBaseline
-                                }
-                                crate::spine::pressure::NodeContextPressureProblem::CoordinateMismatch => {
-                                    codex_protocol::spine_tree::SpineNodeContextPressureProblem::CoordinateMismatch
-                                }
-                            }),
-                        }
-                    }),
-                }
+            .map(|node| codex_protocol::protocol::SpineTreeNodeSnapshot {
+                node_id: node.id.to_string(),
+                parent_id: node.parent.map(|id| id.to_string()),
+                kind: match node.kind {
+                    spine_core::NodeKind::RootEpoch => {
+                        codex_protocol::spine_tree::SpineTreeNodeKind::RootEpoch
+                    }
+                    spine_core::NodeKind::Task => {
+                        codex_protocol::spine_tree::SpineTreeNodeKind::Task
+                    }
+                },
+                status: match node.status {
+                    spine_core::NodeStatus::Live => {
+                        codex_protocol::spine_tree::SpineTreeNodeStatus::Live
+                    }
+                    spine_core::NodeStatus::Opened => {
+                        codex_protocol::spine_tree::SpineTreeNodeStatus::Opened
+                    }
+                    spine_core::NodeStatus::Closed => {
+                        codex_protocol::spine_tree::SpineTreeNodeStatus::Closed
+                    }
+                    spine_core::NodeStatus::Compacted => {
+                        codex_protocol::spine_tree::SpineTreeNodeStatus::Compacted
+                    }
+                },
+                summary: node.summary,
+                memory_summary: node.memory_summary,
+                spawn_outcome: node.spawn_outcome.map(|outcome| match outcome {
+                    spine_core::SpawnOutcome::Completed => {
+                        codex_protocol::spine_tree::SpineSpawnOutcome::Completed
+                    }
+                    spine_core::SpawnOutcome::Errored => {
+                        codex_protocol::spine_tree::SpineSpawnOutcome::Errored
+                    }
+                    spine_core::SpawnOutcome::Aborted => {
+                        codex_protocol::spine_tree::SpineSpawnOutcome::Aborted
+                    }
+                }),
+                start: node.start.0,
+                end: node.end.map(|boundary| boundary.0),
+                context_pressure: node.pressure.map(|pressure| {
+                    codex_protocol::spine_tree::SpineNodeContextPressureSnapshot {
+                        open_input_tokens: pressure.open_input_tokens,
+                        current_input_tokens: pressure.current_input_tokens,
+                        context_tokens: pressure.context_tokens,
+                        problem: pressure.problem.map(|problem| match problem {
+                            spine_core::ContextPressureProblem::MissingCurrentUsage => {
+                                codex_protocol::spine_tree::SpineNodeContextPressureProblem::MissingCurrentUsage
+                            }
+                            spine_core::ContextPressureProblem::MissingOpenContextBaseline => {
+                                codex_protocol::spine_tree::SpineNodeContextPressureProblem::MissingOpenContextBaseline
+                            }
+                            spine_core::ContextPressureProblem::CoordinateMismatch => {
+                                codex_protocol::spine_tree::SpineNodeContextPressureProblem::CoordinateMismatch
+                            }
+                        }),
+                    }
+                }),
             })
             .collect();
         Some(codex_protocol::protocol::SpineTreeUpdateEvent {
@@ -357,14 +339,9 @@ impl SessionState {
         if !self.session_configuration.spine_jit_enabled() {
             return Vec::new();
         }
-        self.spine_rollout
-            .as_deref()
-            .map(|rollout| {
-                crate::spine::closed_memory_projection_entries(
-                    rollout,
-                    self.session_configuration.spine_spawn_enabled(),
-                )
-            })
+        self.spine_runtime
+            .as_ref()
+            .map(|spine| crate::spine::closed_memory_projection_entries(spine.runtime.projection()))
             .unwrap_or_default()
     }
 

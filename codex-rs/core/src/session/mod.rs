@@ -626,8 +626,8 @@ impl Codex {
             .unwrap_or_else(|| model_info.get_model_instructions(config.personality));
         let base_instructions = crate::spine::instructions::append(
             base_instructions,
-            config.features.enabled(Feature::SpineJit),
-            config.features.enabled(Feature::SpineTrim),
+            &config.spine_config,
+            &config.spine_registration,
         );
 
         // Dynamic tools are defined at thread start and persisted in rollout session metadata.

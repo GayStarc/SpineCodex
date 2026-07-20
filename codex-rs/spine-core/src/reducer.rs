@@ -579,7 +579,10 @@ fn non_empty(value: String) -> Option<String> {
     (!value.is_empty()).then_some(value)
 }
 
-pub(crate) fn derive_trim_projection(events: &[RolloutEvent]) -> TrimProjection {
+pub(crate) fn derive_trim_projection(
+    events: &[RolloutEvent],
+    threshold_bytes: usize,
+) -> TrimProjection {
     let mut projection = TrimProjection::default();
     let mut active = Vec::new();
     for event in events {
@@ -606,7 +609,7 @@ pub(crate) fn derive_trim_projection(events: &[RolloutEvent]) -> TrimProjection 
             else {
                 continue;
             };
-            if body.len() <= TOOL_RESPONSE_TRIM_THRESHOLD_BYTES {
+            if body.len() <= threshold_bytes {
                 continue;
             }
             let trim_id = format!("trim_{}", boundary.0);

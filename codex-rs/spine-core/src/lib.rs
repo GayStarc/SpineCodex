@@ -25,6 +25,7 @@ pub use host::SpineHost;
 pub use host::SpineOutput;
 pub use host::SpineRuntime;
 
+pub use artifact::{MemoryArtifact, UserMessageArtifact, closed_memory_artifacts};
 pub use model::ContextEdit;
 pub use model::ContextItem;
 pub use model::MemorySlot;
@@ -55,6 +56,10 @@ pub use model::TrimProjection;
 pub use model::TrimRequest;
 pub use model::TrimSlice;
 pub use reducer::TOOL_RESPONSE_TRIM_THRESHOLD_BYTES;
+pub use status::{
+    ContextPressure, ContextPressureProblem, StatusSignal, TokenUsageSample, TreeNode,
+    TreeSnapshot, context_pressures, status_signal, tree_snapshot,
+};
 pub use tools::SPINE_NAMESPACE;
 pub use tools::SpineTool;
 pub use tools::ToolCatalog;

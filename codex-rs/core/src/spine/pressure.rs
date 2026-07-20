@@ -1,9 +1,8 @@
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::RolloutItem;
 use spine_core::NodeId;
-use spine_core::NodeStatus;
-use spine_core::RawBoundary;
 use spine_core::SpineProjection;
+use spine_core::TokenUsageSample;
 use std::collections::BTreeMap;
 
 use super::effective_rollout;
@@ -23,6 +22,7 @@ pub(crate) enum NodeContextPressureProblem {
     CoordinateMismatch,
 }
 
+#[cfg(test)]
 pub(crate) fn project(
     rollout: &[RolloutItem],
     projection: &SpineProjection,
@@ -35,48 +35,50 @@ pub(super) fn project_from_effective(
     effective_rollout: &[(usize, &RolloutItem)],
     projection: &SpineProjection,
 ) -> BTreeMap<NodeId, NodeContextPressure> {
-    let current_input_tokens = effective_rollout
-        .iter()
-        .rev()
-        .find_map(|(_, item)| provider_input_tokens(item));
-    project_from_effective_with_current_input(effective_rollout, projection, current_input_tokens)
-}
-
-pub(super) fn project_from_effective_with_current_input(
-    effective_rollout: &[(usize, &RolloutItem)],
-    projection: &SpineProjection,
-    current_input_tokens: Option<i64>,
-) -> BTreeMap<NodeId, NodeContextPressure> {
-    projection
-        .nodes
-        .iter()
-        .filter(|node| matches!(node.status, NodeStatus::Live | NodeStatus::Opened))
-        .map(|node| {
-            let open_input_tokens = provider_input_baseline_after(effective_rollout, node.start);
-            let (context_tokens, problem) = context_state(current_input_tokens, open_input_tokens);
+    let samples = token_usage_samples_from_effective(effective_rollout);
+    spine_core::context_pressures(projection, &samples)
+        .into_iter()
+        .map(|(node_id, pressure)| {
             (
-                node.id.clone(),
+                node_id,
                 NodeContextPressure {
-                    open_input_tokens,
-                    current_input_tokens,
-                    context_tokens,
-                    problem,
+                    open_input_tokens: pressure.open_input_tokens,
+                    current_input_tokens: pressure.current_input_tokens,
+                    context_tokens: pressure.context_tokens,
+                    problem: pressure.problem.map(|problem| match problem {
+                        spine_core::ContextPressureProblem::MissingCurrentUsage => {
+                            NodeContextPressureProblem::MissingCurrentUsage
+                        }
+                        spine_core::ContextPressureProblem::MissingOpenContextBaseline => {
+                            NodeContextPressureProblem::MissingOpenContextBaseline
+                        }
+                        spine_core::ContextPressureProblem::CoordinateMismatch => {
+                            NodeContextPressureProblem::CoordinateMismatch
+                        }
+                    }),
                 },
             )
         })
         .collect()
 }
 
-fn provider_input_baseline_after(
+pub(crate) fn token_usage_samples(rollout: &[RolloutItem]) -> Vec<TokenUsageSample> {
+    let effective = effective_rollout(rollout);
+    token_usage_samples_from_effective(&effective)
+}
+
+fn token_usage_samples_from_effective(
     effective_rollout: &[(usize, &RolloutItem)],
-    open_boundary: RawBoundary,
-) -> Option<i64> {
-    effective_rollout.iter().find_map(|(boundary, item)| {
-        let boundary = u64::try_from(*boundary).unwrap_or(u64::MAX);
-        (boundary > open_boundary.0)
-            .then(|| provider_input_tokens(item))
-            .flatten()
-    })
+) -> Vec<TokenUsageSample> {
+    effective_rollout
+        .iter()
+        .filter_map(|(boundary, item)| {
+            provider_input_tokens(item).map(|input_tokens| TokenUsageSample {
+                boundary: spine_core::RawBoundary(*boundary as u64),
+                input_tokens,
+            })
+        })
+        .collect()
 }
 
 fn provider_input_tokens(item: &RolloutItem) -> Option<i64> {
@@ -85,23 +87,4 @@ fn provider_input_tokens(item: &RolloutItem) -> Option<i64> {
     };
     let input_tokens = event.info.as_ref()?.last_token_usage.input_tokens;
     (input_tokens > 0).then_some(input_tokens)
-}
-
-fn context_state(
-    current_input_tokens: Option<i64>,
-    open_input_tokens: Option<i64>,
-) -> (Option<i64>, Option<NodeContextPressureProblem>) {
-    let Some(current) = current_input_tokens else {
-        return (None, Some(NodeContextPressureProblem::MissingCurrentUsage));
-    };
-    let Some(open) = open_input_tokens else {
-        return (
-            None,
-            Some(NodeContextPressureProblem::MissingOpenContextBaseline),
-        );
-    };
-    match current.checked_sub(open) {
-        Some(tokens) if tokens >= 0 => (Some(tokens), None),
-        Some(_) | None => (None, Some(NodeContextPressureProblem::CoordinateMismatch)),
-    }
 }

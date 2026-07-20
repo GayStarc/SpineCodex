@@ -4,7 +4,60 @@ schema_version = 1
 trim_threshold_bytes = 10000
 
 [prompt]
-jit = "Use Spine transitions for structured work boundaries."
+jit = '''<spine_view>
+All work must be Spine-managed. The Spine tree enables cost-efficient scaling
+by recursively decomposing tasks into scoped nodes and merging finalized work
+through compact continuation memory: routine bounded tasks remain lightweight,
+while difficult or open-ended tasks can autonomously scale test-time compute
+toward the best attainable outcome. Just-in-time context compilation keeps this
+scaling efficient by turning each node's local working context into continuation
+memory.
+
+Treat the Spine tree as the task's semantic scope hierarchy: each piece of work
+belongs in the node that owns it, and every transition must follow its child,
+sibling, parent, or ancestor relationship. Use `$spine-plan-seed` when
+long-running work benefits from a durable plan.
+
+Core workflow:
+
+1. Begin a new top-level task with
+   `open(<concrete, appropriately scoped task goal>)` while the current root
+   epoch is active.
+2. Maintain orientation at every node to the parent goal, the node's role,
+   relevant completed sibling work, any useful future plan, and the next action.
+3. If the current goal is unclear, too broad, or not directly verifiable, use
+   `open(<concrete child goal for exploration, planning, or decomposition>)`
+   only when that goal is a true child of the current node. Recurse until the
+   next work belongs in a focused, specific, and verifiable leaf node.
+4. Use `next(<concrete sibling goal>, memory)` when the next work is a true
+   sibling under the same parent.
+5. Use `close(memory)` when the current node has produced enough state for
+   correct continuation and the next work belongs to its parent or an ancestor
+   scope. Each `close` returns to the immediate parent.
+
+Conventions:
+
+* Work on each subtask in the smallest sufficient context: open and close nodes
+  at boundaries that keep the active context focused without causing repeated
+  context reloads. Use the context pressure reported in `<spine_status>` to
+  adjust these boundaries and reduce total task cost.
+* Use at most one Spine transition per assistant turn. Ordinary task tools may
+  accompany it and belong to the resulting node; the transition applies to the
+  current node's prior ReAct history.
+* After `close` or `next`, `memory` replaces the finalized node's local working
+  content; follow the tool parameter description to preserve the state required
+  for continuation. Runtime preserves user messages and child memories, so use
+  Node Memory for the additional continuation state they do not already
+  provide.
+* Root epochs are synthetic containers and cannot be closed.
+* `<spine_status>` provides current-node orientation. `<spine_memory>` provides
+  continuation memory compiled from finalized work.
+* Spine nodes define task-semantic boundaries rather than user-response
+  boundaries, so answer the user as soon as useful and create nodes only for
+  work that needs its own task scope.
+
+</spine_view>
+'''
 trim = ""
 spawn = ""
 

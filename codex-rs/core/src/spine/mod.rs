@@ -59,30 +59,17 @@ pub(crate) struct CodexSpineProjection {
 }
 
 pub(crate) fn closed_memory_projection_entries(
-    rollout: &[RolloutItem],
-    spawn_enabled: bool,
+    projection: &SpineProjection,
 ) -> Vec<memory_projection::SpinetreeMemoryProjectionEntry> {
-    derive_from_rollout_with_features(rollout, true, false, spawn_enabled)
-        .spine
-        .nodes
+    spine_core::closed_memory_artifacts(projection)
         .into_iter()
-        .filter_map(|node| {
-            if node.kind != spine_core::NodeKind::Task || node.status != NodeStatus::Closed {
-                return None;
-            }
-            let node_id = node.id;
-            let body = node.memory?.into_iter().find_map(|slot| match slot {
-                MemorySlot::Summary {
-                    owner_node, body, ..
-                } if owner_node == node_id => Some(body),
-                _ => None,
-            })?;
-            let node_id = node_id.to_string();
-            Some(memory_projection::SpinetreeMemoryProjectionEntry {
-                summary: node.summary.unwrap_or_else(|| "node".to_string()),
-                body: render_memory_artifact(&node_id, &body),
+        .map(|artifact| {
+            let node_id = artifact.node_id.to_string();
+            memory_projection::SpinetreeMemoryProjectionEntry {
+                summary: artifact.summary,
+                body: render_memory_artifact(&node_id, &artifact.body),
                 node_id,
-            })
+            }
         })
         .collect()
 }

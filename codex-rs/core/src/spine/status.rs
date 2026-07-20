@@ -2,24 +2,13 @@ use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::num_format::format_si_suffix;
 use codex_protocol::protocol::RolloutItem;
-use spine_core::SpineProjection;
+use spine_core::StatusSignal;
 
 use super::effective_rollout;
 use super::pressure;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct SpineTransitionStatusSignal {
-    cursor: String,
-    node_summary: Option<String>,
-    parent: Option<String>,
-    parent_summary: Option<String>,
-    cursor_node_context_tokens: Option<i64>,
-    context_left_tokens: Option<i64>,
-}
-
-pub(crate) fn transition_item(
+pub(crate) fn prompt_overlay(
     rollout: &[RolloutItem],
-    current_provider_input_tokens: Option<i64>,
     context_left_tokens: Option<i64>,
     spawn_enabled: bool,
 ) -> ResponseItem {
@@ -33,54 +22,36 @@ pub(crate) fn transition_item(
         None,
     )
     .spine;
-    let signal = status_prompt_signal(
-        &projection,
-        &effective,
-        current_provider_input_tokens,
-        context_left_tokens,
-    );
-    developer_status_item(format_spine_transition_status(&signal))
+    let pressures = pressure::project_from_effective(&effective, &projection);
+    let sdk_pressures = pressures
+        .into_iter()
+        .map(|(node_id, pressure)| {
+            (
+                node_id,
+                spine_core::ContextPressure {
+                    open_input_tokens: pressure.open_input_tokens,
+                    current_input_tokens: pressure.current_input_tokens,
+                    context_tokens: pressure.context_tokens,
+                    problem: pressure.problem.map(|problem| match problem {
+                        pressure::NodeContextPressureProblem::MissingCurrentUsage => {
+                            spine_core::ContextPressureProblem::MissingCurrentUsage
+                        }
+                        pressure::NodeContextPressureProblem::MissingOpenContextBaseline => {
+                            spine_core::ContextPressureProblem::MissingOpenContextBaseline
+                        }
+                        pressure::NodeContextPressureProblem::CoordinateMismatch => {
+                            spine_core::ContextPressureProblem::CoordinateMismatch
+                        }
+                    }),
+                },
+            )
+        })
+        .collect();
+    let signal = spine_core::status_signal(&projection, &sdk_pressures, context_left_tokens);
+    developer_prompt_overlay_item(format_spine_status_prompt_overlay(&signal))
 }
 
-fn status_prompt_signal(
-    projection: &SpineProjection,
-    effective_rollout: &[(usize, &RolloutItem)],
-    current_provider_input_tokens: Option<i64>,
-    context_left_tokens: Option<i64>,
-) -> SpineTransitionStatusSignal {
-    let active_node = projection
-        .nodes
-        .iter()
-        .find(|node| node.id == projection.cursor);
-    let parent = active_node.and_then(|node| node.parent.clone());
-    let parent_summary = parent.as_ref().and_then(|parent_id| {
-        projection
-            .nodes
-            .iter()
-            .find(|node| &node.id == parent_id)
-            .and_then(|node| node.summary.clone())
-    });
-    let node_summary = active_node.and_then(|node| node.summary.clone());
-    let pressures = pressure::project_from_effective_with_current_input(
-        effective_rollout,
-        projection,
-        current_provider_input_tokens,
-    );
-    let cursor_node_context_tokens = pressures
-        .get(&projection.cursor)
-        .and_then(|pressure| pressure.context_tokens);
-
-    SpineTransitionStatusSignal {
-        cursor: projection.cursor.to_string(),
-        node_summary,
-        parent: parent.map(|node_id| node_id.to_string()),
-        parent_summary,
-        cursor_node_context_tokens,
-        context_left_tokens,
-    }
-}
-
-fn developer_status_item(text: String) -> ResponseItem {
+fn developer_prompt_overlay_item(text: String) -> ResponseItem {
     ResponseItem::Message {
         id: None,
         role: "developer".to_string(),
@@ -97,7 +68,7 @@ fn format_optional_summary_attribute(summary: Option<&str>) -> String {
     }
 }
 
-fn format_spine_transition_status(signal: &SpineTransitionStatusSignal) -> String {
+fn format_spine_status_prompt_overlay(signal: &StatusSignal) -> String {
     let cursor_node_context = signal
         .cursor_node_context_tokens
         .map(format_si_suffix)
@@ -109,10 +80,15 @@ fn format_spine_transition_status(signal: &SpineTransitionStatusSignal) -> Strin
     let summary = format_optional_summary_attribute(signal.node_summary.as_deref());
     let parent_summary = format_optional_summary_attribute(signal.parent_summary.as_deref());
     format!(
-        r#"<spine_tran_status cursor="{}" summary="{}" parent="{}" parent_summary="{}" cursor_context="{}" context_left="{}""#,
+        r#"<spine_status cursor="{}" summary="{}" parent="{}" parent_summary="{}" cursor_context="{}" context_left="{}""#,
         signal.cursor,
         summary,
-        signal.parent.as_deref().unwrap_or("none"),
+        signal
+            .parent
+            .as_ref()
+            .map(ToString::to_string)
+            .as_deref()
+            .unwrap_or("none"),
         parent_summary,
         cursor_node_context,
         context_left,

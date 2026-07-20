@@ -39,6 +39,7 @@ pub(crate) struct CodexSpineHost {
     pub(crate) jit_enabled: bool,
     pub(crate) trim_enabled: bool,
     pub(crate) spawn_enabled: bool,
+    pub(crate) trim_threshold_bytes: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -105,7 +106,10 @@ impl SpineHost for CodexSpineHost {
         let effective = effective_rollout(rollout);
         let trim = self.trim_enabled.then(|| {
             let events = super::stable_lex_rollout(&effective, self.spawn_enabled);
-            spine_core::TrimProjection::derive(&events.events)
+            spine_core::TrimProjection::derive_with_threshold(
+                &events.events,
+                self.trim_threshold_bytes,
+            )
         });
         let projected = if self.jit_enabled {
             materialize_context(

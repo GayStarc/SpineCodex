@@ -1319,7 +1319,8 @@ fn closed_memory_projection_entries_follow_rollout_projection() {
         output("close", Some(true), "ok"),
     ];
 
-    let entries = closed_memory_projection_entries(&rollout, true);
+    let projection = derive_from_rollout(&rollout).spine;
+    let entries = closed_memory_projection_entries(&projection);
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].node_id, "1.1");
     assert_eq!(entries[0].summary, "task");

@@ -75,6 +75,10 @@ impl SpineCompiler {
         &self.projection
     }
 
+    pub fn extend_system_prompt(&self, base: &str) -> String {
+        crate::prompt::extend(base.to_owned(), &self._config, &self.registration)
+    }
+
     pub(crate) fn registration(&self) -> &SpineRegistration {
         &self.registration
     }

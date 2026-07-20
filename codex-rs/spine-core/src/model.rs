@@ -382,7 +382,11 @@ impl TrimProjection {
     }
 
     pub fn derive(events: &[RolloutEvent]) -> Self {
-        crate::reducer::derive_trim_projection(events)
+        Self::derive_with_threshold(events, crate::TOOL_RESPONSE_TRIM_THRESHOLD_BYTES)
+    }
+
+    pub fn derive_with_threshold(events: &[RolloutEvent], threshold_bytes: usize) -> Self {
+        crate::reducer::derive_trim_projection(events, threshold_bytes)
     }
 }
 

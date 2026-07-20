@@ -236,7 +236,7 @@ impl<H: SpineHost> SpineRuntime<H> {
     }
 
     pub fn extend_system_prompt(&self, base: &str) -> String {
-        crate::prompt::extend(base)
+        self.compiler.extend_system_prompt(base)
     }
 
     fn output_with_context(&self, context: H::Context) -> SpineOutput<H::Context> {

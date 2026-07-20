@@ -120,6 +120,14 @@ impl SpineConfig {
         self.trim_threshold_bytes
     }
 
+    pub fn extend_system_prompt(
+        &self,
+        base: &str,
+        registration: &crate::SpineRegistration,
+    ) -> String {
+        crate::prompt::extend(base.to_owned(), self, registration)
+    }
+
     pub(crate) fn prompt(&self, feature: crate::Feature) -> &str {
         match feature {
             crate::Feature::Jit => &self.jit_prompt,
