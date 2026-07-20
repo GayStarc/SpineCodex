@@ -474,6 +474,10 @@ pub struct ConfigToml {
     #[schemars(schema_with = "crate::schema::features_schema")]
     pub features: Option<FeaturesToml>,
 
+    /// Optional Spine SDK configuration file. Relative paths are resolved by
+    /// the normal layered config loader before this typed config is built.
+    pub spine_config_file: Option<AbsolutePathBuf>,
+
     /// Suppress warnings about unstable (under development) features.
     pub suppress_unstable_features_warning: Option<bool>,
 

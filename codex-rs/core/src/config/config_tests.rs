@@ -11490,3 +11490,40 @@ fn test_tui_notification_condition_rejects_unknown_value() {
         "unexpected error: {err}"
     );
 }
+
+#[test]
+fn spine_sdk_embedded_config_loads() {
+    let config = load_spine_config(None).expect("embedded Spine config must load");
+    assert_eq!(config.schema_version(), 1);
+    assert_eq!(config.trim_threshold_bytes(), 10_000);
+}
+
+#[test]
+fn spine_sdk_explicit_config_is_fail_closed() -> anyhow::Result<()> {
+    let temp = TempDir::new()?;
+    let valid_path = temp.path().join("spine.toml");
+    std::fs::write(
+        &valid_path,
+        "schema_version = 1\n[limits]\ntrim_threshold_bytes = 2048\n",
+    )?;
+    let valid_path = AbsolutePathBuf::from_absolute_path(valid_path)?;
+    assert_eq!(
+        load_spine_config(Some(&valid_path))?.trim_threshold_bytes(),
+        2048
+    );
+
+    let missing = AbsolutePathBuf::from_absolute_path(temp.path().join("missing.toml"))?;
+    assert_eq!(
+        load_spine_config(Some(&missing)).unwrap_err().kind(),
+        std::io::ErrorKind::NotFound
+    );
+
+    let invalid_path = temp.path().join("invalid.toml");
+    std::fs::write(&invalid_path, "schema_version = 2\n")?;
+    let invalid_path = AbsolutePathBuf::from_absolute_path(invalid_path)?;
+    assert_eq!(
+        load_spine_config(Some(&invalid_path)).unwrap_err().kind(),
+        std::io::ErrorKind::InvalidData
+    );
+    Ok(())
+}

@@ -219,14 +219,11 @@ fn apply_direct_model_only_namespace_overrides(
                     .contains(namespace)
             });
         match runtime.exposure() {
-            ToolExposure::Direct | ToolExposure::DirectAndCodeMode | ToolExposure::Deferred
-                if configured =>
-            {
+            ToolExposure::Direct | ToolExposure::Deferred if configured => {
                 *runtime =
                     override_tool_exposure(Arc::clone(runtime), ToolExposure::DirectModelOnly);
             }
             ToolExposure::Direct
-            | ToolExposure::DirectAndCodeMode
             | ToolExposure::Deferred
             | ToolExposure::DirectModelOnly
             | ToolExposure::Hidden => {}
@@ -447,10 +444,7 @@ fn is_hidden_by_code_mode_only(
 ) -> bool {
     let tool_mode = effective_tool_mode(turn_context);
     tool_mode == ToolMode::CodeModeOnly
-        && !matches!(
-            exposure,
-            ToolExposure::DirectModelOnly | ToolExposure::DirectAndCodeMode
-        )
+        && exposure != ToolExposure::DirectModelOnly
         && codex_code_mode::is_code_mode_nested_tool(&codex_tools::code_mode_name_for_tool_name(
             tool_name,
         ))
@@ -699,7 +693,7 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut
     planned_tools.add(PlanHandler);
 
     if features.enabled(Feature::SpineJit) {
-        for handler in SpineHandler::all() {
+        for handler in SpineHandler::controls(&turn_context.config.spine_tools) {
             planned_tools.add(handler);
         }
     }
@@ -707,13 +701,18 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut
         && features.enabled(Feature::SpineSpawn)
         && turn_context.collaboration_mode.mode != codex_protocol::config_types::ModeKind::Plan
     {
-        let max_tasks = turn_context.config.effective_spine_spawn_max_threads();
-        if max_tasks >= 2 {
-            planned_tools.add(SpineHandler::spawn(max_tasks));
+<<<<<<< HEAD
+        planned_tools.add(SpineHandler::spawn());
+=======
+        if let Some(handler) = SpineHandler::spawn(&turn_context.config.spine_tools) {
+            planned_tools.add(handler);
         }
+>>>>>>> refactor(spine): move config and tool contracts into sdk
     }
     if features.enabled(Feature::SpineTrim) {
-        planned_tools.add(SpineHandler::trim());
+        if let Some(handler) = SpineHandler::trim(&turn_context.config.spine_tools) {
+            planned_tools.add(handler);
+        }
     }
 
     if features.enabled(Feature::DeferredExecutor) {

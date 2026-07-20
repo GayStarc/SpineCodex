@@ -1,10 +1,10 @@
 use crate::spine::SpineControlKind;
 use crate::tools::context::FunctionToolOutput;
-use crate::tools::handlers::spine_spec::SPINE_CLOSE;
-use crate::tools::handlers::spine_spec::SPINE_NAMESPACE;
-use crate::tools::handlers::spine_spec::SPINE_NEXT;
-use crate::tools::handlers::spine_spec::SPINE_OPEN;
-use crate::tools::handlers::spine_spec::SPINE_TRIM;
+use crate::tools::handlers::spine_sdk_spec::SPINE_CLOSE;
+use crate::tools::handlers::spine_sdk_spec::SPINE_NAMESPACE;
+use crate::tools::handlers::spine_sdk_spec::SPINE_NEXT;
+use crate::tools::handlers::spine_sdk_spec::SPINE_OPEN;
+use crate::tools::handlers::spine_sdk_spec::SPINE_TRIM;
 use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::FunctionCallOutputPayload;
 use spine_core::ToolOutcome;

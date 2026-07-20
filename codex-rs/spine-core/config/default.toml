@@ -1,0 +1,24 @@
+schema_version = 1
+
+[limits]
+trim_threshold_bytes = 10000
+
+[prompt]
+jit = "Use Spine transitions for structured work boundaries."
+trim = ""
+spawn = ""
+
+[tools.open]
+description = "Open a concrete child node for one appropriately scoped goal under the current Spine cursor. Ordinary task tools issued alongside it belong to the child; the transition applies to the current node's prior ReAct history."
+
+[tools.close]
+description = "Finalize the current Spine node with the supplied continuation memory and resume its immediate parent. Ordinary task tools issued alongside it belong to the parent; the transition applies to the current node's prior ReAct history. Root-epoch nodes cannot be closed."
+
+[tools.next]
+description = "Finalize the current Spine node with the supplied continuation memory and continue in a fresh sibling under the same parent. Ordinary task tools issued alongside it belong to the sibling; the transition applies to the current node's prior ReAct history."
+
+[tools.trim]
+description = "Conservatively clean up one tagged tool-response projection; this never changes the Spine tree or creates memory. A TRIM_ID is live only for the immediately previous tool-result batch, and only in your next assistant tool request. After any later tool request it expires; if trim misses, treat the id as expired and continue. Use slice for needed visible evidence, snip only when useful facts are preserved elsewhere, and leave untrimmed if the original may still be needed."
+
+[tools.spawn]
+description = "Run a fission transaction over two or more self-contained tasks. Each task inherits the current context through native full-history child creation, runs concurrently in an independent session, needs no parent follow-up, and returns one terminal final memory. The parent waits for every child, then imports all closed child nodes atomically in input order. Child workspace and external effects are not transactional; only dispatch tasks whose writes are non-conflicting or explicitly coordinated."

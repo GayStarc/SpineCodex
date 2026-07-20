@@ -12744,6 +12744,7 @@ dependencies = [
  "pretty_assertions",
  "serde",
  "serde_json",
+ "toml 0.9.11+spec-1.1.0",
 ]
 
 [[package]]

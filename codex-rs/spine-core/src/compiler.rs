@@ -22,6 +22,7 @@ impl SpineCompiler {
         if config.schema_version() != 1 {
             return Err(InitError::UnsupportedConfigVersion(config.schema_version()));
         }
+        config.validate_registration(&registration)?;
         let reducer = SpineReducer::new();
         let projection = reducer.projection();
         Ok(Self {

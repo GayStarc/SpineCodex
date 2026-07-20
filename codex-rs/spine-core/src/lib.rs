@@ -15,6 +15,8 @@ pub use bootstrap::SpineRegistration;
 pub use bootstrap::SpineRegistrationBuilder;
 pub use compiler::SpineCompiler;
 pub use compiler::SpineError;
+pub use config::ConfigError;
+pub use config::DEFAULT_CONFIG_TOML;
 pub use config::SpineConfig;
 pub use host::HostStep;
 pub use host::RuntimeError;
@@ -53,7 +55,15 @@ pub use model::TrimProjection;
 pub use model::TrimRequest;
 pub use model::TrimSlice;
 pub use reducer::TOOL_RESPONSE_TRIM_THRESHOLD_BYTES;
+pub use tools::SPINE_NAMESPACE;
+pub use tools::SpineTool;
 pub use tools::ToolCatalog;
+pub use tools::ToolDefinition;
+pub use tools::ToolValidation;
+pub use tools::ToolValidationError;
+pub use tools::ValidatedTransition;
+pub use tools::success_carrier;
+pub use tools::validate_tool;
 
 #[cfg(test)]
 mod tests;

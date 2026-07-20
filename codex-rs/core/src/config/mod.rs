@@ -119,6 +119,9 @@ use rmcp::model::FormElicitationCapability;
 use rmcp::model::UrlElicitationCapability;
 use serde::Deserialize;
 use serde::Serialize;
+use spine_core::SpineConfig;
+use spine_core::SpineRegistration;
+use spine_core::ToolCatalog;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -1049,6 +1052,15 @@ pub struct Config {
 
     /// Centralized feature flags; source of truth for feature gating.
     pub features: ManagedFeatures,
+
+    /// Validated host-neutral Spine SDK configuration.
+    pub spine_config: SpineConfig,
+
+    /// Feature registration used to initialize Spine SDK sessions.
+    pub spine_registration: SpineRegistration,
+
+    /// Model-visible Spine tools derived from the SDK configuration.
+    pub spine_tools: ToolCatalog,
 
     /// When `true`, suppress warnings about unstable (under development) features.
     pub suppress_unstable_features_warning: bool,
@@ -2758,6 +2770,29 @@ fn resolve_terminal_resize_reflow_config(config_toml: &ConfigToml) -> TerminalRe
     }
 }
 
+fn load_spine_config(
+    path: Option<&codex_utils_absolute_path::AbsolutePathBuf>,
+) -> std::io::Result<SpineConfig> {
+    let source = match path {
+        Some(path) => std::fs::read_to_string(path).map_err(|error| {
+            std::io::Error::new(
+                error.kind(),
+                format!(
+                    "failed to read spine_config_file {}: {error}",
+                    path.display()
+                ),
+            )
+        })?,
+        None => spine_core::DEFAULT_CONFIG_TOML.to_string(),
+    };
+    SpineConfig::parse_toml(&source).map_err(|error| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("invalid Spine SDK configuration: {error}"),
+        )
+    })
+}
+
 fn resolve_optional_prompt_text(
     configured: Option<&Option<String>>,
     default: Option<String>,
@@ -3105,6 +3140,22 @@ impl Config {
             feature_requirements,
             &mut startup_warnings,
         )?;
+        let spine_config = load_spine_config(cfg.spine_config_file.as_ref())?;
+        let mut spine_registration = SpineRegistration::builder();
+        if features.enabled(Feature::SpineJit) {
+            spine_registration = spine_registration.enable(spine_core::Feature::Jit);
+        }
+        if features.enabled(Feature::SpineTrim) {
+            spine_registration = spine_registration.enable(spine_core::Feature::Trim);
+        }
+        if features.enabled(Feature::SpineSpawn) {
+            spine_registration = spine_registration.enable(spine_core::Feature::Spawn);
+        }
+        let spine_registration = spine_registration
+            .build()
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
+        let spine_tools = ToolCatalog::new(&spine_config, &spine_registration)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
         let respect_system_proxy = features.enabled(Feature::RespectSystemProxy);
         let enable_network_proxy = features.enabled(Feature::NetworkProxy);
         let configured_windows_sandbox_mode = resolve_windows_sandbox_mode(&cfg);
@@ -3991,6 +4042,9 @@ impl Config {
             rollout_budget,
             current_time_reminder,
             features,
+            spine_config,
+            spine_registration,
+            spine_tools,
             suppress_unstable_features_warning: cfg
                 .suppress_unstable_features_warning
                 .unwrap_or(false),

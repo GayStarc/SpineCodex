@@ -119,7 +119,7 @@ impl<H: SpineHost> SpineRuntime<H> {
         registration: SpineRegistration,
         host: H,
     ) -> Result<Self, InitError> {
-        let tools = ToolCatalog::from_registration(&registration);
+        let tools = ToolCatalog::from_registration(&config, &registration);
         let compiler = SpineCompiler::new(config, registration)?;
         let active = !compiler.registration().is_empty();
         let frontier = active.then(|| host.initial_frontier());

@@ -29,6 +29,8 @@ mod shell;
 pub(crate) mod shell_spec;
 mod sleep;
 pub(crate) mod spine;
+pub(crate) mod spine_sdk_spec;
+#[cfg(test)]
 pub(crate) mod spine_spec;
 mod test_sync;
 pub(crate) mod test_sync_spec;
