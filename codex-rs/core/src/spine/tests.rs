@@ -1461,6 +1461,92 @@ fn adapter_keeps_leading_assistant_and_multi_call_group_together() {
     assert_eq!(projection.context.len(), 6);
 }
 
+fn closed_tool_group_boundaries(rollout: &[RolloutItem]) -> Vec<(RawBoundary, RawBoundary)> {
+    let effective = effective_rollout(rollout);
+    let mut boundaries = Vec::new();
+    let mut index = 0;
+    while index < effective.len() {
+        let Some((group, consumed)) = completed_tool_group(&effective, index, true) else {
+            index += 1;
+            continue;
+        };
+        if group.calls.iter().all(|call| call.outcome.is_some()) {
+            boundaries.push((group.start, group.end));
+            index += consumed;
+        } else {
+            // A trailing request without every matching output remains ordinary pending
+            // material. It must not be emitted to the reducer and retracted later.
+            index += 1;
+        }
+    }
+    boundaries
+}
+
+#[test]
+fn append_prefixes_reconstruct_closed_group_frontier_without_retraction() {
+    let rollout = vec![
+        message("assistant", "inspect first"),
+        call("shell", "shell", r#"{"cmd":"pwd"}"#),
+        call("open", "spine.open", r#"{"summary":"task"}"#),
+        output("shell", Some(true), "workdir"),
+        output("open", Some(true), "Spine open accepted."),
+        message("user", "continue"),
+    ];
+
+    let mut emitted = Vec::new();
+    for prefix_len in 1..=rollout.len() {
+        let available = closed_tool_group_boundaries(&rollout[..prefix_len]);
+        assert!(available.starts_with(&emitted));
+        emitted = available;
+    }
+
+    assert_eq!(
+        emitted,
+        vec![(RawBoundary(0), RawBoundary(4))],
+        "the complete response group must be emitted once after its last output"
+    );
+}
+
+#[test]
+fn separate_outputs_and_persisted_roundtrip_preserve_group_frontier() {
+    let rollout = vec![
+        call("first", "shell", r#"{"cmd":"one"}"#),
+        call("second", "shell", r#"{"cmd":"two"}"#),
+        output("first", Some(true), "one"),
+        output("second", Some(true), "two"),
+    ];
+    let persisted = serde_json::to_string(&rollout).expect("serialize rollout");
+    let restored: Vec<RolloutItem> = serde_json::from_str(&persisted).expect("restore rollout");
+
+    assert!(closed_tool_group_boundaries(&rollout[..3]).is_empty());
+    assert_eq!(
+        closed_tool_group_boundaries(&rollout),
+        vec![(RawBoundary(0), RawBoundary(3))]
+    );
+    assert_eq!(
+        closed_tool_group_boundaries(&restored),
+        closed_tool_group_boundaries(&rollout)
+    );
+    for item in &restored[2..] {
+        let RolloutItem::ResponseItem(ResponseItem::FunctionCallOutput { output, .. }) = item
+        else {
+            panic!("expected restored function output");
+        };
+        assert_eq!(output.success, None);
+    }
+}
+
+#[test]
+fn an_end_of_prefix_with_missing_output_stays_ordinary_and_never_guesses_control() {
+    let rollout = vec![
+        call("open", "spine.open", r#"{"summary":"task"}"#),
+        message("user", "a later native item"),
+    ];
+
+    assert!(closed_tool_group_boundaries(&rollout).is_empty());
+    assert_eq!(derive_from_rollout(&rollout).spine.cursor.to_string(), "1");
+}
+
 #[test]
 fn failed_and_incomplete_control_outputs_do_not_transition() {
     let failed = vec![
