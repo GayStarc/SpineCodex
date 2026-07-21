@@ -177,7 +177,21 @@ impl SessionConfiguration {
     }
 
     pub(crate) fn spine_sdk_config(&self) -> spine_core::SpineConfig {
-        self.original_config_do_not_use.spine_config.clone()
+        let mut features = Vec::new();
+        if self.spine_jit_enabled() {
+            features.push(spine_core::Feature::Jit);
+        }
+        if self.spine_trim_enabled() {
+            features.push(spine_core::Feature::Trim);
+        }
+        if self.spine_spawn_enabled() {
+            features.push(spine_core::Feature::Spawn);
+        }
+        self.original_config_do_not_use
+            .spine_config
+            .clone()
+            .with_features(features)
+            .expect("validated session Spine features must remain valid")
     }
 
     pub(super) fn cwd(&self) -> &AbsolutePathBuf {

@@ -251,6 +251,10 @@ impl<H: SpineHost> SpineRuntime<H> {
         &self.host
     }
 
+    pub fn frontier(&self) -> Option<&H::Frontier> {
+        self.frontier.as_ref()
+    }
+
     pub fn tools(&self) -> &ToolCatalog {
         &self.tools
     }

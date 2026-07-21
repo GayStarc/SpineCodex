@@ -39,9 +39,7 @@ pub(crate) fn selected_inputs(rollout: &[RolloutItem]) -> Vec<CodexSpineInput> {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct CodexSpineHost {
     pub(crate) jit_enabled: bool,
-    pub(crate) trim_enabled: bool,
     pub(crate) spawn_enabled: bool,
-    pub(crate) trim_threshold_bytes: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -113,29 +111,27 @@ impl SpineHost for CodexSpineHost {
 impl CodexSpineHost {
     pub(crate) fn project_context(
         &self,
-        rollout: &[RolloutItem],
+        frontier: &CodexSpineFrontier,
         base: &ContextManager,
         update: &RuntimeProjection,
     ) -> Result<ContextManager, CodexSpineHostError> {
-        let effective = effective_rollout(rollout);
-        let trim = self.trim_enabled.then(|| {
-            let events = super::stable_lex_rollout(&effective, self.spawn_enabled);
-            spine_core::TrimProjection::derive_with_threshold(
-                &events.events,
-                self.trim_threshold_bytes,
-            )
-        });
+        let effective = frontier
+            .source
+            .iter()
+            .map(|input| (input.ordinal, &input.item))
+            .collect::<Vec<_>>();
+        let trim = update.trim_projection();
         let projected = if self.jit_enabled {
             materialize_context(
                 &update.spine().visible_context,
                 &effective,
-                trim.as_ref(),
+                trim,
                 Some(base),
                 self.spawn_enabled,
             )
             .map_err(CodexSpineHostError)?
         } else {
-            materialize_trim_only_context(&effective, trim.as_ref(), Some(base))
+            materialize_trim_only_context(&effective, trim, Some(base))
                 .map_err(CodexSpineHostError)?
         };
         let mut projected = projected;
@@ -149,7 +145,7 @@ impl CodexSpineHost {
             projected.push(project_trim_item(
                 raw,
                 usize::try_from(ordinal.0).unwrap_or(usize::MAX),
-                trim.as_ref(),
+                trim,
             ));
         }
         Ok(base.clone().with_projected_items(projected))

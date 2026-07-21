@@ -99,11 +99,7 @@ impl SessionState {
         let spine_runtime = spine_rollout.as_ref().map(|_| {
             let host = CodexSpineHost {
                 jit_enabled: session_configuration.spine_jit_enabled(),
-                trim_enabled: session_configuration.spine_trim_enabled(),
                 spawn_enabled: session_configuration.spine_spawn_enabled(),
-                trim_threshold_bytes: session_configuration
-                    .spine_sdk_config()
-                    .trim_threshold_bytes(),
             };
             let runtime = SpineRuntime::new(session_configuration.spine_sdk_config(), host)
                 .expect("validated session Spine configuration must initialize");
@@ -366,7 +362,14 @@ impl SessionState {
                     spine.projected_history = spine
                         .runtime
                         .host()
-                        .project_context(rollout, &self.history, output.runtime_projection())
+                        .project_context(
+                            spine
+                                .runtime
+                                .frontier()
+                                .expect("active Spine runtime must expose its frontier"),
+                            &self.history,
+                            output.runtime_projection(),
+                        )
                         .expect("selected rollout replacement must project deterministically");
                     return;
                 }
@@ -386,7 +389,14 @@ impl SessionState {
                     spine.projected_history = spine
                         .runtime
                         .host()
-                        .project_context(rollout, &self.history, output.runtime_projection())
+                        .project_context(
+                            spine
+                                .runtime
+                                .frontier()
+                                .expect("active Spine runtime must expose its frontier"),
+                            &self.history,
+                            output.runtime_projection(),
+                        )
                         .expect("native rollout append must project deterministically");
                 }
             }
@@ -406,7 +416,14 @@ impl SessionState {
                 spine.projected_history = spine
                     .runtime
                     .host()
-                    .project_context(rollout, &self.history, output.runtime_projection())
+                    .project_context(
+                        spine
+                            .runtime
+                            .frontier()
+                            .expect("active Spine runtime must expose its frontier"),
+                        &self.history,
+                        output.runtime_projection(),
+                    )
                     .expect("native rollout replacement must project deterministically");
             }
         }
