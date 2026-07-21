@@ -1047,6 +1047,87 @@ async fn spine_projection_reuses_host_truncated_tool_output() {
 }
 
 #[tokio::test]
+async fn spine_materialization_updates_trimmed_boundaries_and_rebuilds_after_compact() {
+    let mut session_configuration = make_session_configuration_for_tests().await;
+    session_configuration.enable_spine_jit_for_test();
+    session_configuration.enable_spine_trim_for_test();
+    let mut state = SessionState::new(session_configuration);
+    let call = ResponseItem::FunctionCall {
+        id: None,
+        name: "shell".to_string(),
+        namespace: None,
+        arguments: r#"{"cmd":"cat"}"#.to_string(),
+        call_id: "shell".to_string(),
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let output = ResponseItem::FunctionCallOutput {
+        id: None,
+        call_id: "shell".to_string(),
+        output: FunctionCallOutputPayload::from_text(trim_candidate_text("source")),
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let trim_call = ResponseItem::FunctionCall {
+        id: None,
+        name: "trim".to_string(),
+        namespace: Some("spine".to_string()),
+        arguments: r#"{"TRIM_ID":"trim_1","op":"snip"}"#.to_string(),
+        call_id: "trim".to_string(),
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let trim_output = ResponseItem::FunctionCallOutput {
+        id: None,
+        call_id: "trim".to_string(),
+        output: FunctionCallOutputPayload::from_text("Spine trim accepted.".to_string()),
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let rollout = vec![
+        RolloutItem::ResponseItem(call.clone()),
+        RolloutItem::ResponseItem(output.clone()),
+        RolloutItem::ResponseItem(trim_call.clone()),
+        RolloutItem::ResponseItem(trim_output.clone()),
+    ];
+    state.record_items([&call, &output], TruncationPolicy::Tokens(10_000));
+    state.append_spine_rollout_items(&rollout[..2]);
+    let tagged = state.clone_history();
+    let ResponseItem::FunctionCallOutput { output, .. } = &tagged.raw_items()[1] else {
+        panic!("expected tagged shell output");
+    };
+    assert!(
+        output
+            .body
+            .to_text()
+            .expect("tagged output should be text")
+            .starts_with("[TRIM_ID: trim_1]")
+    );
+
+    state.record_items([&trim_call, &trim_output], TruncationPolicy::Tokens(10_000));
+    state.append_spine_rollout_items(&rollout[2..]);
+    let snipped = state.clone_history();
+    let ResponseItem::FunctionCallOutput { output, .. } = &snipped.raw_items()[1] else {
+        panic!("expected snipped shell output");
+    };
+    assert_eq!(
+        output.body.to_text().as_deref(),
+        Some(crate::spine::TOOL_RESULT_CLEARED_MESSAGE)
+    );
+
+    let replacement = response_message("user", "compacted context");
+    state.replace_history(vec![replacement.clone()], None);
+    state.append_spine_rollout_items(&[RolloutItem::Compacted(CompactedItem {
+        message: "compact memory".to_string(),
+        replacement_history: Some(vec![replacement.clone()]),
+        window_number: None,
+        first_window_id: None,
+        previous_window_id: None,
+        window_id: None,
+    })]);
+    assert_eq!(state.clone_history().raw_items(), &[replacement]);
+
+    state.replace_spine_rollout(&rollout);
+    assert_eq!(state.clone_history().raw_items(), snipped.raw_items());
+}
+
+#[tokio::test]
 async fn spawn_context_install_is_atomic_and_independently_feature_gated() {
     let mut enabled = make_session_configuration_for_tests().await;
     enabled.enable_spine_jit_for_test();

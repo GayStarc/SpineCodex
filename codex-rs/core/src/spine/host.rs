@@ -4,13 +4,17 @@ use super::materialize_trim_only_context;
 use super::project_trim_item;
 use super::response_item_at;
 use crate::context_manager::ContextManager;
+use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::RolloutItem;
+use spine_core::ContextItem;
 use spine_core::HostStep;
+use spine_core::MemorySlot;
 use spine_core::NativeItemRef;
 use spine_core::RawBoundary;
 use spine_core::RuntimeProjection;
 use spine_core::SpineHost;
+use spine_core::SpineOutput;
 use spine_core::TokenUsageSample;
 use std::fmt;
 
@@ -24,6 +28,52 @@ pub(crate) struct CodexSpineFrontier {
 pub(crate) struct CodexSpineInput {
     pub(crate) ordinal: usize,
     pub(crate) item: RolloutItem,
+}
+
+#[derive(Debug)]
+pub(crate) struct CodexSpineMaterialization {
+    ledger: MaterializationLedger,
+    source_len: usize,
+    history_version: u64,
+}
+
+#[derive(Debug)]
+enum MaterializationLedger {
+    Jit {
+        entries: Vec<SemanticMaterialization>,
+        pending: Vec<ResponseItem>,
+    },
+    TrimOnly {
+        entries: Vec<NativeMaterialization>,
+    },
+}
+
+#[derive(Debug)]
+struct SemanticMaterialization {
+    item: ContextItem,
+    rendered: Vec<ResponseItem>,
+}
+
+#[derive(Debug)]
+struct NativeMaterialization {
+    input: CodexSpineInput,
+    rendered: Vec<ResponseItem>,
+}
+
+impl CodexSpineMaterialization {
+    pub(crate) fn projected_items(&self) -> Vec<ResponseItem> {
+        match &self.ledger {
+            MaterializationLedger::Jit { entries, pending } => entries
+                .iter()
+                .flat_map(|entry| entry.rendered.iter().cloned())
+                .chain(pending.iter().cloned())
+                .collect(),
+            MaterializationLedger::TrimOnly { entries } => entries
+                .iter()
+                .flat_map(|entry| entry.rendered.iter().cloned())
+                .collect(),
+        }
+    }
 }
 
 pub(crate) fn selected_inputs(rollout: &[RolloutItem]) -> Vec<CodexSpineInput> {
@@ -109,45 +159,233 @@ impl SpineHost for CodexSpineHost {
 }
 
 impl CodexSpineHost {
-    pub(crate) fn project_context(
-        &self,
+    pub(crate) fn rebuild_materialization(
+        self,
         frontier: &CodexSpineFrontier,
         base: &ContextManager,
         update: &RuntimeProjection,
-    ) -> Result<ContextManager, CodexSpineHostError> {
+    ) -> Result<CodexSpineMaterialization, CodexSpineHostError> {
         let effective = frontier
             .source
             .iter()
             .map(|input| (input.ordinal, &input.item))
             .collect::<Vec<_>>();
         let trim = update.trim_projection();
-        let projected = if self.jit_enabled {
-            materialize_context(
-                &update.spine().visible_context,
-                &effective,
-                trim,
-                Some(base),
-                self.spawn_enabled,
-            )
-            .map_err(CodexSpineHostError)?
+        let ledger = if self.jit_enabled {
+            let entries = update
+                .spine()
+                .visible_context
+                .iter()
+                .map(|item| {
+                    self.render_semantic_item(item, &effective, base, update)
+                        .map(|rendered| SemanticMaterialization {
+                            item: item.clone(),
+                            rendered,
+                        })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            MaterializationLedger::Jit {
+                entries,
+                pending: Self::render_pending(&effective, base, update)?,
+            }
         } else {
-            materialize_trim_only_context(&effective, trim, Some(base))
-                .map_err(CodexSpineHostError)?
+            let start = frontier
+                .source
+                .iter()
+                .rposition(|input| matches!(input.item, RolloutItem::Compacted(_)))
+                .unwrap_or(0);
+            let entries = frontier.source[start..]
+                .iter()
+                .map(|input| {
+                    Self::render_native_input(input, base, trim).map(|rendered| {
+                        NativeMaterialization {
+                            input: input.clone(),
+                            rendered,
+                        }
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            MaterializationLedger::TrimOnly { entries }
         };
-        let mut projected = projected;
+
+        Ok(CodexSpineMaterialization {
+            ledger,
+            source_len: frontier.source.len(),
+            history_version: base.history_version(),
+        })
+    }
+
+    pub(crate) fn update_materialization(
+        self,
+        materialization: &mut CodexSpineMaterialization,
+        frontier: &CodexSpineFrontier,
+        base: &ContextManager,
+        output: &SpineOutput,
+    ) -> Result<(), CodexSpineHostError> {
+        if materialization.history_version != base.history_version() {
+            *materialization =
+                self.rebuild_materialization(frontier, base, output.runtime_projection())?;
+            return Ok(());
+        }
+
+        let effective = frontier
+            .source
+            .iter()
+            .map(|input| (input.ordinal, &input.item))
+            .collect::<Vec<_>>();
+        match &mut materialization.ledger {
+            MaterializationLedger::Jit { entries, pending } => {
+                let edit = &output.delta().context_edit;
+                let end = edit.start.saturating_add(edit.delete);
+                if end > entries.len() {
+                    return Err(CodexSpineHostError(format!(
+                        "context edit {}..{end} exceeds materialization length {}",
+                        edit.start,
+                        entries.len()
+                    )));
+                }
+                let inserts = edit
+                    .insert
+                    .iter()
+                    .map(|item| {
+                        self.render_semantic_item(
+                            item,
+                            &effective,
+                            base,
+                            output.runtime_projection(),
+                        )
+                        .map(|rendered| SemanticMaterialization {
+                            item: item.clone(),
+                            rendered,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                entries.splice(edit.start..end, inserts);
+
+                let expected = &output.runtime_projection().spine().visible_context;
+                if !entries.iter().map(|entry| &entry.item).eq(expected.iter()) {
+                    return Err(CodexSpineHostError(
+                        "context edit did not reproduce the runtime projection".to_string(),
+                    ));
+                }
+
+                for entry in entries.iter_mut().filter(|entry| {
+                    output
+                        .runtime_projection()
+                        .trim_changed_boundaries()
+                        .iter()
+                        .any(|boundary| item_references_boundary(&entry.item, *boundary))
+                }) {
+                    entry.rendered = self.render_semantic_item(
+                        &entry.item,
+                        &effective,
+                        base,
+                        output.runtime_projection(),
+                    )?;
+                }
+                *pending = Self::render_pending(&effective, base, output.runtime_projection())?;
+            }
+            MaterializationLedger::TrimOnly { entries } => {
+                if materialization.source_len > frontier.source.len() {
+                    *materialization =
+                        self.rebuild_materialization(frontier, base, output.runtime_projection())?;
+                    return Ok(());
+                }
+                for input in &frontier.source[materialization.source_len..] {
+                    if matches!(input.item, RolloutItem::Compacted(_)) {
+                        entries.clear();
+                    }
+                    entries.push(NativeMaterialization {
+                        input: input.clone(),
+                        rendered: Self::render_native_input(
+                            input,
+                            base,
+                            output.runtime_projection().trim_projection(),
+                        )?,
+                    });
+                }
+                for entry in entries.iter_mut().filter(|entry| {
+                    output
+                        .runtime_projection()
+                        .trim_changed_boundaries()
+                        .iter()
+                        .any(|boundary| entry.input.ordinal as u64 == boundary.0)
+                }) {
+                    entry.rendered = Self::render_native_input(
+                        &entry.input,
+                        base,
+                        output.runtime_projection().trim_projection(),
+                    )?;
+                }
+            }
+        }
+        materialization.source_len = frontier.source.len();
+        materialization.history_version = base.history_version();
+        Ok(())
+    }
+
+    fn render_semantic_item(
+        self,
+        item: &ContextItem,
+        effective: &[(usize, &RolloutItem)],
+        base: &ContextManager,
+        update: &RuntimeProjection,
+    ) -> Result<Vec<ResponseItem>, CodexSpineHostError> {
+        materialize_context(
+            std::slice::from_ref(item),
+            effective,
+            update.trim_projection(),
+            Some(base),
+            self.spawn_enabled,
+        )
+        .map_err(CodexSpineHostError)
+    }
+
+    fn render_pending(
+        effective: &[(usize, &RolloutItem)],
+        base: &ContextManager,
+        update: &RuntimeProjection,
+    ) -> Result<Vec<ResponseItem>, CodexSpineHostError> {
+        let mut pending = Vec::new();
         for source in update.pending() {
             let NativeItemRef::Rollout { ordinal } = source else {
                 continue;
             };
-            let raw = response_item_at(&effective, *ordinal, Some(base)).ok_or_else(|| {
+            let raw = response_item_at(effective, *ordinal, Some(base)).ok_or_else(|| {
                 CodexSpineHostError(format!("missing rollout source {}", ordinal.0))
             })?;
-            projected.push(project_trim_item(
+            pending.push(project_trim_item(
                 raw,
                 usize::try_from(ordinal.0).unwrap_or(usize::MAX),
-                trim,
+                update.trim_projection(),
             ));
         }
-        Ok(base.clone().with_projected_items(projected))
+        Ok(pending)
+    }
+
+    fn render_native_input(
+        input: &CodexSpineInput,
+        base: &ContextManager,
+        trim: Option<&spine_core::TrimProjection>,
+    ) -> Result<Vec<ResponseItem>, CodexSpineHostError> {
+        materialize_trim_only_context(&[(input.ordinal, &input.item)], trim, Some(base))
+            .map_err(CodexSpineHostError)
+    }
+}
+
+fn item_references_boundary(item: &ContextItem, boundary: RawBoundary) -> bool {
+    match item {
+        ContextItem::Message { message, .. } => message.boundary == boundary,
+        ContextItem::ToolCall(group) => group.start.0 <= boundary.0 && boundary.0 <= group.end.0,
+        ContextItem::MemorySlot(MemorySlot::User { message, .. }) => message.boundary == boundary,
+        ContextItem::Native {
+            source: NativeItemRef::Rollout { ordinal },
+        } => *ordinal == boundary,
+        ContextItem::SyntheticNode { .. }
+        | ContextItem::MemorySlot(MemorySlot::Summary { .. })
+        | ContextItem::MemorySlot(MemorySlot::SpawnEvidence { .. })
+        | ContextItem::Native {
+            source: NativeItemRef::CompactReplacement { .. },
+        } => false,
     }
 }

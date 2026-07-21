@@ -31,11 +31,12 @@ use spine_core::SpineRuntime;
 
 use crate::spine::host::CodexSpineHost;
 use crate::spine::host::CodexSpineInput;
+use crate::spine::host::CodexSpineMaterialization;
 use crate::spine::host::selected_inputs;
 
 struct SessionSpineRuntime {
     runtime: SpineRuntime<CodexSpineHost>,
-    projected_history: ContextManager,
+    materialization: CodexSpineMaterialization,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,9 +104,19 @@ impl SessionState {
             };
             let runtime = SpineRuntime::new(session_configuration.spine_sdk_config(), host)
                 .expect("validated session Spine configuration must initialize");
+            let materialization = runtime
+                .host()
+                .rebuild_materialization(
+                    runtime
+                        .frontier()
+                        .expect("active Spine runtime must expose its frontier"),
+                    &history,
+                    runtime.runtime_projection(),
+                )
+                .expect("an empty Spine runtime must materialize deterministically");
             SessionSpineRuntime {
                 runtime,
-                projected_history: history.clone(),
+                materialization,
             }
         });
         Self {
@@ -202,7 +213,10 @@ impl SessionState {
 
     pub(crate) fn clone_history(&self) -> ContextManager {
         if let Some(runtime) = &self.spine_runtime {
-            return runtime.projected_history.clone();
+            return self
+                .history
+                .clone()
+                .with_projected_items(runtime.materialization.projected_items());
         }
         self.history.clone()
     }
@@ -359,10 +373,10 @@ impl SessionState {
                         .runtime
                         .replay(inputs.iter())
                         .expect("selected rollout replacement must replay deterministically");
-                    spine.projected_history = spine
+                    spine.materialization = spine
                         .runtime
                         .host()
-                        .project_context(
+                        .rebuild_materialization(
                             spine
                                 .runtime
                                 .frontier()
@@ -386,18 +400,19 @@ impl SessionState {
                         .runtime
                         .eat(&input)
                         .expect("native rollout append must produce a valid Spine projection");
-                    spine.projected_history = spine
+                    spine
                         .runtime
                         .host()
-                        .project_context(
+                        .update_materialization(
+                            &mut spine.materialization,
                             spine
                                 .runtime
                                 .frontier()
                                 .expect("active Spine runtime must expose its frontier"),
                             &self.history,
-                            output.runtime_projection(),
+                            &output,
                         )
-                        .expect("native rollout append must project deterministically");
+                        .expect("native rollout append must materialize deterministically");
                 }
             }
         }
@@ -413,10 +428,10 @@ impl SessionState {
                     .runtime
                     .replay(inputs.iter())
                     .expect("native rollout replacement must replay deterministically");
-                spine.projected_history = spine
+                spine.materialization = spine
                     .runtime
                     .host()
-                    .project_context(
+                    .rebuild_materialization(
                         spine
                             .runtime
                             .frontier()
