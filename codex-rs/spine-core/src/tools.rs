@@ -8,6 +8,7 @@ use serde_json::Value;
 use std::fmt;
 
 pub const SPINE_NAMESPACE: &str = "spine";
+pub const SPINE_NAMESPACE_DESCRIPTION: &str = "Use Spine to shape the work.";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SpineTool {

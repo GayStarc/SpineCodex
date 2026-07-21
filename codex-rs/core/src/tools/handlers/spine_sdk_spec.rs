@@ -7,18 +7,18 @@ use codex_tools::parse_tool_input_schema_without_compaction;
 use spine_core::ToolDefinition;
 
 pub(crate) const SPINE_NAMESPACE: &str = spine_core::SPINE_NAMESPACE;
-pub(crate) const SPINE_OPEN: &str = "open";
-pub(crate) const SPINE_CLOSE: &str = "close";
-pub(crate) const SPINE_NEXT: &str = "next";
-pub(crate) const SPINE_SPAWN: &str = "spawn";
-pub(crate) const SPINE_TRIM: &str = "trim";
+pub(crate) const SPINE_OPEN: &str = spine_core::SpineTool::Open.name();
+pub(crate) const SPINE_CLOSE: &str = spine_core::SpineTool::Close.name();
+pub(crate) const SPINE_NEXT: &str = spine_core::SpineTool::Next.name();
+pub(crate) const SPINE_SPAWN: &str = spine_core::SpineTool::Spawn.name();
+pub(crate) const SPINE_TRIM: &str = spine_core::SpineTool::Trim.name();
 
 pub(crate) fn create_spine_tool(definition: &ToolDefinition) -> ToolSpec {
     let parameters: JsonSchema = parse_tool_input_schema_without_compaction(&definition.parameters)
         .expect("Spine SDK emits valid JSON schemas");
     ToolSpec::Namespace(ResponsesApiNamespace {
         name: SPINE_NAMESPACE.to_string(),
-        description: "Use Spine to shape the work.".to_string(),
+        description: spine_core::SPINE_NAMESPACE_DESCRIPTION.to_string(),
         tools: vec![ResponsesApiNamespaceTool::Function(ResponsesApiTool {
             name: definition.tool.name().to_string(),
             description: definition.description.clone(),

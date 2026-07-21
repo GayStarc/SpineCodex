@@ -210,19 +210,7 @@ impl SessionState {
         if let Some(runtime) = &self.spine_runtime {
             return runtime.projected_history.clone();
         }
-        let history = self.history.clone();
-        let Some(rollout) = self.spine_rollout.as_deref() else {
-            return history;
-        };
-        let projected = crate::spine::derive_from_rollout_with_host_history(
-            rollout,
-            self.session_configuration.spine_jit_enabled(),
-            self.session_configuration.spine_trim_enabled(),
-            self.session_configuration.spine_spawn_enabled(),
-            &history,
-        )
-        .context;
-        history.with_projected_items(projected)
+        self.history.clone()
     }
 
     pub(crate) fn spine_tree_update(
@@ -232,16 +220,10 @@ impl SessionState {
             return None;
         }
         let rollout = self.spine_rollout.as_deref()?;
-        let projection = crate::spine::derive_from_rollout_with_features(
-            rollout,
-            true,
-            false,
-            self.session_configuration.spine_spawn_enabled(),
-        )
-        .spine;
+        let projection = self.spine_runtime.as_ref()?.runtime.projection();
         let settled_spawn_call_ids = projection.settled_spawn_call_ids.clone();
         let samples = crate::spine::pressure::token_usage_samples(rollout);
-        let snapshot = spine_core::tree_snapshot(&projection, &samples);
+        let snapshot = spine_core::tree_snapshot(projection, &samples);
         let snapshot_seq = snapshot.last_boundary.map_or(0, |boundary| boundary.0);
         let active_node_id = snapshot.cursor.to_string();
         let nodes = snapshot
@@ -329,9 +311,9 @@ impl SessionState {
                 .max(0)
         });
         Some(crate::spine::status::prompt_overlay(
+            self.spine_runtime.as_ref()?.runtime.projection(),
             rollout,
             context_left_tokens,
-            self.session_configuration.spine_spawn_enabled(),
         ))
     }
 
@@ -427,10 +409,10 @@ impl SessionState {
             return Err("Spine is not enabled for this session".to_string());
         }
         if kind.requires_task() {
-            let Some(rollout) = self.spine_rollout.as_deref() else {
+            let Some(runtime) = self.spine_runtime.as_ref() else {
                 return Err("Spine is not enabled for this session".to_string());
             };
-            let projection = crate::spine::derive_from_rollout(rollout).spine;
+            let projection = runtime.runtime.projection();
             let cursor = projection
                 .nodes
                 .iter()

@@ -2,27 +2,17 @@ use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::num_format::format_si_suffix;
 use codex_protocol::protocol::RolloutItem;
+use spine_core::SpineProjection;
 use spine_core::StatusSignal;
 
-use super::effective_rollout;
 use super::pressure;
 
 pub(crate) fn prompt_overlay(
+    projection: &SpineProjection,
     rollout: &[RolloutItem],
     context_left_tokens: Option<i64>,
-    spawn_enabled: bool,
 ) -> ResponseItem {
-    let effective = effective_rollout(rollout);
-    let projection = super::projection_from_effective_rollout(
-        &effective,
-        rollout,
-        true,
-        false,
-        spawn_enabled,
-        None,
-    )
-    .spine;
-    let pressures = pressure::project_from_effective(&effective, &projection);
+    let pressures = pressure::project(rollout, projection);
     let sdk_pressures = pressures
         .into_iter()
         .map(|(node_id, pressure)| {
@@ -47,7 +37,7 @@ pub(crate) fn prompt_overlay(
             )
         })
         .collect();
-    let signal = spine_core::status_signal(&projection, &sdk_pressures, context_left_tokens);
+    let signal = spine_core::status_signal(projection, &sdk_pressures, context_left_tokens);
     developer_prompt_overlay_item(format_spine_status_prompt_overlay(&signal))
 }
 

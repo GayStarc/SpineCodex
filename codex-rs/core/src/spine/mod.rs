@@ -8,6 +8,7 @@ use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::RolloutItem;
 use spine_core::ContextItem;
+#[cfg(test)]
 use spine_core::Feature;
 use spine_core::MemorySlot;
 use spine_core::Message;
@@ -16,9 +17,12 @@ use spine_core::NativeItemRef;
 use spine_core::NodeStatus;
 use spine_core::RawBoundary;
 use spine_core::RolloutEvent;
+#[cfg(test)]
 use spine_core::SpineCompiler;
+#[cfg(test)]
 use spine_core::SpineConfig;
 use spine_core::SpineProjection;
+#[cfg(test)]
 use spine_core::SpineRegistration;
 use spine_core::ToolCallGroup;
 use spine_core::ToolOutcome;
@@ -52,6 +56,7 @@ impl SpineControlKind {
     }
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct CodexSpineProjection {
     pub(crate) spine: SpineProjection,
@@ -98,10 +103,12 @@ pub(crate) fn user_message_projection_entries(
         .collect()
 }
 
+#[cfg(test)]
 pub(crate) fn derive_from_rollout(rollout: &[RolloutItem]) -> CodexSpineProjection {
     derive_from_rollout_with_features(rollout, true, false, true)
 }
 
+#[cfg(test)]
 pub(crate) fn derive_from_rollout_with_features(
     rollout: &[RolloutItem],
     jit_enabled: bool,
@@ -119,24 +126,7 @@ pub(crate) fn derive_from_rollout_with_features(
     )
 }
 
-pub(crate) fn derive_from_rollout_with_host_history(
-    rollout: &[RolloutItem],
-    jit_enabled: bool,
-    trim_enabled: bool,
-    spawn_enabled: bool,
-    host_history: &ContextManager,
-) -> CodexSpineProjection {
-    let effective = effective_rollout(rollout);
-    projection_from_effective_rollout(
-        &effective,
-        rollout,
-        jit_enabled,
-        trim_enabled,
-        spawn_enabled,
-        Some(host_history),
-    )
-}
-
+#[cfg(test)]
 fn projection_from_effective_rollout(
     effective: &[(usize, &RolloutItem)],
     rollout: &[RolloutItem],
@@ -164,6 +154,7 @@ fn projection_from_effective_rollout(
     CodexSpineProjection { spine, context }
 }
 
+#[cfg(test)]
 fn derive_spine_projection(events: &[RolloutEvent]) -> SpineProjection {
     let registration = SpineRegistration::builder()
         .enable(Feature::Jit)

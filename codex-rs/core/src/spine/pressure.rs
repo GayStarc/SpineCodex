@@ -22,7 +22,6 @@ pub(crate) enum NodeContextPressureProblem {
     CoordinateMismatch,
 }
 
-#[cfg(test)]
 pub(crate) fn project(
     rollout: &[RolloutItem],
     projection: &SpineProjection,

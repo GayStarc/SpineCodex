@@ -6,7 +6,6 @@ use crate::tools::context::ToolCallSource;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
 use crate::tools::context::boxed_tool_output;
-use crate::tools::handlers::parse_arguments;
 use crate::tools::handlers::spine_sdk_spec::SPINE_CLOSE;
 use crate::tools::handlers::spine_sdk_spec::SPINE_NAMESPACE;
 use crate::tools::handlers::spine_sdk_spec::SPINE_NEXT;
@@ -20,7 +19,6 @@ use codex_protocol::config_types::ModeKind;
 use codex_tools::ToolExposure;
 use codex_tools::ToolName;
 use codex_tools::ToolSpec;
-use serde::Deserialize;
 use spine_core::SpineTool;
 use spine_core::ToolCatalog;
 use spine_core::ToolDefinition;
@@ -94,52 +92,26 @@ impl SpineHandler {
     }
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct OpenArgs {
-    summary: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CloseArgs {
-    memory: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct NextArgs {
-    summary: String,
-    memory: String,
-}
-
-fn non_empty(value: String, name: &str) -> Result<String, FunctionCallError> {
-    let value = value.trim().to_string();
-    if value.is_empty() {
-        return Err(FunctionCallError::RespondToModel(format!(
-            "{name} requires a non-empty argument"
-        )));
-    }
-    Ok(value)
-}
-
 fn validate_arguments(kind: SpineControlKind, arguments: &str) -> Result<(), FunctionCallError> {
-    match kind {
-        SpineControlKind::Open => {
-            let args: OpenArgs = parse_arguments(arguments)?;
-            non_empty(args.summary, SPINE_OPEN)?;
-        }
-        SpineControlKind::Close => {
-            let args: CloseArgs = parse_arguments(arguments)?;
-            non_empty(args.memory, SPINE_CLOSE)?;
-        }
-        SpineControlKind::Next => {
-            let args: NextArgs = parse_arguments(arguments)?;
-            non_empty(args.summary, SPINE_NEXT)?;
-            non_empty(args.memory, SPINE_NEXT)?;
-        }
-    }
-    Ok(())
+    let tool = match kind {
+        SpineControlKind::Open => SpineTool::Open,
+        SpineControlKind::Close => SpineTool::Close,
+        SpineControlKind::Next => SpineTool::Next,
+    };
+    spine_core::validate_tool(tool, arguments)
+        .map(|_| ())
+        .map_err(|error| {
+            let message = match error {
+                spine_core::ToolValidationError::InvalidJson(error) => {
+                    format!("failed to parse function arguments: {error}")
+                }
+                spine_core::ToolValidationError::EmptyField(_) => {
+                    format!("{} requires a non-empty argument", tool.name())
+                }
+                error => error.to_string(),
+            };
+            FunctionCallError::RespondToModel(message)
+        })
 }
 
 impl ToolExecutor<ToolInvocation> for SpineHandler {
@@ -349,12 +321,6 @@ mod tests {
     }
 
     #[test]
-    fn trims_required_arguments() {
-        assert_eq!(non_empty(" task ".to_string(), SPINE_OPEN).unwrap(), "task");
-        assert!(non_empty(" \n".to_string(), SPINE_CLOSE).is_err());
-    }
-
-    #[test]
     fn validates_control_argument_matrix() {
         for (kind, arguments) in [
             (SpineControlKind::Open, r#"{"summary":"task"}"#),
@@ -379,6 +345,17 @@ mod tests {
         ] {
             assert!(validate_arguments(kind, arguments).is_err());
         }
+
+        assert!(matches!(
+            validate_arguments(SpineControlKind::Open, r#"{"summary":" "}"#),
+            Err(FunctionCallError::RespondToModel(message))
+                if message == "open requires a non-empty argument"
+        ));
+        assert!(matches!(
+            validate_arguments(SpineControlKind::Close, "not-json"),
+            Err(FunctionCallError::RespondToModel(message))
+                if message.starts_with("failed to parse function arguments:")
+        ));
     }
 
     #[test]

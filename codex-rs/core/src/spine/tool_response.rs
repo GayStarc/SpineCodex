@@ -7,6 +7,7 @@ use crate::tools::handlers::spine_sdk_spec::SPINE_OPEN;
 use crate::tools::handlers::spine_sdk_spec::SPINE_TRIM;
 use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::FunctionCallOutputPayload;
+use spine_core::SpineTool;
 use spine_core::ToolOutcome;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -71,6 +72,7 @@ impl SpineToolResponse {
         format!("{SPINE_NAMESPACE}.{}", self.tool_name())
     }
 
+    #[cfg(test)]
     fn tool_name(self) -> &'static str {
         match self {
             Self::Open => SPINE_OPEN,
@@ -80,12 +82,16 @@ impl SpineToolResponse {
         }
     }
 
-    pub(crate) fn success_carrier(self) -> String {
-        format!("Spine {} accepted.", self.tool_name())
-    }
-
-    pub(crate) fn is_success_carrier(self, body: &str) -> bool {
-        body == self.success_carrier()
+    fn success_carrier(self) -> String {
+        let tool = match self {
+            Self::Open => SpineTool::Open,
+            Self::Close => SpineTool::Close,
+            Self::Next => SpineTool::Next,
+            Self::Trim => SpineTool::Trim,
+        };
+        spine_core::success_carrier(tool)
+            .unwrap_or_else(|| unreachable!("control tools always have a success carrier"))
+            .to_string()
     }
 }
 

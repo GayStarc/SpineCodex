@@ -61,6 +61,7 @@ pub use status::{
     TreeSnapshot, context_pressures, status_signal, tree_snapshot,
 };
 pub use tools::SPINE_NAMESPACE;
+pub use tools::SPINE_NAMESPACE_DESCRIPTION;
 pub use tools::SpineTool;
 pub use tools::ToolCatalog;
 pub use tools::ToolDefinition;
