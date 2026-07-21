@@ -13,7 +13,6 @@ use std::fmt;
 
 pub trait SpineHost {
     type Input;
-    type Rollout: ?Sized;
     type Context: Clone;
     type Frontier;
     type Error: std::error::Error;
@@ -28,8 +27,8 @@ pub trait SpineHost {
 
     fn project_context(
         &self,
-        rollout: &Self::Rollout,
         base: &Self::Context,
+        frontier: &Self::Frontier,
         update: &RuntimeProjection,
     ) -> Result<Self::Context, Self::Error>;
 }
@@ -135,7 +134,6 @@ impl<H: SpineHost> SpineRuntime<H> {
     pub fn eat(
         &mut self,
         input: &H::Input,
-        rollout: &H::Rollout,
         base: &H::Context,
     ) -> Result<SpineOutput<H::Context>, RuntimeError<H::Error>> {
         if self.compiler.config_is_feature_off() {
@@ -180,7 +178,7 @@ impl<H: SpineHost> SpineRuntime<H> {
         };
         let context = self
             .host
-            .project_context(rollout, base, &runtime_projection)
+            .project_context(base, &step.frontier, &runtime_projection)
             .map_err(RuntimeError::Host)?;
 
         self.frontier = Some(step.frontier);
@@ -211,7 +209,6 @@ impl<H: SpineHost> SpineRuntime<H> {
     pub fn replay<'a, I>(
         &mut self,
         inputs: I,
-        rollout: &H::Rollout,
         base: &H::Context,
     ) -> Result<SpineOutput<H::Context>, RuntimeError<H::Error>>
     where
@@ -221,7 +218,7 @@ impl<H: SpineHost> SpineRuntime<H> {
         self.reset();
         let mut output = None;
         for input in inputs {
-            output = Some(self.eat(input, rollout, base)?);
+            output = Some(self.eat(input, base)?);
         }
         Ok(output.unwrap_or_else(|| self.output_with_context(base.clone())))
     }

@@ -29,7 +29,9 @@ use codex_protocol::protocol::TurnContextItem;
 use codex_utils_output_truncation::TruncationPolicy;
 use spine_core::SpineRuntime;
 
-use crate::spine::host::{CodexSpineHost, CodexSpineInput, selected_inputs};
+use crate::spine::host::CodexSpineHost;
+use crate::spine::host::CodexSpineInput;
+use crate::spine::host::selected_inputs;
 
 struct SessionSpineRuntime {
     runtime: SpineRuntime<CodexSpineHost>,
@@ -357,7 +359,7 @@ impl SessionState {
                     let inputs = selected_inputs(rollout);
                     let output = spine
                         .runtime
-                        .replay(inputs.iter(), rollout.as_slice(), &self.history)
+                        .replay(inputs.iter(), &self.history)
                         .expect("selected rollout replacement must replay deterministically");
                     spine.projected_history = output.into_context();
                     return;
@@ -373,7 +375,7 @@ impl SessionState {
                     }
                     let output = spine
                         .runtime
-                        .eat(&input, rollout.as_slice(), &self.history)
+                        .eat(&input, &self.history)
                         .expect("native rollout append must produce a valid Spine projection");
                     spine.projected_history = output.into_context();
                 }
@@ -389,7 +391,7 @@ impl SessionState {
                 let inputs = selected_inputs(rollout);
                 let output = spine
                     .runtime
-                    .replay(inputs.iter(), rollout.as_slice(), &self.history)
+                    .replay(inputs.iter(), &self.history)
                     .expect("native rollout replacement must replay deterministically");
                 spine.projected_history = output.into_context();
             }

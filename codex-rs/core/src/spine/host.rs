@@ -55,7 +55,6 @@ impl std::error::Error for CodexSpineHostError {}
 
 impl SpineHost for CodexSpineHost {
     type Input = CodexSpineInput;
-    type Rollout = [RolloutItem];
     type Context = ContextManager;
     type Frontier = CodexSpineFrontier;
     type Error = CodexSpineHostError;
@@ -99,11 +98,15 @@ impl SpineHost for CodexSpineHost {
 
     fn project_context(
         &self,
-        rollout: &Self::Rollout,
         base: &Self::Context,
+        frontier: &Self::Frontier,
         update: &RuntimeProjection,
     ) -> Result<Self::Context, Self::Error> {
-        let effective = effective_rollout(rollout);
+        let effective = frontier
+            .source
+            .iter()
+            .map(|input| (input.ordinal, &input.item))
+            .collect::<Vec<_>>();
         let trim = self.trim_enabled.then(|| {
             let events = super::stable_lex_rollout(&effective, self.spawn_enabled);
             spine_core::TrimProjection::derive_with_threshold(
@@ -114,14 +117,14 @@ impl SpineHost for CodexSpineHost {
         let projected = if self.jit_enabled {
             materialize_context(
                 &update.spine().visible_context,
-                rollout,
+                &effective,
                 trim.as_ref(),
                 Some(base),
                 self.spawn_enabled,
             )
             .map_err(CodexSpineHostError)?
         } else {
-            materialize_trim_only_context(&effective, rollout, trim.as_ref(), Some(base))
+            materialize_trim_only_context(&effective, trim.as_ref(), Some(base))
                 .map_err(CodexSpineHostError)?
         };
         let mut projected = projected;
@@ -129,7 +132,7 @@ impl SpineHost for CodexSpineHost {
             let NativeItemRef::Rollout { ordinal } = source else {
                 continue;
             };
-            let raw = response_item_at(rollout, *ordinal, Some(base)).ok_or_else(|| {
+            let raw = response_item_at(&effective, *ordinal, Some(base)).ok_or_else(|| {
                 CodexSpineHostError(format!("missing rollout source {}", ordinal.0))
             })?;
             projected.push(project_trim_item(

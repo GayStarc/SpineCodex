@@ -542,10 +542,11 @@ fn spawn_bridge_projects_one_ordered_atomic_batch_and_hides_success_carrier() {
         live.eat(event).unwrap();
     }
     assert_eq!(live.projection(), &projection.spine);
+    let effective = effective_rollout(&rollout);
     assert_eq!(
         materialize_context(
             &live.projection().visible_context,
-            &rollout,
+            &effective,
             None,
             None,
             true,

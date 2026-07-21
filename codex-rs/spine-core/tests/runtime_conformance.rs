@@ -22,7 +22,6 @@ struct SyntheticHost {
 
 impl SpineHost for SyntheticHost {
     type Input = RolloutEvent;
-    type Rollout = [RolloutEvent];
     type Context = Vec<ContextItem>;
     type Frontier = usize;
     type Error = Infallible;
@@ -48,8 +47,8 @@ impl SpineHost for SyntheticHost {
 
     fn project_context(
         &self,
-        _rollout: &Self::Rollout,
         _base: &Self::Context,
+        _frontier: &Self::Frontier,
         update: &RuntimeProjection,
     ) -> Result<Self::Context, Self::Error> {
         self.calls.fetch_add(1, Ordering::Relaxed);
@@ -84,13 +83,9 @@ fn runtime_replays_aot_prefix_then_continues_jit_with_direct_compiler_parity() {
     };
     let mut runtime = SpineRuntime::new(config(&[Feature::Jit]), host).unwrap();
 
-    let aot = runtime
-        .replay(events[..2].iter(), events.as_slice(), &Vec::new())
-        .unwrap();
+    let aot = runtime.replay(events[..2].iter(), &Vec::new()).unwrap();
     assert_eq!(aot.context().len(), 2);
-    let jit = runtime
-        .eat(&events[2], events.as_slice(), &Vec::new())
-        .unwrap();
+    let jit = runtime.eat(&events[2], &Vec::new()).unwrap();
 
     let mut direct = SpineCompiler::new(config(&[Feature::Jit])).unwrap();
     let expected = direct.replay(events).unwrap();
@@ -116,9 +111,7 @@ fn feature_off_is_identity_and_never_calls_host() {
     }];
     let event = message(8, MessageRole::User, "ignored");
 
-    let output = runtime
-        .eat(&event, std::slice::from_ref(&event), &base)
-        .unwrap();
+    let output = runtime.eat(&event, &base).unwrap();
 
     assert_eq!(output.context(), &base);
     assert_eq!(calls.load(Ordering::Relaxed), 0);

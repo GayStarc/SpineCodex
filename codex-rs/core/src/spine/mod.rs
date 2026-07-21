@@ -100,20 +100,12 @@ pub(crate) fn derive_from_rollout_with_features(
     spawn_enabled: bool,
 ) -> CodexSpineProjection {
     let effective = effective_rollout(rollout);
-    projection_from_effective_rollout(
-        &effective,
-        rollout,
-        jit_enabled,
-        trim_enabled,
-        spawn_enabled,
-        None,
-    )
+    projection_from_effective_rollout(&effective, jit_enabled, trim_enabled, spawn_enabled, None)
 }
 
 #[cfg(test)]
 fn projection_from_effective_rollout(
     effective: &[(usize, &RolloutItem)],
-    rollout: &[RolloutItem],
     jit_enabled: bool,
     trim_enabled: bool,
     spawn_enabled: bool,
@@ -125,14 +117,14 @@ fn projection_from_effective_rollout(
     let context = if jit_enabled {
         materialize_context(
             &spine.visible_context,
-            rollout,
+            effective,
             trim.as_ref(),
             host_history,
             spawn_enabled,
         )
         .expect("derived Spine context must resolve against the same rollout")
     } else {
-        materialize_trim_only_context(effective, rollout, trim.as_ref(), host_history)
+        materialize_trim_only_context(effective, trim.as_ref(), host_history)
             .expect("trim projection must resolve against the same rollout")
     };
     CodexSpineProjection { spine, context }
@@ -612,7 +604,7 @@ fn content_text(item: &ContentItem) -> Option<String> {
 
 fn materialize_context(
     context: &[ContextItem],
-    rollout: &[RolloutItem],
+    source: &[(usize, &RolloutItem)],
     trim: Option<&TrimProjection>,
     host_history: Option<&ContextManager>,
     spawn_enabled: bool,
@@ -624,7 +616,7 @@ fn materialize_context(
                 message,
                 user_anchor,
             } => {
-                let mut item = response_item_at(rollout, message.boundary, host_history)
+                let mut item = response_item_at(source, message.boundary, host_history)
                     .ok_or_else(|| {
                         format!(
                             "message at raw boundary {} has no native rollout source",
@@ -639,7 +631,7 @@ fn materialize_context(
             ContextItem::ToolCall(group) => {
                 for raw_index in group.start.0..=group.end.0 {
                     if let Some(item) =
-                        response_item_at(rollout, RawBoundary(raw_index), host_history)
+                        response_item_at(source, RawBoundary(raw_index), host_history)
                     {
                         materialized.push(project_toolcall_item(
                             item,
@@ -668,7 +660,7 @@ fn materialize_context(
                     message, anchor, ..
                 } => {
                     // The reducer created this slot from the same immutable rollout.
-                    let mut item = response_item_at(rollout, message.boundary, host_history)
+                    let mut item = response_item_at(source, message.boundary, host_history)
                         .ok_or_else(|| {
                             format!(
                                 "memory user slot at raw boundary {} has no native rollout source",
@@ -708,10 +700,10 @@ fn materialize_context(
                     ),
                 )),
             },
-            ContextItem::Native { source } => match source {
+            ContextItem::Native { source: native_ref } => match native_ref {
                 NativeItemRef::Rollout { ordinal } => {
                     let item =
-                        response_item_at(rollout, *ordinal, host_history).ok_or_else(|| {
+                        response_item_at(source, *ordinal, host_history).ok_or_else(|| {
                             format!("native rollout source {} is unavailable", ordinal.0)
                         })?;
                     materialized.push(item);
@@ -720,7 +712,7 @@ fn materialize_context(
                     compact_boundary,
                     index,
                 } => {
-                    let item = compact_replacement_at(rollout, *compact_boundary, *index)
+                    let item = compact_replacement_at(source, *compact_boundary, *index)
                         .ok_or_else(|| {
                             format!(
                                 "compact replacement {}:{} is unavailable",
@@ -775,7 +767,6 @@ fn project_toolcall_item(
 
 fn materialize_trim_only_context(
     effective: &[(usize, &RolloutItem)],
-    rollout: &[RolloutItem],
     trim: Option<&TrimProjection>,
     host_history: Option<&ContextManager>,
 ) -> Result<Vec<ResponseItem>, String> {
@@ -812,11 +803,11 @@ fn materialize_trim_only_context(
             _ => {}
         }
     }
-    if context.is_empty() && !rollout.is_empty() {
+    if context.is_empty() && !effective.is_empty() {
         context.extend(
-            rollout
+            effective
                 .iter()
-                .filter_map(|item| match item {
+                .filter_map(|(_, item)| match item {
                     RolloutItem::ResponseItem(item) => Some(
                         host_history
                             .map(|history| history.canonical_projected_item(item))
@@ -859,15 +850,15 @@ fn project_trim_item(
 }
 
 fn response_item_at(
-    rollout: &[RolloutItem],
+    source: &[(usize, &RolloutItem)],
     boundary: RawBoundary,
     host_history: Option<&ContextManager>,
 ) -> Option<ResponseItem> {
     let index = usize::try_from(boundary.0).ok()?;
-    match rollout
+    match source
         .iter()
-        .filter(|item| is_spine_source_item(item))
-        .nth(index)?
+        .filter(|(_, item)| is_spine_source_item(item))
+        .find_map(|(ordinal, item)| (*ordinal == index).then_some(*item))?
     {
         RolloutItem::ResponseItem(item) => Some(
             host_history
@@ -886,16 +877,16 @@ fn response_item_at(
 }
 
 fn compact_replacement_at(
-    rollout: &[RolloutItem],
+    source: &[(usize, &RolloutItem)],
     boundary: RawBoundary,
     replacement_index: u32,
 ) -> Option<ResponseItem> {
     let raw_index = usize::try_from(boundary.0).ok()?;
     let replacement_index = usize::try_from(replacement_index).ok()?;
-    let RolloutItem::Compacted(compacted) = rollout
+    let RolloutItem::Compacted(compacted) = source
         .iter()
-        .filter(|item| is_spine_source_item(item))
-        .nth(raw_index)?
+        .filter(|(_, item)| is_spine_source_item(item))
+        .find_map(|(ordinal, item)| (*ordinal == raw_index).then_some(*item))?
     else {
         return None;
     };
