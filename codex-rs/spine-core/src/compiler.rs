@@ -4,30 +4,24 @@ use crate::RawBoundary;
 use crate::RolloutEvent;
 use crate::SpineConfig;
 use crate::SpineProjection;
-use crate::SpineRegistration;
 use crate::bootstrap::InitError;
 use crate::reducer::SpineReducer;
 use std::fmt;
 
 #[derive(Clone, Debug)]
 pub struct SpineCompiler {
-    _config: SpineConfig,
-    registration: SpineRegistration,
+    config: SpineConfig,
     reducer: SpineReducer,
     projection: SpineProjection,
 }
 
 impl SpineCompiler {
-    pub fn new(config: SpineConfig, registration: SpineRegistration) -> Result<Self, InitError> {
-        if config.schema_version() != 1 {
-            return Err(InitError::UnsupportedConfigVersion(config.schema_version()));
-        }
-        config.validate_registration(&registration)?;
+    pub fn new(config: SpineConfig) -> Result<Self, InitError> {
+        config.validate()?;
         let reducer = SpineReducer::new();
         let projection = reducer.projection();
         Ok(Self {
-            _config: config,
-            registration,
+            config,
             reducer,
             projection,
         })
@@ -76,11 +70,11 @@ impl SpineCompiler {
     }
 
     pub fn extend_system_prompt(&self, base: &str) -> String {
-        crate::prompt::extend(base.to_owned(), &self._config, &self.registration)
+        crate::prompt::extend(base.to_owned(), &self.config)
     }
 
-    pub(crate) fn registration(&self) -> &SpineRegistration {
-        &self.registration
+    pub(crate) fn config_is_feature_off(&self) -> bool {
+        self.config.is_feature_off()
     }
 }
 

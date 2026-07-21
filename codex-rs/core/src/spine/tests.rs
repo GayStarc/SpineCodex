@@ -536,11 +536,8 @@ fn spawn_bridge_projects_one_ordered_atomic_batch_and_hides_success_carrier() {
 
     let effective = effective_rollout(&rollout);
     let events = lex_rollout(&effective, true);
-    let registration = SpineRegistration::builder()
-        .enable(Feature::Jit)
-        .build()
-        .unwrap();
-    let mut live = SpineCompiler::new(SpineConfig::v1(), registration).unwrap();
+    let config = SpineConfig::v1().with_feature(Feature::Jit).unwrap();
+    let mut live = SpineCompiler::new(config).unwrap();
     for event in events {
         live.eat(event).unwrap();
     }

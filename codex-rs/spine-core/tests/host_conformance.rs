@@ -13,12 +13,10 @@ use spine_core::ToolOutcome;
 use spine_core::ToolUse;
 
 fn derive(events: Vec<RolloutEvent>) -> SpineProjection {
-    let registration = spine_core::SpineRegistration::builder()
-        .enable(Feature::Jit)
-        .build()
-        .expect("valid test registration");
-    let mut compiler =
-        SpineCompiler::new(SpineConfig::v1(), registration).expect("valid test compiler");
+    let config = SpineConfig::v1()
+        .with_feature(Feature::Jit)
+        .expect("valid test configuration");
+    let mut compiler = SpineCompiler::new(config).expect("valid test compiler");
     compiler
         .replay(events)
         .expect("valid event order")

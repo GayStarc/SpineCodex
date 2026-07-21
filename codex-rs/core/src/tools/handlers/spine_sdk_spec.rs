@@ -35,19 +35,15 @@ mod tests {
     use super::*;
     use spine_core::Feature;
     use spine_core::SpineConfig;
-    use spine_core::SpineRegistration;
     use spine_core::SpineTool;
     use spine_core::ToolCatalog;
 
     #[test]
     fn sdk_specs_match_the_pre_sdk_model_surface() {
-        let registration = SpineRegistration::builder()
-            .enable(Feature::Jit)
-            .enable(Feature::Trim)
-            .enable(Feature::Spawn)
-            .build()
+        let config = SpineConfig::v1()
+            .with_features([Feature::Jit, Feature::Trim, Feature::Spawn])
             .unwrap();
-        let catalog = ToolCatalog::new(&SpineConfig::v1(), &registration).unwrap();
+        let catalog = ToolCatalog::new(&config).unwrap();
 
         for tool in [
             SpineTool::Open,

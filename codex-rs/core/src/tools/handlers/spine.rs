@@ -1,15 +1,11 @@
 use crate::function_tool::FunctionCallError;
-use crate::spine::SpineControlKind;
 use crate::spine::tool_response::SpineToolResponse;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolCallSource;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
 use crate::tools::context::boxed_tool_output;
-use crate::tools::handlers::spine_sdk_spec::SPINE_CLOSE;
 use crate::tools::handlers::spine_sdk_spec::SPINE_NAMESPACE;
-use crate::tools::handlers::spine_sdk_spec::SPINE_NEXT;
-use crate::tools::handlers::spine_sdk_spec::SPINE_OPEN;
 use crate::tools::handlers::spine_sdk_spec::SPINE_SPAWN;
 use crate::tools::handlers::spine_sdk_spec::SPINE_TRIM;
 use crate::tools::handlers::spine_sdk_spec::create_spine_tool;
@@ -35,7 +31,7 @@ pub(crate) struct SpineHandler {
 
 #[derive(Clone, Copy)]
 enum SpineHandlerKind {
-    Control(SpineControlKind),
+    Control(SpineTool),
     Spawn,
     Trim,
 }
@@ -71,9 +67,9 @@ impl SpineHandler {
 
     fn from_definition(definition: ToolDefinition) -> Self {
         let kind = match definition.tool {
-            SpineTool::Open => SpineHandlerKind::Control(SpineControlKind::Open),
-            SpineTool::Close => SpineHandlerKind::Control(SpineControlKind::Close),
-            SpineTool::Next => SpineHandlerKind::Control(SpineControlKind::Next),
+            SpineTool::Open | SpineTool::Close | SpineTool::Next => {
+                SpineHandlerKind::Control(definition.tool)
+            }
             SpineTool::Spawn => SpineHandlerKind::Spawn,
             SpineTool::Trim => SpineHandlerKind::Trim,
         };
@@ -83,21 +79,14 @@ impl SpineHandler {
 
     fn name(&self) -> &'static str {
         match self.kind {
-            SpineHandlerKind::Control(SpineControlKind::Open) => SPINE_OPEN,
-            SpineHandlerKind::Control(SpineControlKind::Close) => SPINE_CLOSE,
-            SpineHandlerKind::Control(SpineControlKind::Next) => SPINE_NEXT,
+            SpineHandlerKind::Control(tool) => tool.name(),
             SpineHandlerKind::Spawn => SPINE_SPAWN,
             SpineHandlerKind::Trim => SPINE_TRIM,
         }
     }
 }
 
-fn validate_arguments(kind: SpineControlKind, arguments: &str) -> Result<(), FunctionCallError> {
-    let tool = match kind {
-        SpineControlKind::Open => SpineTool::Open,
-        SpineControlKind::Close => SpineTool::Close,
-        SpineControlKind::Next => SpineTool::Next,
-    };
+fn validate_arguments(tool: SpineTool, arguments: &str) -> Result<(), FunctionCallError> {
     spine_core::validate_tool(tool, arguments)
         .map(|_| ())
         .map_err(|error| {
@@ -175,13 +164,13 @@ impl SpineHandler {
         };
 
         let response_tool = match self.kind {
-            SpineHandlerKind::Control(kind) => {
-                validate_arguments(kind, &arguments)?;
+            SpineHandlerKind::Control(tool) => {
+                validate_arguments(tool, &arguments)?;
                 session
-                    .validate_spine_control(kind)
+                    .validate_spine_control(tool)
                     .await
                     .map_err(FunctionCallError::RespondToModel)?;
-                SpineToolResponse::from(kind)
+                SpineToolResponse::from_control(tool)
             }
             SpineHandlerKind::Spawn => {
 <<<<<<< HEAD
@@ -226,8 +215,12 @@ impl SpineHandler {
                 )
                 .await
                 .map_err(FunctionCallError::RespondToModel)?;
+<<<<<<< HEAD
 >>>>>>> refactor(spine): align spawn lifecycle with sdk contract
                 let body = crate::spine::spawn::encode_receipt(&receipt).map_err(|error| {
+=======
+                let body = receipt.encode_json().map_err(|error| {
+>>>>>>> refactor(spine): minimize codex adapter boundary
                     FunctionCallError::RespondToModel(format!(
                         "failed to encode spine.spawn receipt: {error}"
                     ))
@@ -311,48 +304,43 @@ mod tests {
     use super::*;
 
     fn catalog() -> ToolCatalog {
-        let registration = spine_core::SpineRegistration::builder()
-            .enable(spine_core::Feature::Jit)
-            .enable(spine_core::Feature::Trim)
-            .enable(spine_core::Feature::Spawn)
-            .build()
+        let config = spine_core::SpineConfig::v1()
+            .with_features([
+                spine_core::Feature::Jit,
+                spine_core::Feature::Trim,
+                spine_core::Feature::Spawn,
+            ])
             .unwrap();
-        ToolCatalog::new(&spine_core::SpineConfig::v1(), &registration).unwrap()
+        ToolCatalog::new(&config).unwrap()
     }
 
     #[test]
     fn validates_control_argument_matrix() {
         for (kind, arguments) in [
-            (SpineControlKind::Open, r#"{"summary":"task"}"#),
-            (SpineControlKind::Close, r#"{"memory":"done"}"#),
-            (
-                SpineControlKind::Next,
-                r#"{"summary":"sibling","memory":"done"}"#,
-            ),
+            (SpineTool::Open, r#"{"summary":"task"}"#),
+            (SpineTool::Close, r#"{"memory":"done"}"#),
+            (SpineTool::Next, r#"{"summary":"sibling","memory":"done"}"#),
         ] {
             assert!(validate_arguments(kind, arguments).is_ok());
         }
 
         for (kind, arguments) in [
-            (SpineControlKind::Open, r#"{"summary":" "}"#),
-            (SpineControlKind::Close, r#"{"memory":""}"#),
-            (
-                SpineControlKind::Next,
-                r#"{"summary":"sibling","memory":" "}"#,
-            ),
-            (SpineControlKind::Open, r#"{"summary":"task","extra":1}"#),
-            (SpineControlKind::Close, "not-json"),
+            (SpineTool::Open, r#"{"summary":" "}"#),
+            (SpineTool::Close, r#"{"memory":""}"#),
+            (SpineTool::Next, r#"{"summary":"sibling","memory":" "}"#),
+            (SpineTool::Open, r#"{"summary":"task","extra":1}"#),
+            (SpineTool::Close, "not-json"),
         ] {
             assert!(validate_arguments(kind, arguments).is_err());
         }
 
         assert!(matches!(
-            validate_arguments(SpineControlKind::Open, r#"{"summary":" "}"#),
+            validate_arguments(SpineTool::Open, r#"{"summary":" "}"#),
             Err(FunctionCallError::RespondToModel(message))
                 if message == "open requires a non-empty argument"
         ));
         assert!(matches!(
-            validate_arguments(SpineControlKind::Close, "not-json"),
+            validate_arguments(SpineTool::Close, "not-json"),
             Err(FunctionCallError::RespondToModel(message))
                 if message.starts_with("failed to parse function arguments:")
         ));
@@ -364,15 +352,15 @@ mod tests {
         let handlers = SpineHandler::controls(&catalog);
         assert_eq!(
             handlers[0].tool_name(),
-            ToolName::namespaced(SPINE_NAMESPACE, SPINE_OPEN)
+            ToolName::namespaced(SPINE_NAMESPACE, SpineTool::Open.name())
         );
         assert_eq!(
             handlers[1].tool_name(),
-            ToolName::namespaced(SPINE_NAMESPACE, SPINE_CLOSE)
+            ToolName::namespaced(SPINE_NAMESPACE, SpineTool::Close.name())
         );
         assert_eq!(
             handlers[2].tool_name(),
-            ToolName::namespaced(SPINE_NAMESPACE, SPINE_NEXT)
+            ToolName::namespaced(SPINE_NAMESPACE, SpineTool::Next.name())
         );
     }
 

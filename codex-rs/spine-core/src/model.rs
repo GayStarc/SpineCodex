@@ -160,6 +160,14 @@ impl std::fmt::Display for SpawnValidationError {
 impl std::error::Error for SpawnValidationError {}
 
 impl SpawnReceipt {
+    pub fn encode_json(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string(self)
+    }
+
+    pub fn decode_json(body: &str) -> Result<Self, serde_json::Error> {
+        serde_json::from_str(body)
+    }
+
     pub fn validate_for(&self, tasks: &[SpawnTask]) -> Result<(), SpawnValidationError> {
         if tasks.len() < 2 {
             return Err(SpawnValidationError::TooFewTasks);

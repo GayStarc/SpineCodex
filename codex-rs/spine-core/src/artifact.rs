@@ -2,6 +2,12 @@
 
 use crate::{MemorySlot, NodeId, NodeKind, NodeStatus, SpineProjection};
 
+pub const TRIM_SNIPPED_BODY: &str = "[Old tool result content cleared]";
+
+pub fn render_memory_artifact(node_id: &NodeId, body: &str) -> String {
+    format!("# Spine Memory {node_id}\n\n## Node Memory\n{body}")
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MemoryArtifact {
     pub node_id: NodeId,

@@ -9,14 +9,12 @@ mod reducer;
 mod status;
 mod tools;
 
-pub use bootstrap::Feature;
 pub use bootstrap::InitError;
-pub use bootstrap::SpineRegistration;
-pub use bootstrap::SpineRegistrationBuilder;
 pub use compiler::SpineCompiler;
 pub use compiler::SpineError;
 pub use config::ConfigError;
 pub use config::DEFAULT_CONFIG_TOML;
+pub use config::Feature;
 pub use config::SpineConfig;
 pub use host::HostStep;
 pub use host::RuntimeError;
@@ -25,7 +23,10 @@ pub use host::SpineHost;
 pub use host::SpineOutput;
 pub use host::SpineRuntime;
 
-pub use artifact::{MemoryArtifact, UserMessageArtifact, closed_memory_artifacts};
+pub use artifact::{
+    MemoryArtifact, TRIM_SNIPPED_BODY, UserMessageArtifact, closed_memory_artifacts,
+    render_memory_artifact,
+};
 pub use model::ContextEdit;
 pub use model::ContextItem;
 pub use model::MemorySlot;

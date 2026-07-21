@@ -1,4 +1,3 @@
-use crate::spine::SpineControlKind;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::handlers::spine_sdk_spec::SPINE_CLOSE;
 use crate::tools::handlers::spine_sdk_spec::SPINE_NAMESPACE;
@@ -18,17 +17,16 @@ pub(crate) enum SpineToolResponse {
     Trim,
 }
 
-impl From<SpineControlKind> for SpineToolResponse {
-    fn from(kind: SpineControlKind) -> Self {
-        match kind {
-            SpineControlKind::Open => Self::Open,
-            SpineControlKind::Close => Self::Close,
-            SpineControlKind::Next => Self::Next,
+impl SpineToolResponse {
+    pub(crate) fn from_control(tool: SpineTool) -> Self {
+        match tool {
+            SpineTool::Open => Self::Open,
+            SpineTool::Close => Self::Close,
+            SpineTool::Next => Self::Next,
+            SpineTool::Trim => Self::Trim,
+            SpineTool::Spawn => unreachable!("spawn has a structured receipt, not a text carrier"),
         }
     }
-}
-
-impl SpineToolResponse {
     pub(crate) fn success(self) -> FunctionToolOutput {
         FunctionToolOutput::from_text(self.success_carrier(), Some(true))
     }

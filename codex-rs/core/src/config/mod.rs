@@ -120,7 +120,6 @@ use rmcp::model::UrlElicitationCapability;
 use serde::Deserialize;
 use serde::Serialize;
 use spine_core::SpineConfig;
-use spine_core::SpineRegistration;
 use spine_core::ToolCatalog;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -1055,9 +1054,6 @@ pub struct Config {
 
     /// Validated host-neutral Spine SDK configuration.
     pub spine_config: SpineConfig,
-
-    /// Feature registration used to initialize Spine SDK sessions.
-    pub spine_registration: SpineRegistration,
 
     /// Model-visible Spine tools derived from the SDK configuration.
     pub spine_tools: ToolCatalog,
@@ -3140,21 +3136,20 @@ impl Config {
             feature_requirements,
             &mut startup_warnings,
         )?;
-        let spine_config = load_spine_config(cfg.spine_config_file.as_ref())?;
-        let mut spine_registration = SpineRegistration::builder();
+        let mut spine_features = Vec::new();
         if features.enabled(Feature::SpineJit) {
-            spine_registration = spine_registration.enable(spine_core::Feature::Jit);
+            spine_features.push(spine_core::Feature::Jit);
         }
         if features.enabled(Feature::SpineTrim) {
-            spine_registration = spine_registration.enable(spine_core::Feature::Trim);
+            spine_features.push(spine_core::Feature::Trim);
         }
         if features.enabled(Feature::SpineSpawn) {
-            spine_registration = spine_registration.enable(spine_core::Feature::Spawn);
+            spine_features.push(spine_core::Feature::Spawn);
         }
-        let spine_registration = spine_registration
-            .build()
+        let spine_config = load_spine_config(cfg.spine_config_file.as_ref())?
+            .with_features(spine_features)
             .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
-        let spine_tools = ToolCatalog::new(&spine_config, &spine_registration)
+        let spine_tools = ToolCatalog::new(&spine_config)
             .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
         let respect_system_proxy = features.enabled(Feature::RespectSystemProxy);
         let enable_network_proxy = features.enabled(Feature::NetworkProxy);
@@ -4043,7 +4038,6 @@ impl Config {
             current_time_reminder,
             features,
             spine_config,
-            spine_registration,
             spine_tools,
             suppress_unstable_features_warning: cfg
                 .suppress_unstable_features_warning

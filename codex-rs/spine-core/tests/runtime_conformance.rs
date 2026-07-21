@@ -9,7 +9,6 @@ use spine_core::RuntimeProjection;
 use spine_core::SpineCompiler;
 use spine_core::SpineConfig;
 use spine_core::SpineHost;
-use spine_core::SpineRegistration;
 use spine_core::SpineRuntime;
 use std::convert::Infallible;
 use std::sync::Arc;
@@ -58,15 +57,10 @@ impl SpineHost for SyntheticHost {
     }
 }
 
-fn registration(features: &[Feature]) -> SpineRegistration {
-    features
-        .iter()
-        .copied()
-        .fold(SpineRegistration::builder(), |builder, feature| {
-            builder.enable(feature)
-        })
-        .build()
-        .expect("valid test registration")
+fn config(features: &[Feature]) -> SpineConfig {
+    SpineConfig::v1()
+        .with_features(features.iter().copied())
+        .expect("valid test configuration")
 }
 
 fn message(boundary: u64, role: MessageRole, content: &str) -> RolloutEvent {
@@ -88,8 +82,7 @@ fn runtime_replays_aot_prefix_then_continues_jit_with_direct_compiler_parity() {
     let host = SyntheticHost {
         calls: Arc::clone(&calls),
     };
-    let mut runtime =
-        SpineRuntime::new(SpineConfig::v1(), registration(&[Feature::Jit]), host).unwrap();
+    let mut runtime = SpineRuntime::new(config(&[Feature::Jit]), host).unwrap();
 
     let aot = runtime
         .replay(events[..2].iter(), events.as_slice(), &Vec::new())
@@ -99,7 +92,7 @@ fn runtime_replays_aot_prefix_then_continues_jit_with_direct_compiler_parity() {
         .eat(&events[2], events.as_slice(), &Vec::new())
         .unwrap();
 
-    let mut direct = SpineCompiler::new(SpineConfig::v1(), registration(&[Feature::Jit])).unwrap();
+    let mut direct = SpineCompiler::new(config(&[Feature::Jit])).unwrap();
     let expected = direct.replay(events).unwrap();
     assert_eq!(jit.runtime_projection().spine(), &expected.projection);
     assert_eq!(jit.context(), &expected.projection.visible_context);
@@ -112,7 +105,7 @@ fn feature_off_is_identity_and_never_calls_host() {
     let host = SyntheticHost {
         calls: Arc::clone(&calls),
     };
-    let mut runtime = SpineRuntime::new(SpineConfig::v1(), registration(&[]), host).unwrap();
+    let mut runtime = SpineRuntime::new(config(&[]), host).unwrap();
     let base = vec![ContextItem::Message {
         message: Message {
             boundary: RawBoundary(7),

@@ -149,11 +149,14 @@ fn exact_receipt_codec_preserves_all_semantic_fields() {
     };
 
     assert_eq!(
-        decode_receipt(&encode_receipt(&receipt).unwrap()).unwrap(),
+        SpawnReceipt::decode_json(&receipt.encode_json().unwrap()).unwrap(),
         receipt
     );
     assert!(
-        decode_receipt(r#"{"schema":"spine.spawn.result.v1","results":[],"extra":true}"#).is_err()
+        SpawnReceipt::decode_json(
+            r#"{"schema":"spine.spawn.result.v1","results":[],"extra":true}"#
+        )
+        .is_err()
     );
 }
 

@@ -1,8 +1,16 @@
 use serde::Deserialize;
+use std::collections::BTreeSet;
 use std::fmt;
 
 const MAX_TRIM_THRESHOLD_BYTES: u64 = 64 * 1024 * 1024;
 pub const DEFAULT_CONFIG_TOML: &str = include_str!("../config/default.toml");
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Feature {
+    Jit,
+    Trim,
+    Spawn,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SpineConfig {
@@ -12,6 +20,7 @@ pub struct SpineConfig {
     trim_prompt: String,
     spawn_prompt: String,
     tool_descriptions: ToolDescriptions,
+    features: BTreeSet<Feature>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -112,7 +121,31 @@ impl SpineConfig {
                 trim: parsed.tools.trim.map(|tool| tool.description),
                 spawn: parsed.tools.spawn.map(|tool| tool.description),
             },
+            features: BTreeSet::new(),
         })
+    }
+
+    pub fn with_feature(mut self, feature: Feature) -> Result<Self, crate::InitError> {
+        self.features.insert(feature);
+        self.validate_features()?;
+        Ok(self)
+    }
+
+    pub fn with_features<I>(mut self, features: I) -> Result<Self, crate::InitError>
+    where
+        I: IntoIterator<Item = Feature>,
+    {
+        self.features = features.into_iter().collect();
+        self.validate_features()?;
+        Ok(self)
+    }
+
+    pub fn is_enabled(&self, feature: Feature) -> bool {
+        self.features.contains(&feature)
+    }
+
+    pub fn is_feature_off(&self) -> bool {
+        self.features.is_empty()
     }
 
     pub const fn schema_version(&self) -> u32 {
@@ -123,12 +156,8 @@ impl SpineConfig {
         self.trim_threshold_bytes
     }
 
-    pub fn extend_system_prompt(
-        &self,
-        base: &str,
-        registration: &crate::SpineRegistration,
-    ) -> String {
-        crate::prompt::extend(base.to_owned(), self, registration)
+    pub fn extend_system_prompt(&self, base: &str) -> String {
+        crate::prompt::extend(base.to_owned(), self)
     }
 
     pub(crate) fn prompt(&self, feature: crate::Feature) -> &str {
@@ -150,20 +179,29 @@ impl SpineConfig {
         }
     }
 
-    pub(crate) fn validate_registration(
-        &self,
-        registration: &crate::SpineRegistration,
-    ) -> Result<(), crate::InitError> {
-        if registration.is_enabled(crate::Feature::Jit) {
-            require_prompt(self.prompt(crate::Feature::Jit), crate::Feature::Jit)?;
+    pub(crate) fn validate(&self) -> Result<(), crate::InitError> {
+        if self.schema_version != 1 {
+            return Err(crate::InitError::UnsupportedConfigVersion(
+                self.schema_version,
+            ));
+        }
+        self.validate_features()
+    }
+
+    fn validate_features(&self) -> Result<(), crate::InitError> {
+        if self.is_enabled(Feature::Jit) {
+            require_prompt(self.prompt(Feature::Jit), Feature::Jit)?;
             for name in ["open", "close", "next"] {
                 require_tool(self.tool_description(name), name)?;
             }
         }
-        if registration.is_enabled(crate::Feature::Trim) {
+        if self.is_enabled(Feature::Trim) {
             require_tool(self.tool_description("trim"), "trim")?;
         }
-        if registration.is_enabled(crate::Feature::Spawn) {
+        if self.is_enabled(Feature::Spawn) {
+            if !self.is_enabled(Feature::Jit) {
+                return Err(crate::InitError::SpawnRequiresJit);
+            }
             require_tool(self.tool_description("spawn"), "spawn")?;
         }
         Ok(())
@@ -258,10 +296,7 @@ description = "spawn"
     #[test]
     fn default_v1_satisfies_jit_registration() {
         let config = SpineConfig::v1();
-        let registration = crate::SpineRegistration::builder()
-            .enable(crate::Feature::Jit)
-            .build()
-            .unwrap();
-        config.validate_registration(&registration).unwrap();
+        let config = config.with_feature(Feature::Jit).unwrap();
+        config.validate().unwrap();
     }
 }

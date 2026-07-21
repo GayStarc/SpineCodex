@@ -1419,7 +1419,7 @@ async fn spine_control_validation_uses_the_pre_group_rollout_projection() {
     let disabled_state = SessionState::new(disabled);
     assert!(
         disabled_state
-            .validate_spine_control(crate::spine::SpineControlKind::Open)
+            .validate_spine_control(spine_core::SpineTool::Open)
             .is_err()
     );
 
@@ -1429,17 +1429,17 @@ async fn spine_control_validation_uses_the_pre_group_rollout_projection() {
     let mut state = SessionState::new(enabled);
     assert!(
         state
-            .validate_spine_control(crate::spine::SpineControlKind::Open)
+            .validate_spine_control(spine_core::SpineTool::Open)
             .is_ok()
     );
     assert!(
         state
-            .validate_spine_control(crate::spine::SpineControlKind::Close)
+            .validate_spine_control(spine_core::SpineTool::Close)
             .is_err()
     );
     assert!(
         state
-            .validate_spine_control(crate::spine::SpineControlKind::Next)
+            .validate_spine_control(spine_core::SpineTool::Next)
             .is_err()
     );
 
@@ -1464,12 +1464,12 @@ async fn spine_control_validation_uses_the_pre_group_rollout_projection() {
     ]);
     assert!(
         state
-            .validate_spine_control(crate::spine::SpineControlKind::Close)
+            .validate_spine_control(spine_core::SpineTool::Close)
             .is_ok()
     );
     assert!(
         state
-            .validate_spine_control(crate::spine::SpineControlKind::Next)
+            .validate_spine_control(spine_core::SpineTool::Next)
             .is_ok()
     );
 }

@@ -17,13 +17,12 @@ use spine_core::NativeItemRef;
 use spine_core::NodeStatus;
 use spine_core::RawBoundary;
 use spine_core::RolloutEvent;
+use spine_core::SpawnReceipt;
 #[cfg(test)]
 use spine_core::SpineCompiler;
 #[cfg(test)]
 use spine_core::SpineConfig;
 use spine_core::SpineProjection;
-#[cfg(test)]
-use spine_core::SpineRegistration;
 use spine_core::ToolCallGroup;
 use spine_core::ToolOutcome;
 use spine_core::ToolUse;
@@ -32,7 +31,6 @@ use spine_core::TrimProjection;
 use spine_core::TrimRequest;
 
 pub(crate) mod host;
-pub(crate) mod instructions;
 pub(crate) mod memory_projection;
 pub(crate) mod pressure;
 pub(crate) mod rollout_debug;
@@ -41,20 +39,7 @@ pub(crate) mod spawn_salvage;
 pub(crate) mod status;
 pub(crate) mod tool_response;
 
-pub(crate) const TOOL_RESULT_CLEARED_MESSAGE: &str = "[Old tool result content cleared]";
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum SpineControlKind {
-    Open,
-    Close,
-    Next,
-}
-
-impl SpineControlKind {
-    pub(crate) fn requires_task(self) -> bool {
-        matches!(self, Self::Close | Self::Next)
-    }
-}
+pub(crate) const TOOL_RESULT_CLEARED_MESSAGE: &str = spine_core::TRIM_SNIPPED_BODY;
 
 #[cfg(test)]
 #[derive(Clone, Debug, PartialEq)]
@@ -68,14 +53,13 @@ pub(crate) fn closed_memory_projection_entries(
 ) -> Vec<memory_projection::SpinetreeMemoryProjectionEntry> {
     spine_core::closed_memory_artifacts(projection)
         .into_iter()
-        .map(|artifact| {
-            let node_id = artifact.node_id.to_string();
-            memory_projection::SpinetreeMemoryProjectionEntry {
+        .map(
+            |artifact| memory_projection::SpinetreeMemoryProjectionEntry {
                 summary: artifact.summary,
-                body: render_memory_artifact(&node_id, &artifact.body),
-                node_id,
-            }
-        })
+                body: spine_core::render_memory_artifact(&artifact.node_id, &artifact.body),
+                node_id: artifact.node_id.to_string(),
+            },
+        )
         .collect()
 }
 
@@ -156,12 +140,10 @@ fn projection_from_effective_rollout(
 
 #[cfg(test)]
 fn derive_spine_projection(events: &[RolloutEvent]) -> SpineProjection {
-    let registration = SpineRegistration::builder()
-        .enable(Feature::Jit)
-        .build()
-        .expect("JIT registration is valid");
-    let mut compiler = SpineCompiler::new(SpineConfig::v1(), registration)
-        .expect("the built-in Spine config is valid");
+    let config = SpineConfig::v1()
+        .with_feature(Feature::Jit)
+        .expect("JIT configuration is valid");
+    let mut compiler = SpineCompiler::new(config).expect("the built-in Spine config is valid");
     compiler
         .replay(events.iter().cloned())
         .expect("Codex adapter emits monotonic event boundaries")
@@ -571,7 +553,7 @@ fn is_valid_spawn_success_carrier(call: &ToolUse, body: &FunctionCallOutputBody)
     let Ok(tasks) = spawn::parse_tasks(&call.arguments) else {
         return false;
     };
-    let Ok(receipt) = spawn::decode_receipt(body) else {
+    let Ok(receipt) = SpawnReceipt::decode_json(body) else {
         return false;
     };
     receipt.validate_for(&tasks).is_ok()
@@ -957,10 +939,6 @@ fn text_message(role: MessageRole, text: String) -> ResponseItem {
         phase: None,
         internal_chat_message_metadata_passthrough: None,
     }
-}
-
-fn render_memory_artifact(node_id: &str, body: &str) -> String {
-    format!("# Spine Memory {node_id}\n\n## Node Memory\n{body}")
 }
 
 fn render_spawn_evidence(

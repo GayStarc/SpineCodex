@@ -1,7 +1,6 @@
 use crate::Feature;
 use crate::SpawnTask;
 use crate::SpineConfig;
-use crate::SpineRegistration;
 use crate::TrimRequest;
 use serde::Deserialize;
 use serde_json::Value;
@@ -60,21 +59,11 @@ pub struct ToolCatalog {
 }
 
 impl ToolCatalog {
-    pub fn new(
-        config: &SpineConfig,
-        registration: &SpineRegistration,
-    ) -> Result<Self, crate::InitError> {
-        config.validate_registration(registration)?;
-        Ok(Self::from_registration(config, registration))
-    }
-
-    pub(crate) fn from_registration(
-        config: &SpineConfig,
-        registration: &SpineRegistration,
-    ) -> Self {
+    pub fn new(config: &SpineConfig) -> Result<Self, crate::InitError> {
+        config.validate()?;
         let definitions = SpineTool::all()
             .into_iter()
-            .filter(|tool| registration.is_enabled(tool.feature()))
+            .filter(|tool| config.is_enabled(tool.feature()))
             .map(|tool| ToolDefinition {
                 tool,
                 description: config
@@ -84,7 +73,7 @@ impl ToolCatalog {
                 parameters: parameters_for(tool),
             })
             .collect();
-        Self { definitions }
+        Ok(Self { definitions })
     }
 
     pub fn definitions(&self) -> &[ToolDefinition] {
@@ -309,20 +298,15 @@ mod tests {
 
     #[test]
     fn registration_catalog_is_feature_gated() {
-        let config = SpineConfig::v1();
-        let registration = SpineRegistration::builder()
-            .enable(Feature::Jit)
-            .build()
-            .unwrap();
-        let catalog = ToolCatalog::from_registration(&config, &registration);
+        let config = SpineConfig::v1().with_feature(Feature::Jit).unwrap();
+        let catalog = ToolCatalog::new(&config).unwrap();
         assert_eq!(catalog.names(), ["spine.open", "spine.close", "spine.next"]);
         assert!(catalog.definition(SpineTool::Trim).is_none());
     }
 
     #[test]
     fn feature_off_catalog_is_empty() {
-        let registration = SpineRegistration::builder().build().unwrap();
-        let catalog = ToolCatalog::new(&SpineConfig::v1(), &registration).unwrap();
+        let catalog = ToolCatalog::new(&SpineConfig::v1()).unwrap();
         assert!(catalog.definitions().is_empty());
     }
 

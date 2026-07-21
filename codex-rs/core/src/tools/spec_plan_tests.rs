@@ -217,20 +217,23 @@ fn set_feature(turn: &mut TurnContext, feature: Feature, enabled: bool) {
             .expect("test feature should be disableable in config");
     }
     turn.multi_agent_version = config.multi_agent_version_from_features();
-    let mut registration = spine_core::SpineRegistration::builder();
+    let mut spine_features = Vec::new();
     if config.features.enabled(Feature::SpineJit) {
-        registration = registration.enable(spine_core::Feature::Jit);
+        spine_features.push(spine_core::Feature::Jit);
     }
     if config.features.enabled(Feature::SpineTrim) {
-        registration = registration.enable(spine_core::Feature::Trim);
+        spine_features.push(spine_core::Feature::Trim);
     }
     if config.features.enabled(Feature::SpineSpawn) && config.features.enabled(Feature::SpineJit) {
-        registration = registration.enable(spine_core::Feature::Spawn);
+        spine_features.push(spine_core::Feature::Spawn);
     }
-    config.spine_registration = registration.build().expect("test registration");
+    config.spine_config = config
+        .spine_config
+        .clone()
+        .with_features(spine_features)
+        .expect("test Spine configuration");
     config.spine_tools =
-        spine_core::ToolCatalog::new(&config.spine_config, &config.spine_registration)
-            .expect("test tool catalog");
+        spine_core::ToolCatalog::new(&config.spine_config).expect("test tool catalog");
     turn.config = Arc::new(config);
 }
 

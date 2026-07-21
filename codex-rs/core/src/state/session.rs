@@ -103,12 +103,8 @@ impl SessionState {
                     .spine_sdk_config()
                     .trim_threshold_bytes(),
             };
-            let runtime = SpineRuntime::new(
-                session_configuration.spine_sdk_config(),
-                session_configuration.spine_sdk_registration(),
-                host,
-            )
-            .expect("validated session Spine configuration must initialize");
+            let runtime = SpineRuntime::new(session_configuration.spine_sdk_config(), host)
+                .expect("validated session Spine configuration must initialize");
             SessionSpineRuntime {
                 runtime,
                 projected_history: history.clone(),
@@ -401,14 +397,14 @@ impl SessionState {
         self.mark_projected_usage_stale();
     }
 
-    pub(crate) fn validate_spine_control(
-        &self,
-        kind: crate::spine::SpineControlKind,
-    ) -> Result<(), String> {
+    pub(crate) fn validate_spine_control(&self, tool: spine_core::SpineTool) -> Result<(), String> {
         if self.spine_rollout.is_none() {
             return Err("Spine is not enabled for this session".to_string());
         }
-        if kind.requires_task() {
+        if matches!(
+            tool,
+            spine_core::SpineTool::Close | spine_core::SpineTool::Next
+        ) {
             let Some(runtime) = self.spine_runtime.as_ref() else {
                 return Err("Spine is not enabled for this session".to_string());
             };

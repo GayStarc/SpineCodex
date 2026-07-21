@@ -7,7 +7,6 @@ use crate::SpineCompiler;
 use crate::SpineConfig;
 use crate::SpineError;
 use crate::SpineProjection;
-use crate::SpineRegistration;
 use crate::ToolCatalog;
 use crate::bootstrap::InitError;
 use std::fmt;
@@ -114,14 +113,10 @@ pub struct SpineRuntime<H: SpineHost> {
 }
 
 impl<H: SpineHost> SpineRuntime<H> {
-    pub fn new(
-        config: SpineConfig,
-        registration: SpineRegistration,
-        host: H,
-    ) -> Result<Self, InitError> {
-        let tools = ToolCatalog::from_registration(&config, &registration);
-        let compiler = SpineCompiler::new(config, registration)?;
-        let active = !compiler.registration().is_empty();
+    pub fn new(config: SpineConfig, host: H) -> Result<Self, InitError> {
+        let tools = ToolCatalog::new(&config)?;
+        let compiler = SpineCompiler::new(config)?;
+        let active = !compiler.config_is_feature_off();
         let frontier = active.then(|| host.initial_frontier());
         let runtime_projection = RuntimeProjection {
             spine: compiler.projection().clone(),
@@ -143,7 +138,7 @@ impl<H: SpineHost> SpineRuntime<H> {
         rollout: &H::Rollout,
         base: &H::Context,
     ) -> Result<SpineOutput<H::Context>, RuntimeError<H::Error>> {
-        if self.compiler.registration().is_empty() {
+        if self.compiler.config_is_feature_off() {
             let projection = self.compiler.projection().clone();
             let delta = ProjectionDelta {
                 context_edit: ContextEdit::between(
@@ -201,7 +196,7 @@ impl<H: SpineHost> SpineRuntime<H> {
     pub fn reset(&mut self) {
         self.compiler.reset();
         self.frontier =
-            (!self.compiler.registration().is_empty()).then(|| self.host.initial_frontier());
+            (!self.compiler.config_is_feature_off()).then(|| self.host.initial_frontier());
         self.runtime_projection = RuntimeProjection {
             spine: self.compiler.projection().clone(),
             pending: Vec::new(),
