@@ -194,7 +194,7 @@ async fn spine_feature_off_clones_native_history_unchanged() {
     let mut state = SessionState::new(session_configuration);
     let message = response_message("user", "request");
     state.record_items(std::iter::once(&message), TruncationPolicy::Tokens(10_000));
-    state.append_spine_rollout_items(&[RolloutItem::ResponseItem(message.clone())]);
+    state.append_spine_inputs_for_test(&[RolloutItem::ResponseItem(message.clone())]);
 
     assert_eq!(state.clone_history().raw_items(), &[message]);
 }
@@ -957,7 +957,7 @@ async fn spine_feature_on_projects_live_native_rollout_at_clone_boundary() {
         internal_chat_message_metadata_passthrough: None,
     };
     state.record_items([&call, &output], TruncationPolicy::Tokens(10_000));
-    state.append_spine_rollout_items(&[
+    state.append_spine_inputs_for_test(&[
         RolloutItem::ResponseItem(call),
         RolloutItem::ResponseItem(output),
     ]);
@@ -974,8 +974,8 @@ async fn spine_live_append_uses_source_ordinals_across_event_items() {
     let mut state = SessionState::new(session_configuration);
     let user = response_message("user", "request");
     state.record_items(std::iter::once(&user), TruncationPolicy::Tokens(10_000));
-    state.append_spine_rollout_items(&[RolloutItem::ResponseItem(user)]);
-    state.append_spine_rollout_items(&[token_count(1_000)]);
+    state.append_spine_inputs_for_test(&[RolloutItem::ResponseItem(user)]);
+    state.append_spine_inputs_for_test(&[token_count(1_000)]);
 
     let call = ResponseItem::FunctionCall {
         id: None,
@@ -986,7 +986,7 @@ async fn spine_live_append_uses_source_ordinals_across_event_items() {
         internal_chat_message_metadata_passthrough: None,
     };
     state.record_items(std::iter::once(&call), TruncationPolicy::Tokens(10_000));
-    state.append_spine_rollout_items(&[RolloutItem::ResponseItem(call)]);
+    state.append_spine_inputs_for_test(&[RolloutItem::ResponseItem(call)]);
 
     let output = ResponseItem::FunctionCallOutput {
         id: None,
@@ -998,7 +998,7 @@ async fn spine_live_append_uses_source_ordinals_across_event_items() {
         internal_chat_message_metadata_passthrough: None,
     };
     state.record_items(std::iter::once(&output), TruncationPolicy::Tokens(10_000));
-    state.append_spine_rollout_items(&[RolloutItem::ResponseItem(output)]);
+    state.append_spine_inputs_for_test(&[RolloutItem::ResponseItem(output)]);
 
     let projected = state.clone_history();
     assert!(response_text(&projected.raw_items()[0]).contains("request"));
@@ -1033,7 +1033,7 @@ async fn spine_projection_reuses_host_truncated_tool_output() {
     };
     state.record_items([&call, &output], TruncationPolicy::Tokens(50));
     let native_output = state.history.raw_items()[1].clone();
-    state.append_spine_rollout_items(&[
+    state.append_spine_inputs_for_test(&[
         RolloutItem::ResponseItem(call),
         RolloutItem::ResponseItem(output),
     ]);
@@ -1087,7 +1087,7 @@ async fn spine_materialization_updates_trimmed_boundaries_and_rebuilds_after_com
         RolloutItem::ResponseItem(trim_output.clone()),
     ];
     state.record_items([&call, &output], TruncationPolicy::Tokens(10_000));
-    state.append_spine_rollout_items(&rollout[..2]);
+    state.append_spine_inputs_for_test(&rollout[..2]);
     let tagged = state.clone_history();
     let ResponseItem::FunctionCallOutput { output, .. } = &tagged.raw_items()[1] else {
         panic!("expected tagged shell output");
@@ -1101,7 +1101,7 @@ async fn spine_materialization_updates_trimmed_boundaries_and_rebuilds_after_com
     );
 
     state.record_items([&trim_call, &trim_output], TruncationPolicy::Tokens(10_000));
-    state.append_spine_rollout_items(&rollout[2..]);
+    state.append_spine_inputs_for_test(&rollout[2..]);
     let snipped = state.clone_history();
     let ResponseItem::FunctionCallOutput { output, .. } = &snipped.raw_items()[1] else {
         panic!("expected snipped shell output");
@@ -1113,7 +1113,7 @@ async fn spine_materialization_updates_trimmed_boundaries_and_rebuilds_after_com
 
     let replacement = response_message("user", "compacted context");
     state.replace_history(vec![replacement.clone()], None);
-    state.append_spine_rollout_items(&[RolloutItem::Compacted(CompactedItem {
+    state.append_spine_inputs_for_test(&[RolloutItem::Compacted(CompactedItem {
         message: "compact memory".to_string(),
         replacement_history: Some(vec![replacement.clone()]),
         window_number: None,
@@ -1123,7 +1123,7 @@ async fn spine_materialization_updates_trimmed_boundaries_and_rebuilds_after_com
     })]);
     assert_eq!(state.clone_history().raw_items(), &[replacement]);
 
-    state.replace_spine_rollout(&rollout);
+    state.replace_spine_inputs_for_test(&rollout);
     assert_eq!(state.clone_history().raw_items(), snipped.raw_items());
 }
 
@@ -1136,7 +1136,7 @@ async fn spawn_context_install_is_atomic_and_independently_feature_gated() {
     let (call, output) = spawn_call_and_output();
 
     state.record_items([&call], TruncationPolicy::Tokens(10_000));
-    state.append_spine_rollout_items(&[RolloutItem::ResponseItem(call.clone())]);
+    state.append_spine_inputs_for_test(&[RolloutItem::ResponseItem(call.clone())]);
     assert_eq!(state.clone_history().raw_items(), &[call.clone()]);
     assert_eq!(
         state.spine_tree_update().expect("tree enabled").nodes.len(),
@@ -1144,7 +1144,7 @@ async fn spawn_context_install_is_atomic_and_independently_feature_gated() {
     );
 
     state.record_items([&output], TruncationPolicy::Tokens(10_000));
-    state.append_spine_rollout_items(&[RolloutItem::ResponseItem(output.clone())]);
+    state.append_spine_inputs_for_test(&[RolloutItem::ResponseItem(output.clone())]);
     let projected = state.clone_history();
     assert_eq!(projected.raw_items().len(), 8);
     assert!(response_text(&projected.raw_items()[2]).contains("spine_spawn_evidence"));
@@ -1173,7 +1173,7 @@ async fn spawn_context_install_is_atomic_and_independently_feature_gated() {
     disabled.enable_spine_jit_for_test();
     let mut disabled_state = SessionState::new(disabled);
     disabled_state.record_items([&call, &output], TruncationPolicy::Tokens(10_000));
-    disabled_state.append_spine_rollout_items(&[
+    disabled_state.append_spine_inputs_for_test(&[
         RolloutItem::ResponseItem(call.clone()),
         RolloutItem::ResponseItem(output.clone()),
     ]);
@@ -1391,7 +1391,7 @@ async fn spine_tree_pressure_rederives_for_resume_and_rollback_prefixes() {
     )));
     full.push(token_count(42_000));
 
-    state.replace_spine_rollout(&full);
+    state.replace_spine_inputs_for_test(&full);
     let resumed = state
         .spine_tree_update()
         .expect("resumed pressure snapshot");
@@ -1418,7 +1418,7 @@ async fn spine_tree_pressure_rederives_for_resume_and_rollback_prefixes() {
             num_turns: 1,
         }),
     ));
-    state.replace_spine_rollout(&rolled_back);
+    state.replace_spine_inputs_for_test(&rolled_back);
     let rollback = state
         .spine_tree_update()
         .expect("rollback pressure snapshot");
@@ -1432,7 +1432,7 @@ async fn spine_tree_pressure_rederives_for_resume_and_rollback_prefixes() {
         Some(0)
     );
 
-    state.replace_spine_rollout(&open_prefix);
+    state.replace_spine_inputs_for_test(&open_prefix);
     assert_eq!(
         state
             .spine_tree_update()
@@ -1447,11 +1447,53 @@ async fn spine_tree_pressure_rederives_for_resume_and_rollback_prefixes() {
 }
 
 #[tokio::test]
+async fn live_append_after_rollback_preserves_canonical_source_ordinals() {
+    let mut enabled = make_session_configuration_for_tests().await;
+    enabled.enable_spine_jit_for_test();
+    let mut live = SessionState::new(enabled.clone());
+    let mut canonical = vec![
+        RolloutItem::ResponseItem(response_message("user", "first")),
+        RolloutItem::ResponseItem(response_message("user", "removed")),
+        RolloutItem::EventMsg(codex_protocol::protocol::EventMsg::ThreadRolledBack(
+            ThreadRolledBackEvent { num_turns: 1 },
+        )),
+    ];
+    let open_items = vec![
+        RolloutItem::ResponseItem(ResponseItem::FunctionCall {
+            id: None,
+            name: "open".to_string(),
+            namespace: Some("spine".to_string()),
+            arguments: r#"{"summary":"after rollback"}"#.to_string(),
+            call_id: "open".to_string(),
+            internal_chat_message_metadata_passthrough: None,
+        }),
+        RolloutItem::ResponseItem(ResponseItem::FunctionCallOutput {
+            id: None,
+            call_id: "open".to_string(),
+            output: FunctionCallOutputPayload::from_text("Spine open accepted.".to_string()),
+            internal_chat_message_metadata_passthrough: None,
+        }),
+    ];
+
+    live.replace_spine_inputs_for_test(&canonical);
+    live.append_spine_inputs_for_test(&open_items);
+    let live_snapshot = live.spine_tree_update().expect("live snapshot");
+
+    canonical.extend(open_items);
+    let mut replayed = SessionState::new(enabled);
+    replayed.replace_spine_inputs_for_test(&canonical);
+    assert_eq!(
+        live_snapshot,
+        replayed.spine_tree_update().expect("replayed snapshot")
+    );
+}
+
+#[tokio::test]
 async fn spine_tree_snapshot_uses_the_closed_nodes_final_summary_slot() {
     let mut session_configuration = make_session_configuration_for_tests().await;
     session_configuration.enable_spine_jit_for_test();
     let mut state = SessionState::new(session_configuration);
-    state.append_spine_rollout_items(&[
+    state.append_spine_inputs_for_test(&[
         RolloutItem::ResponseItem(ResponseItem::FunctionCall {
             id: None,
             name: "spine.open".to_string(),
@@ -1532,7 +1574,7 @@ async fn spine_control_validation_uses_the_pre_group_rollout_projection() {
             .is_err()
     );
 
-    state.append_spine_rollout_items(&[
+    state.append_spine_inputs_for_test(&[
         RolloutItem::ResponseItem(ResponseItem::FunctionCall {
             id: None,
             name: "spine.open".to_string(),
@@ -1587,7 +1629,7 @@ async fn spine_trim_only_projects_native_history_without_tree_messages() {
         internal_chat_message_metadata_passthrough: None,
     };
     state.record_items([&call, &output], TruncationPolicy::Tokens(10_000));
-    state.append_spine_rollout_items(&[
+    state.append_spine_inputs_for_test(&[
         RolloutItem::ResponseItem(call),
         RolloutItem::ResponseItem(output),
     ]);
@@ -1633,7 +1675,7 @@ async fn spine_trim_validation_uses_only_the_previous_completed_toolcall() {
     let second_call = call("shell-2");
     let first_output = output("shell-1", "first");
     let second_output = output("shell-2", "second");
-    state.append_spine_rollout_items(&[
+    state.append_spine_inputs_for_test(&[
         RolloutItem::ResponseItem(call("old-shell")),
         RolloutItem::ResponseItem(output("old-shell", "old")),
         RolloutItem::ResponseItem(first_call),
@@ -1660,7 +1702,7 @@ async fn spine_trim_validation_uses_only_the_previous_completed_toolcall() {
             .contains("previous completed toolcall does not contain TRIM_ID trim_1")
     );
 
-    state.append_spine_rollout_items(&[
+    state.append_spine_inputs_for_test(&[
         RolloutItem::ResponseItem(ResponseItem::FunctionCallOutput {
             id: None,
             call_id: "trim".to_string(),

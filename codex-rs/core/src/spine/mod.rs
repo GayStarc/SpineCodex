@@ -63,12 +63,20 @@ pub(crate) fn closed_memory_projection_entries(
         .collect()
 }
 
+#[cfg(test)]
 pub(crate) fn user_message_projection_entries(
     rollout: &[RolloutItem],
 ) -> Vec<memory_projection::SpinetreeUserMessageProjectionEntry> {
+    user_message_projection_entries_from_effective(&effective_rollout(rollout))
+}
+
+pub(crate) fn user_message_projection_entries_from_effective(
+    effective: &[(usize, &RolloutItem)],
+) -> Vec<memory_projection::SpinetreeUserMessageProjectionEntry> {
     let mut next_anchor = 1;
-    effective_rollout(rollout)
-        .into_iter()
+    effective
+        .iter()
+        .copied()
         .filter_map(|(raw_index, item)| {
             let RolloutItem::ResponseItem(item) = item else {
                 return None;
@@ -142,13 +150,21 @@ fn derive_spine_projection(events: &[RolloutEvent]) -> SpineProjection {
         .projection
 }
 
+#[cfg(test)]
 pub(crate) fn validate_trim_request(
     rollout: &[RolloutItem],
     current_call_id: &str,
     request: &TrimRequest,
 ) -> Result<(), String> {
-    let effective = effective_rollout(rollout);
-    let events = lex_rollout(&effective, true);
+    validate_trim_request_from_effective(&effective_rollout(rollout), current_call_id, request)
+}
+
+pub(crate) fn validate_trim_request_from_effective(
+    effective: &[(usize, &RolloutItem)],
+    current_call_id: &str,
+    request: &TrimRequest,
+) -> Result<(), String> {
+    let events = lex_rollout(effective, true);
     // The current trim request is already staged in the rollout, but has no
     // response yet. Its predecessor is the only eligible trim window.
     let current_group = events.iter().rposition(|event| {
@@ -175,9 +191,22 @@ pub(crate) fn validate_trim_request(
 }
 
 fn effective_rollout(rollout: &[RolloutItem]) -> Vec<(usize, &RolloutItem)> {
-    let mut effective: Vec<(usize, &RolloutItem)> = Vec::new();
+    let mut source = Vec::new();
     let mut response_ordinal = 0;
     for item in rollout {
+        source.push((response_ordinal, item));
+        if is_spine_source_item(item) {
+            response_ordinal += 1;
+        }
+    }
+    effective_rollout_from_source(&source)
+}
+
+pub(crate) fn effective_rollout_from_source<'a>(
+    source: &[(usize, &'a RolloutItem)],
+) -> Vec<(usize, &'a RolloutItem)> {
+    let mut effective: Vec<(usize, &RolloutItem)> = Vec::new();
+    for (response_ordinal, item) in source.iter().copied() {
         if let RolloutItem::EventMsg(EventMsg::ThreadRolledBack(rollback)) = item {
             let turns = usize::try_from(rollback.num_turns).unwrap_or(usize::MAX);
             if turns == 0 {
@@ -233,10 +262,9 @@ fn effective_rollout(rollout: &[RolloutItem]) -> Vec<(usize, &RolloutItem)> {
             }
             continue;
         }
-        if is_spine_source_item(item) {
-            effective.push((response_ordinal, item));
-            response_ordinal += 1;
-        } else if matches!(item, RolloutItem::EventMsg(EventMsg::TokenCount(_))) {
+        if is_spine_source_item(item)
+            || matches!(item, RolloutItem::EventMsg(EventMsg::TokenCount(_)))
+        {
             effective.push((response_ordinal, item));
         }
     }
@@ -755,8 +783,9 @@ fn project_toolcall_item(
                 } else {
                     "failure"
                 };
-                output.body =
-                    FunctionCallOutputBody::Text(serde_json::json!({"status": status}).to_string());
+                output.body = FunctionCallOutputBody::Text(
+                    serde_json::json!({"status": status}).to_string(),
+                );
                 output.success = Some(status == "success");
                 return item;
             }

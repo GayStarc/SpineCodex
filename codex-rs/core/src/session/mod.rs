@@ -4116,9 +4116,9 @@ impl Session {
         let event = {
             let mut state = self.state.lock().await;
             let (info, rate_limits) = state.token_info_and_rate_limits();
-            let event = EventMsg::TokenCount(TokenCountEvent { info, rate_limits });
-            state.observe_context_event(&event);
-            event
+            let event = TokenCountEvent { info, rate_limits };
+            state.observe_token_count(&event);
+            EventMsg::TokenCount(event)
         };
         self.send_event(turn_context, event).await;
         self.emit_spine_tree_update(turn_context).await;

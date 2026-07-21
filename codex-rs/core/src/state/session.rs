@@ -25,6 +25,7 @@ use crate::session::session::SessionConfiguration;
 use crate::session::time_reminder::CurrentTimeReminderState;
 use crate::session_startup_prewarm::SessionStartupPrewarmHandle;
 use codex_protocol::protocol::RateLimitSnapshot;
+use codex_protocol::protocol::TokenCountEvent;
 use codex_protocol::protocol::TokenUsage;
 use codex_protocol::protocol::TokenUsageInfo;
 use codex_protocol::protocol::TurnContextItem;
@@ -34,11 +35,11 @@ use spine_core::SpineRuntime;
 use crate::spine::host::CodexSpineHost;
 use crate::spine::host::CodexSpineInput;
 use crate::spine::host::CodexSpineMaterialization;
-use crate::spine::host::selected_inputs;
 
 struct SessionSpineRuntime {
     runtime: SpineRuntime<CodexSpineHost>,
     materialization: CodexSpineMaterialization,
+    next_ordinal: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,8 +70,8 @@ enum ContextTransition<'a> {
         reference_context_item: Option<TurnContextItem>,
         rollout_items: &'a [RolloutItem],
     },
-    Observe {
-        item: &'a RolloutItem,
+    ObserveUsage {
+        event: &'a TokenCountEvent,
     },
 }
 
@@ -95,7 +96,6 @@ pub(crate) struct SessionState {
     pub(crate) pending_session_start_sources: VecDeque<codex_hooks::SessionStartSource>,
     granted_permissions_by_environment_id: HashMap<String, AdditionalPermissionProfile>,
     next_turn_is_first: bool,
-    spine_rollout: Option<Vec<RolloutItem>>,
     projected_usage_basis: ProjectedUsageBasis,
     projected_usage_model: Option<String>,
     spine_runtime: Option<SessionSpineRuntime>,
@@ -116,10 +116,9 @@ impl SessionState {
         auto_compact_window_ids: AutoCompactWindowIds,
     ) -> Self {
         let history = ContextManager::new();
-        let spine_rollout = (session_configuration.spine_jit_enabled()
-            || session_configuration.spine_trim_enabled())
-        .then(Vec::new);
-        let spine_runtime = spine_rollout.as_ref().map(|_| {
+        let spine_enabled =
+            session_configuration.spine_jit_enabled() || session_configuration.spine_trim_enabled();
+        let spine_runtime = spine_enabled.then(|| {
             let host = CodexSpineHost {
                 jit_enabled: session_configuration.spine_jit_enabled(),
                 spawn_enabled: session_configuration.spine_spawn_enabled(),
@@ -139,6 +138,7 @@ impl SessionState {
             SessionSpineRuntime {
                 runtime,
                 materialization,
+                next_ordinal: 0,
             }
         });
         Self {
@@ -156,7 +156,6 @@ impl SessionState {
             pending_session_start_sources: VecDeque::new(),
             granted_permissions_by_environment_id: HashMap::new(),
             next_turn_is_first: true,
-            spine_rollout,
             projected_usage_basis: ProjectedUsageBasis::ProviderValid,
             projected_usage_model: None,
             spine_runtime,
@@ -198,9 +197,8 @@ impl SessionState {
         });
     }
 
-    pub(crate) fn observe_context_event(&mut self, event: &EventMsg) {
-        let item = RolloutItem::EventMsg(event.clone());
-        self.apply_context_transition(ContextTransition::Observe { item: &item });
+    pub(crate) fn observe_token_count(&mut self, event: &TokenCountEvent) {
+        self.apply_context_transition(ContextTransition::ObserveUsage { event });
     }
 
     pub(crate) fn previous_turn_settings(&self) -> Option<PreviousTurnSettings> {
@@ -398,10 +396,16 @@ impl SessionState {
         if !self.session_configuration.spine_jit_enabled() {
             return Vec::new();
         }
-        self.spine_rollout
-            .as_deref()
-            .map(crate::spine::user_message_projection_entries)
-            .unwrap_or_default()
+        let Some(spine) = self.spine_runtime.as_ref() else {
+            return Vec::new();
+        };
+        let Some(frontier) = spine.runtime.frontier() else {
+            return Vec::new();
+        };
+        spine
+            .runtime
+            .host()
+            .user_message_projection_entries(frontier)
     }
 
     fn apply_context_transition(&mut self, transition: ContextTransition<'_>) {
@@ -431,103 +435,72 @@ impl SessionState {
                 self.replace_native_history(items, reference_context_item);
                 self.replace_spine_inputs(rollout_items);
             }
-            ContextTransition::Observe { item } => {
-                self.append_spine_inputs(std::slice::from_ref(item));
+            ContextTransition::ObserveUsage { event } => {
+                self.append_spine_inputs(&[RolloutItem::EventMsg(EventMsg::TokenCount(
+                    event.clone(),
+                ))]);
             }
         }
     }
 
     fn append_spine_inputs(&mut self, items: &[RolloutItem]) {
-        if let Some(rollout) = &mut self.spine_rollout {
-            let first_ordinal = rollout
-                .iter()
-                .filter(|item| crate::spine::is_spine_source_item(item))
-                .count();
-            rollout.extend_from_slice(items);
-            if let Some(spine) = &mut self.spine_runtime {
-                let changes_selected_prefix = items.iter().any(|item| {
-                    matches!(
-                        item,
-                        RolloutItem::EventMsg(
-                            codex_protocol::protocol::EventMsg::ThreadRolledBack(_)
-                        )
-                    )
-                });
-                if changes_selected_prefix {
-                    let inputs = selected_inputs(rollout);
-                    let output = spine
-                        .runtime
-                        .replay(inputs.iter())
-                        .expect("selected rollout replacement must replay deterministically");
-                    spine.materialization = spine
-                        .runtime
-                        .host()
-                        .rebuild_materialization(
-                            spine
-                                .runtime
-                                .frontier()
-                                .expect("active Spine runtime must expose its frontier"),
-                            &self.history,
-                            output.runtime_projection(),
-                        )
-                        .expect("selected rollout replacement must project deterministically");
-                    return;
-                }
-                let mut next_ordinal = first_ordinal;
-                for item in items {
-                    let input = CodexSpineInput {
-                        ordinal: next_ordinal,
-                        item: item.clone(),
-                    };
-                    if crate::spine::is_spine_source_item(item) {
-                        next_ordinal += 1;
-                    }
-                    let output = spine
-                        .runtime
-                        .eat(&input)
-                        .expect("native rollout append must produce a valid Spine projection");
+        let Some(spine) = &mut self.spine_runtime else {
+            return;
+        };
+        for item in items {
+            let input = CodexSpineInput {
+                ordinal: spine.next_ordinal,
+                item: item.clone(),
+            };
+            if crate::spine::is_spine_source_item(item) {
+                spine.next_ordinal = spine.next_ordinal.saturating_add(1);
+            }
+            let output = spine
+                .runtime
+                .eat(&input)
+                .expect("native rollout append must produce a valid Spine projection");
+            spine
+                .runtime
+                .host()
+                .update_materialization(
+                    &mut spine.materialization,
                     spine
                         .runtime
-                        .host()
-                        .update_materialization(
-                            &mut spine.materialization,
-                            spine
-                                .runtime
-                                .frontier()
-                                .expect("active Spine runtime must expose its frontier"),
-                            &self.history,
-                            &output,
-                        )
-                        .expect("native rollout append must materialize deterministically");
-                }
-            }
+                        .frontier()
+                        .expect("active Spine runtime must expose its frontier"),
+                    &self.history,
+                    &output,
+                )
+                .expect("native rollout append must materialize deterministically");
         }
     }
 
     fn replace_spine_inputs(&mut self, items: &[RolloutItem]) {
-        if let Some(rollout) = &mut self.spine_rollout {
-            rollout.clear();
-            rollout.extend_from_slice(items);
-            if let Some(spine) = &mut self.spine_runtime {
-                let inputs = selected_inputs(rollout);
-                let output = spine
+        let Some(spine) = &mut self.spine_runtime else {
+            return;
+        };
+        let next_ordinal = items
+            .iter()
+            .filter(|item| crate::spine::is_spine_source_item(item))
+            .count();
+        let inputs = crate::spine::host::selected_inputs(items);
+        let output = spine
+            .runtime
+            .replay(inputs.iter())
+            .expect("native rollout replacement must replay deterministically");
+        spine.materialization = spine
+            .runtime
+            .host()
+            .rebuild_materialization(
+                spine
                     .runtime
-                    .replay(inputs.iter())
-                    .expect("native rollout replacement must replay deterministically");
-                spine.materialization = spine
-                    .runtime
-                    .host()
-                    .rebuild_materialization(
-                        spine
-                            .runtime
-                            .frontier()
-                            .expect("active Spine runtime must expose its frontier"),
-                        &self.history,
-                        output.runtime_projection(),
-                    )
-                    .expect("native rollout replacement must project deterministically");
-            }
-        }
+                    .frontier()
+                    .expect("active Spine runtime must expose its frontier"),
+                &self.history,
+                output.runtime_projection(),
+            )
+            .expect("native rollout replacement must project deterministically");
+        spine.next_ordinal = next_ordinal;
         self.mark_projected_usage_stale();
     }
 
@@ -541,17 +514,17 @@ impl SessionState {
     }
 
     #[cfg(test)]
-    pub(crate) fn append_spine_rollout_items(&mut self, items: &[RolloutItem]) {
+    pub(crate) fn append_spine_inputs_for_test(&mut self, items: &[RolloutItem]) {
         self.append_spine_inputs(items);
     }
 
     #[cfg(test)]
-    pub(crate) fn replace_spine_rollout(&mut self, items: &[RolloutItem]) {
+    pub(crate) fn replace_spine_inputs_for_test(&mut self, items: &[RolloutItem]) {
         self.replace_spine_inputs(items);
     }
 
     pub(crate) fn validate_spine_control(&self, tool: spine_core::SpineTool) -> Result<(), String> {
-        if self.spine_rollout.is_none() {
+        if self.spine_runtime.is_none() {
             return Err("Spine is not enabled for this session".to_string());
         }
         if matches!(
@@ -582,11 +555,18 @@ impl SessionState {
         if !self.session_configuration.spine_trim_enabled() {
             return Err("Spine trim is not enabled for this session".to_string());
         }
-        let rollout = self
-            .spine_rollout
-            .as_deref()
-            .ok_or_else(|| "Spine trim rollout is unavailable".to_string())?;
-        crate::spine::validate_trim_request(rollout, current_call_id, request)
+        let spine = self
+            .spine_runtime
+            .as_ref()
+            .ok_or_else(|| "Spine trim runtime is unavailable".to_string())?;
+        let frontier = spine
+            .runtime
+            .frontier()
+            .ok_or_else(|| "Spine trim frontier is unavailable".to_string())?;
+        spine
+            .runtime
+            .host()
+            .validate_trim_request(frontier, current_call_id, request)
     }
 
     #[cfg(test)]

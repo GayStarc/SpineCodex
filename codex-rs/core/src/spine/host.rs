@@ -1,4 +1,5 @@
 use super::effective_rollout;
+use super::effective_rollout_from_source;
 use super::materialize_context;
 use super::materialize_trim_only_context;
 use super::project_trim_item;
@@ -84,6 +85,40 @@ pub(crate) fn selected_inputs(rollout: &[RolloutItem]) -> Vec<CodexSpineInput> {
             item: item.clone(),
         })
         .collect()
+}
+
+impl CodexSpineHost {
+    pub(crate) fn user_message_projection_entries(
+        &self,
+        frontier: &CodexSpineFrontier,
+    ) -> Vec<super::memory_projection::SpinetreeUserMessageProjectionEntry> {
+        let source = frontier
+            .source
+            .iter()
+            .map(|input| (input.ordinal, &input.item))
+            .collect::<Vec<_>>();
+        super::user_message_projection_entries_from_effective(&effective_rollout_from_source(
+            &source,
+        ))
+    }
+
+    pub(crate) fn validate_trim_request(
+        &self,
+        frontier: &CodexSpineFrontier,
+        current_call_id: &str,
+        request: &spine_core::TrimRequest,
+    ) -> Result<(), String> {
+        let source = frontier
+            .source
+            .iter()
+            .map(|input| (input.ordinal, &input.item))
+            .collect::<Vec<_>>();
+        super::validate_trim_request_from_effective(
+            &effective_rollout_from_source(&source),
+            current_call_id,
+            request,
+        )
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
