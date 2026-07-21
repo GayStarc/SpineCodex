@@ -8,6 +8,7 @@ use spine_core::SpineCompiler;
 use spine_core::SpineConfig;
 use spine_core::SpineHost;
 use spine_core::SpineRuntime;
+use spine_core::TokenUsageSample;
 use std::convert::Infallible;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
@@ -39,7 +40,11 @@ impl SpineHost for SyntheticHost {
             vec![input.clone()],
             Vec::new(),
             Some(input.boundary()),
-        ))
+        )
+        .with_usage_sample(TokenUsageSample {
+            boundary: input.boundary(),
+            input_tokens: 100,
+        }))
     }
 }
 
@@ -96,4 +101,23 @@ fn feature_off_is_identity_and_never_calls_host() {
     assert!(output.delta().context_edit.insert.is_empty());
     assert!(output.delta().projection.visible_context.is_empty());
     assert_eq!(calls.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn runtime_publishes_host_usage_observation() {
+    let host = SyntheticHost {
+        calls: Arc::new(AtomicUsize::new(0)),
+    };
+    let mut runtime = SpineRuntime::new(config(&[Feature::Jit]), host).unwrap();
+    let event = message(8, MessageRole::User, "observed");
+
+    let output = runtime.eat(&event).unwrap();
+
+    assert_eq!(
+        output.runtime_projection().usage_sample(),
+        Some(TokenUsageSample {
+            boundary: RawBoundary(8),
+            input_tokens: 100,
+        })
+    );
 }

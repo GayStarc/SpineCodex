@@ -7,6 +7,7 @@ use crate::SpineCompiler;
 use crate::SpineConfig;
 use crate::SpineError;
 use crate::SpineProjection;
+use crate::TokenUsageSample;
 use crate::ToolCatalog;
 use crate::bootstrap::InitError;
 use std::fmt;
@@ -31,6 +32,7 @@ pub struct HostStep<F> {
     events: Vec<RolloutEvent>,
     pending: Vec<NativeItemRef>,
     observed_boundary: Option<RawBoundary>,
+    usage_sample: Option<TokenUsageSample>,
 }
 
 impl<F> HostStep<F> {
@@ -45,7 +47,17 @@ impl<F> HostStep<F> {
             events,
             pending,
             observed_boundary,
+            usage_sample: None,
         }
+    }
+
+    pub fn with_usage_sample(mut self, sample: TokenUsageSample) -> Self {
+        self.usage_sample = Some(sample);
+        self
+    }
+
+    pub fn usage_sample(&self) -> Option<TokenUsageSample> {
+        self.usage_sample
     }
 }
 
@@ -54,6 +66,7 @@ pub struct RuntimeProjection {
     spine: SpineProjection,
     pending: Vec<NativeItemRef>,
     observed_boundary: Option<RawBoundary>,
+    usage_sample: Option<TokenUsageSample>,
 }
 
 impl RuntimeProjection {
@@ -67,6 +80,10 @@ impl RuntimeProjection {
 
     pub fn observed_boundary(&self) -> Option<RawBoundary> {
         self.observed_boundary
+    }
+
+    pub fn usage_sample(&self) -> Option<TokenUsageSample> {
+        self.usage_sample
     }
 }
 
@@ -104,6 +121,7 @@ impl<H: SpineHost> SpineRuntime<H> {
             spine: compiler.projection().clone(),
             pending: Vec::new(),
             observed_boundary: None,
+            usage_sample: None,
         };
         Ok(Self {
             host,
@@ -139,6 +157,7 @@ impl<H: SpineHost> SpineRuntime<H> {
             .host
             .ingest(frontier, input)
             .map_err(RuntimeError::Host)?;
+        let usage_sample = step.usage_sample();
         let before = self.compiler.projection().visible_context.clone();
         let mut candidate = self.compiler.clone();
         for event in step.events {
@@ -153,6 +172,7 @@ impl<H: SpineHost> SpineRuntime<H> {
             spine: projection,
             pending: step.pending,
             observed_boundary: step.observed_boundary,
+            usage_sample,
         };
 
         self.frontier = Some(step.frontier);
@@ -172,6 +192,7 @@ impl<H: SpineHost> SpineRuntime<H> {
             spine: self.compiler.projection().clone(),
             pending: Vec::new(),
             observed_boundary: None,
+            usage_sample: None,
         };
     }
 

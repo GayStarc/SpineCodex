@@ -4,12 +4,14 @@ use super::materialize_trim_only_context;
 use super::project_trim_item;
 use super::response_item_at;
 use crate::context_manager::ContextManager;
+use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::RolloutItem;
 use spine_core::HostStep;
 use spine_core::NativeItemRef;
 use spine_core::RawBoundary;
 use spine_core::RuntimeProjection;
 use spine_core::SpineHost;
+use spine_core::TokenUsageSample;
 use std::fmt;
 
 #[derive(Clone, Debug, Default)]
@@ -87,12 +89,24 @@ impl SpineHost for CodexSpineHost {
             source,
             emitted_events: events.events.len(),
         };
-        Ok(HostStep::new(
-            next_frontier,
-            new_events,
-            events.pending,
-            observed_boundary,
-        ))
+        let step = HostStep::new(next_frontier, new_events, events.pending, observed_boundary);
+        let usage_sample = match &input.item {
+            RolloutItem::EventMsg(EventMsg::TokenCount(event)) => event
+                .info
+                .as_ref()
+                .map(|info| info.last_token_usage.input_tokens)
+                .filter(|input_tokens| *input_tokens > 0)
+                .map(|input_tokens| TokenUsageSample {
+                    boundary: RawBoundary(input.ordinal as u64),
+                    input_tokens,
+                }),
+            _ => None,
+        };
+        let step = match usage_sample {
+            Some(sample) => step.with_usage_sample(sample),
+            None => step,
+        };
+        Ok(step)
     }
 }
 
