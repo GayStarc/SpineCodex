@@ -13,7 +13,6 @@ use std::fmt;
 
 pub trait SpineHost {
     type Input;
-    type Context: Clone;
     type Frontier;
     type Error: std::error::Error;
 
@@ -24,13 +23,6 @@ pub trait SpineHost {
         frontier: &Self::Frontier,
         input: &Self::Input,
     ) -> Result<HostStep<Self::Frontier>, Self::Error>;
-
-    fn project_context(
-        &self,
-        base: &Self::Context,
-        frontier: &Self::Frontier,
-        update: &RuntimeProjection,
-    ) -> Result<Self::Context, Self::Error>;
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -79,27 +71,18 @@ impl RuntimeProjection {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SpineOutput<C> {
-    context: C,
+pub struct SpineOutput {
     delta: ProjectionDelta,
     runtime_projection: RuntimeProjection,
 }
 
-impl<C> SpineOutput<C> {
-    pub fn context(&self) -> &C {
-        &self.context
-    }
-
+impl SpineOutput {
     pub fn delta(&self) -> &ProjectionDelta {
         &self.delta
     }
 
     pub fn runtime_projection(&self) -> &RuntimeProjection {
         &self.runtime_projection
-    }
-
-    pub fn into_context(self) -> C {
-        self.context
     }
 }
 
@@ -131,11 +114,7 @@ impl<H: SpineHost> SpineRuntime<H> {
         })
     }
 
-    pub fn eat(
-        &mut self,
-        input: &H::Input,
-        base: &H::Context,
-    ) -> Result<SpineOutput<H::Context>, RuntimeError<H::Error>> {
+    pub fn eat(&mut self, input: &H::Input) -> Result<SpineOutput, RuntimeError<H::Error>> {
         if self.compiler.config_is_feature_off() {
             let projection = self.compiler.projection().clone();
             let delta = ProjectionDelta {
@@ -146,7 +125,6 @@ impl<H: SpineHost> SpineRuntime<H> {
                 projection,
             };
             return Ok(SpineOutput {
-                context: base.clone(),
                 delta,
                 runtime_projection: self.runtime_projection.clone(),
             });
@@ -176,16 +154,11 @@ impl<H: SpineHost> SpineRuntime<H> {
             pending: step.pending,
             observed_boundary: step.observed_boundary,
         };
-        let context = self
-            .host
-            .project_context(base, &step.frontier, &runtime_projection)
-            .map_err(RuntimeError::Host)?;
 
         self.frontier = Some(step.frontier);
         self.compiler = candidate;
         self.runtime_projection = runtime_projection.clone();
         Ok(SpineOutput {
-            context,
             delta,
             runtime_projection,
         })
@@ -206,11 +179,7 @@ impl<H: SpineHost> SpineRuntime<H> {
         self.compiler.projection()
     }
 
-    pub fn replay<'a, I>(
-        &mut self,
-        inputs: I,
-        base: &H::Context,
-    ) -> Result<SpineOutput<H::Context>, RuntimeError<H::Error>>
+    pub fn replay<'a, I>(&mut self, inputs: I) -> Result<SpineOutput, RuntimeError<H::Error>>
     where
         I: IntoIterator<Item = &'a H::Input>,
         H::Input: 'a,
@@ -218,9 +187,13 @@ impl<H: SpineHost> SpineRuntime<H> {
         self.reset();
         let mut output = None;
         for input in inputs {
-            output = Some(self.eat(input, base)?);
+            output = Some(self.eat(input)?);
         }
-        Ok(output.unwrap_or_else(|| self.output_with_context(base.clone())))
+        Ok(output.unwrap_or_else(|| self.output()))
+    }
+
+    pub fn host(&self) -> &H {
+        &self.host
     }
 
     pub fn tools(&self) -> &ToolCatalog {
@@ -231,10 +204,9 @@ impl<H: SpineHost> SpineRuntime<H> {
         self.compiler.extend_system_prompt(base)
     }
 
-    fn output_with_context(&self, context: H::Context) -> SpineOutput<H::Context> {
+    fn output(&self) -> SpineOutput {
         let projection = self.compiler.projection().clone();
         SpineOutput {
-            context,
             delta: ProjectionDelta {
                 context_edit: ContextEdit::between(
                     &projection.visible_context,

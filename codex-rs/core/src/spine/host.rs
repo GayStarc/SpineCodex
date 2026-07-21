@@ -55,7 +55,6 @@ impl std::error::Error for CodexSpineHostError {}
 
 impl SpineHost for CodexSpineHost {
     type Input = CodexSpineInput;
-    type Context = ContextManager;
     type Frontier = CodexSpineFrontier;
     type Error = CodexSpineHostError;
 
@@ -95,18 +94,16 @@ impl SpineHost for CodexSpineHost {
             observed_boundary,
         ))
     }
+}
 
-    fn project_context(
+impl CodexSpineHost {
+    pub(crate) fn project_context(
         &self,
-        base: &Self::Context,
-        frontier: &Self::Frontier,
+        rollout: &[RolloutItem],
+        base: &ContextManager,
         update: &RuntimeProjection,
-    ) -> Result<Self::Context, Self::Error> {
-        let effective = frontier
-            .source
-            .iter()
-            .map(|input| (input.ordinal, &input.item))
-            .collect::<Vec<_>>();
+    ) -> Result<ContextManager, CodexSpineHostError> {
+        let effective = effective_rollout(rollout);
         let trim = self.trim_enabled.then(|| {
             let events = super::stable_lex_rollout(&effective, self.spawn_enabled);
             spine_core::TrimProjection::derive_with_threshold(

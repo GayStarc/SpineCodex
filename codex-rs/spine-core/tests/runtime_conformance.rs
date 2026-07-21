@@ -1,11 +1,9 @@
-use spine_core::ContextItem;
 use spine_core::Feature;
 use spine_core::HostStep;
 use spine_core::Message;
 use spine_core::MessageRole;
 use spine_core::RawBoundary;
 use spine_core::RolloutEvent;
-use spine_core::RuntimeProjection;
 use spine_core::SpineCompiler;
 use spine_core::SpineConfig;
 use spine_core::SpineHost;
@@ -22,7 +20,6 @@ struct SyntheticHost {
 
 impl SpineHost for SyntheticHost {
     type Input = RolloutEvent;
-    type Context = Vec<ContextItem>;
     type Frontier = usize;
     type Error = Infallible;
 
@@ -43,16 +40,6 @@ impl SpineHost for SyntheticHost {
             Vec::new(),
             Some(input.boundary()),
         ))
-    }
-
-    fn project_context(
-        &self,
-        _base: &Self::Context,
-        _frontier: &Self::Frontier,
-        update: &RuntimeProjection,
-    ) -> Result<Self::Context, Self::Error> {
-        self.calls.fetch_add(1, Ordering::Relaxed);
-        Ok(update.spine().visible_context.clone())
     }
 }
 
@@ -83,14 +70,14 @@ fn runtime_replays_aot_prefix_then_continues_jit_with_direct_compiler_parity() {
     };
     let mut runtime = SpineRuntime::new(config(&[Feature::Jit]), host).unwrap();
 
-    let aot = runtime.replay(events[..2].iter(), &Vec::new()).unwrap();
-    assert_eq!(aot.context().len(), 2);
-    let jit = runtime.eat(&events[2], &Vec::new()).unwrap();
+    let aot = runtime.replay(events[..2].iter()).unwrap();
+    assert_eq!(aot.delta().projection.visible_context.len(), 2);
+    let jit = runtime.eat(&events[2]).unwrap();
 
     let mut direct = SpineCompiler::new(config(&[Feature::Jit])).unwrap();
     let expected = direct.replay(events).unwrap();
     assert_eq!(jit.runtime_projection().spine(), &expected.projection);
-    assert_eq!(jit.context(), &expected.projection.visible_context);
+    assert_eq!(jit.delta().projection, expected.projection);
     assert!(calls.load(Ordering::Relaxed) > 0);
 }
 
@@ -101,18 +88,12 @@ fn feature_off_is_identity_and_never_calls_host() {
         calls: Arc::clone(&calls),
     };
     let mut runtime = SpineRuntime::new(config(&[]), host).unwrap();
-    let base = vec![ContextItem::Message {
-        message: Message {
-            boundary: RawBoundary(7),
-            role: MessageRole::System,
-            content: "base".to_owned(),
-        },
-        user_anchor: None,
-    }];
     let event = message(8, MessageRole::User, "ignored");
 
-    let output = runtime.eat(&event, &base).unwrap();
+    let output = runtime.eat(&event).unwrap();
 
-    assert_eq!(output.context(), &base);
+    assert_eq!(output.delta().context_edit.delete, 0);
+    assert!(output.delta().context_edit.insert.is_empty());
+    assert!(output.delta().projection.visible_context.is_empty());
     assert_eq!(calls.load(Ordering::Relaxed), 0);
 }

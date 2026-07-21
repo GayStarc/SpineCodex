@@ -359,9 +359,13 @@ impl SessionState {
                     let inputs = selected_inputs(rollout);
                     let output = spine
                         .runtime
-                        .replay(inputs.iter(), &self.history)
+                        .replay(inputs.iter())
                         .expect("selected rollout replacement must replay deterministically");
-                    spine.projected_history = output.into_context();
+                    spine.projected_history = spine
+                        .runtime
+                        .host()
+                        .project_context(rollout, &self.history, output.runtime_projection())
+                        .expect("selected rollout replacement must project deterministically");
                     return;
                 }
                 let mut next_ordinal = first_ordinal;
@@ -375,9 +379,13 @@ impl SessionState {
                     }
                     let output = spine
                         .runtime
-                        .eat(&input, &self.history)
+                        .eat(&input)
                         .expect("native rollout append must produce a valid Spine projection");
-                    spine.projected_history = output.into_context();
+                    spine.projected_history = spine
+                        .runtime
+                        .host()
+                        .project_context(rollout, &self.history, output.runtime_projection())
+                        .expect("native rollout append must project deterministically");
                 }
             }
         }
@@ -391,9 +399,13 @@ impl SessionState {
                 let inputs = selected_inputs(rollout);
                 let output = spine
                     .runtime
-                    .replay(inputs.iter(), &self.history)
+                    .replay(inputs.iter())
                     .expect("native rollout replacement must replay deterministically");
-                spine.projected_history = output.into_context();
+                spine.projected_history = spine
+                    .runtime
+                    .host()
+                    .project_context(rollout, &self.history, output.runtime_projection())
+                    .expect("native rollout replacement must project deterministically");
             }
         }
         self.mark_projected_usage_stale();
