@@ -1266,7 +1266,7 @@ async fn spine_tree_spawn_outcome_belongs_only_to_the_spawned_node() {
 }
 
 #[tokio::test]
-async fn spine_tree_snapshot_is_derived_across_compact_and_rollout_replacement() {
+async fn context_transitions_publish_compact_and_replay_before_return() {
     let mut disabled = make_session_configuration_for_tests().await;
     disabled.disable_spine_jit_for_test();
     assert!(SessionState::new(disabled).spine_tree_update().is_none());
@@ -1280,16 +1280,16 @@ async fn spine_tree_snapshot_is_derived_across_compact_and_rollout_replacement()
     assert_eq!(initial.active_node_id, "1");
     assert_eq!(initial.nodes.len(), 1);
 
-    let opened_rollout = vec![
-        RolloutItem::ResponseItem(ResponseItem::FunctionCall {
+    let opened_items = vec![
+        ResponseItem::FunctionCall {
             id: None,
             name: "spine.open".to_string(),
             namespace: None,
             arguments: r#"{"summary":"task"}"#.to_string(),
             call_id: "open".to_string(),
             internal_chat_message_metadata_passthrough: None,
-        }),
-        RolloutItem::ResponseItem(ResponseItem::FunctionCallOutput {
+        },
+        ResponseItem::FunctionCallOutput {
             id: None,
             call_id: "open".to_string(),
             output: FunctionCallOutputPayload {
@@ -1297,9 +1297,14 @@ async fn spine_tree_snapshot_is_derived_across_compact_and_rollout_replacement()
                 success: Some(true),
             },
             internal_chat_message_metadata_passthrough: None,
-        }),
+        },
     ];
-    state.append_spine_rollout_items(&opened_rollout);
+    let opened_rollout = opened_items
+        .iter()
+        .cloned()
+        .map(RolloutItem::ResponseItem)
+        .collect::<Vec<_>>();
+    state.append_context_items(&opened_items, TruncationPolicy::Tokens(10_000));
     let opened = state
         .spine_tree_update()
         .expect("opened snapshot should be available");
@@ -1315,14 +1320,16 @@ async fn spine_tree_snapshot_is_derived_across_compact_and_rollout_replacement()
     );
     assert_eq!(opened.nodes[1].summary.as_deref(), Some("task"));
 
-    state.append_spine_rollout_items(&[RolloutItem::Compacted(CompactedItem {
+    let replacement = response_message("user", "compacted context");
+    let compacted_item = CompactedItem {
         message: "native compact memory".to_string(),
-        replacement_history: Some(vec![response_message("user", "compacted context")]),
+        replacement_history: Some(vec![replacement.clone()]),
         window_number: None,
         first_window_id: None,
         previous_window_id: None,
         window_id: None,
-    })]);
+    };
+    state.replace_context_with_compaction(vec![replacement.clone()], None, &compacted_item);
     let compacted = state
         .spine_tree_update()
         .expect("compacted snapshot should be available");
@@ -1335,15 +1342,16 @@ async fn spine_tree_snapshot_is_derived_across_compact_and_rollout_replacement()
         compacted.nodes.last().map(|node| node.status),
         Some(codex_protocol::spine_tree::SpineTreeNodeStatus::Live)
     );
+    assert_eq!(state.clone_history().raw_items(), &[replacement]);
 
-    state.replace_spine_rollout(&opened_rollout);
+    state.replace_context_from_rollout(Vec::new(), None, &opened_rollout);
     assert_eq!(
         state
             .spine_tree_update()
             .expect("replayed snapshot should be available"),
         opened
     );
-    state.replace_spine_rollout(&[]);
+    state.replace_context_from_rollout(Vec::new(), None, &[]);
     assert_eq!(
         state
             .spine_tree_update()

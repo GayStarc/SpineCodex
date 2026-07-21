@@ -3,6 +3,8 @@
 use codex_protocol::models::AdditionalPermissionProfile;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::CompactedItem;
+use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::RolloutItem;
 use codex_sandboxing::policy_transforms::merge_permission_profiles;
 use std::collections::HashMap;
@@ -50,6 +52,26 @@ pub(crate) struct ContextPressureSnapshot {
     pub(crate) active_context_tokens: i64,
     pub(crate) body_after_prefix_tokens: i64,
     pub(crate) body_after_prefix_prefill_tokens: Option<i64>,
+}
+
+enum ContextTransition<'a> {
+    Append {
+        items: &'a [ResponseItem],
+        policy: TruncationPolicy,
+    },
+    Compact {
+        items: Vec<ResponseItem>,
+        reference_context_item: Option<TurnContextItem>,
+        compacted_item: &'a CompactedItem,
+    },
+    Reset {
+        items: Vec<ResponseItem>,
+        reference_context_item: Option<TurnContextItem>,
+        rollout_items: &'a [RolloutItem],
+    },
+    Observe {
+        item: &'a RolloutItem,
+    },
 }
 
 /// Persistent, session-scoped state previously stored directly on `Session`.
@@ -142,12 +164,43 @@ impl SessionState {
     }
 
     // History helpers
-    pub(crate) fn record_items<I>(&mut self, items: I, policy: TruncationPolicy)
-    where
-        I: IntoIterator,
-        I::Item: std::ops::Deref<Target = ResponseItem>,
-    {
-        self.history.record_items(items, policy);
+    pub(crate) fn append_context_items(
+        &mut self,
+        items: &[ResponseItem],
+        policy: TruncationPolicy,
+    ) {
+        self.apply_context_transition(ContextTransition::Append { items, policy });
+    }
+
+    pub(crate) fn replace_context_with_compaction(
+        &mut self,
+        items: Vec<ResponseItem>,
+        reference_context_item: Option<TurnContextItem>,
+        compacted_item: &CompactedItem,
+    ) {
+        self.apply_context_transition(ContextTransition::Compact {
+            items,
+            reference_context_item,
+            compacted_item,
+        });
+    }
+
+    pub(crate) fn replace_context_from_rollout(
+        &mut self,
+        items: Vec<ResponseItem>,
+        reference_context_item: Option<TurnContextItem>,
+        rollout_items: &[RolloutItem],
+    ) {
+        self.apply_context_transition(ContextTransition::Reset {
+            items,
+            reference_context_item,
+            rollout_items,
+        });
+    }
+
+    pub(crate) fn observe_context_event(&mut self, event: &EventMsg) {
+        let item = RolloutItem::EventMsg(event.clone());
+        self.apply_context_transition(ContextTransition::Observe { item: &item });
     }
 
     pub(crate) fn previous_turn_settings(&self) -> Option<PreviousTurnSettings> {
@@ -351,7 +404,40 @@ impl SessionState {
             .unwrap_or_default()
     }
 
-    pub(crate) fn append_spine_rollout_items(&mut self, items: &[RolloutItem]) {
+    fn apply_context_transition(&mut self, transition: ContextTransition<'_>) {
+        match transition {
+            ContextTransition::Append { items, policy } => {
+                self.history.record_items(items.iter(), policy);
+                let rollout_items = items
+                    .iter()
+                    .cloned()
+                    .map(RolloutItem::ResponseItem)
+                    .collect::<Vec<_>>();
+                self.append_spine_inputs(&rollout_items);
+            }
+            ContextTransition::Compact {
+                items,
+                reference_context_item,
+                compacted_item,
+            } => {
+                self.replace_native_history(items, reference_context_item);
+                self.append_spine_inputs(&[RolloutItem::Compacted(compacted_item.clone())]);
+            }
+            ContextTransition::Reset {
+                items,
+                reference_context_item,
+                rollout_items,
+            } => {
+                self.replace_native_history(items, reference_context_item);
+                self.replace_spine_inputs(rollout_items);
+            }
+            ContextTransition::Observe { item } => {
+                self.append_spine_inputs(std::slice::from_ref(item));
+            }
+        }
+    }
+
+    fn append_spine_inputs(&mut self, items: &[RolloutItem]) {
         if let Some(rollout) = &mut self.spine_rollout {
             let first_ordinal = rollout
                 .iter()
@@ -418,7 +504,7 @@ impl SessionState {
         }
     }
 
-    pub(crate) fn replace_spine_rollout(&mut self, items: &[RolloutItem]) {
+    fn replace_spine_inputs(&mut self, items: &[RolloutItem]) {
         if let Some(rollout) = &mut self.spine_rollout {
             rollout.clear();
             rollout.extend_from_slice(items);
@@ -443,6 +529,25 @@ impl SessionState {
             }
         }
         self.mark_projected_usage_stale();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn record_items<I>(&mut self, items: I, policy: TruncationPolicy)
+    where
+        I: IntoIterator,
+        I::Item: std::ops::Deref<Target = ResponseItem>,
+    {
+        self.history.record_items(items, policy);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn append_spine_rollout_items(&mut self, items: &[RolloutItem]) {
+        self.append_spine_inputs(items);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn replace_spine_rollout(&mut self, items: &[RolloutItem]) {
+        self.replace_spine_inputs(items);
     }
 
     pub(crate) fn validate_spine_control(&self, tool: spine_core::SpineTool) -> Result<(), String> {
@@ -484,7 +589,16 @@ impl SessionState {
         crate::spine::validate_trim_request(rollout, current_call_id, request)
     }
 
+    #[cfg(test)]
     pub(crate) fn replace_history(
+        &mut self,
+        items: Vec<ResponseItem>,
+        reference_context_item: Option<TurnContextItem>,
+    ) {
+        self.replace_native_history(items, reference_context_item);
+    }
+
+    fn replace_native_history(
         &mut self,
         items: Vec<ResponseItem>,
         reference_context_item: Option<TurnContextItem>,

@@ -1523,8 +1523,7 @@ impl Session {
         prepare_response_items(&mut history);
         {
             let mut state = self.state.lock().await;
-            state.replace_history(history, reference_context_item);
-            state.replace_spine_rollout(rollout_items);
+            state.replace_context_from_rollout(history, reference_context_item, rollout_items);
             if let Some(world_state) = world_state_baseline {
                 state.history.set_world_state_baseline(world_state);
             }
@@ -3006,16 +3005,7 @@ impl Session {
         {
             let mut state = self.state.lock().await;
             state.current_time_reminder.note_recorded_items(items);
-            state.record_items(
-                items.iter(),
-                turn_context.model_info.truncation_policy.into(),
-            );
-            let rollout_items = items
-                .iter()
-                .cloned()
-                .map(RolloutItem::ResponseItem)
-                .collect::<Vec<_>>();
-            state.append_spine_rollout_items(&rollout_items);
+            state.append_context_items(items, turn_context.model_info.truncation_policy.into());
             if state.projected_usage_enabled()
                 && items
                     .iter()
@@ -3127,11 +3117,7 @@ impl Session {
         {
             let mut state = self.state.lock().await;
             state.current_time_reminder.note_recorded_items(items);
-            state.record_items(
-                items.iter(),
-                turn_context.model_info.truncation_policy.into(),
-            );
-            state.append_spine_rollout_items(&[RolloutItem::ResponseItem(response_item.clone())]);
+            state.append_context_items(items, turn_context.model_info.truncation_policy.into());
         }
         self.persist_rollout_items(&[
             RolloutItem::InterAgentCommunicationMetadata {
@@ -3294,9 +3280,11 @@ impl Session {
     ) -> Option<WorldStateItem> {
         let mut world_state_item = None;
         let mut state = self.state.lock().await;
-        state.replace_history(items, reference_context_item);
+        let RolloutItem::Compacted(compacted_item) = compacted_rollout_item else {
+            unreachable!("compacted history installation requires a compacted rollout item");
+        };
+        state.replace_context_with_compaction(items, reference_context_item, compacted_item);
         state.install_auto_compact_window(auto_compact_window.0, auto_compact_window.1);
-        state.append_spine_rollout_items(std::slice::from_ref(compacted_rollout_item));
         if let Some(world_state) = world_state_baseline {
             let snapshot = world_state.snapshot();
             world_state_item = Some(WorldStateItem::full(snapshot.clone().into_value()));
@@ -4129,7 +4117,7 @@ impl Session {
             let mut state = self.state.lock().await;
             let (info, rate_limits) = state.token_info_and_rate_limits();
             let event = EventMsg::TokenCount(TokenCountEvent { info, rate_limits });
-            state.append_spine_rollout_items(&[RolloutItem::EventMsg(event.clone())]);
+            state.observe_context_event(&event);
             event
         };
         self.send_event(turn_context, event).await;
