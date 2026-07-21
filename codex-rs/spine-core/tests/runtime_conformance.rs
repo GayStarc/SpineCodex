@@ -114,10 +114,39 @@ fn runtime_publishes_host_usage_observation() {
     let output = runtime.eat(&event).unwrap();
 
     assert_eq!(
-        output.runtime_projection().usage_sample(),
-        Some(TokenUsageSample {
+        output.runtime_projection().usage_samples(),
+        &[TokenUsageSample {
             boundary: RawBoundary(8),
             input_tokens: 100,
-        })
+        }]
+    );
+}
+
+#[test]
+fn runtime_retains_only_pressure_relevant_usage_samples() {
+    let host = SyntheticHost {
+        calls: Arc::new(AtomicUsize::new(0)),
+    };
+    let mut runtime = SpineRuntime::new(config(&[Feature::Jit]), host).unwrap();
+    let events = vec![
+        message(1, MessageRole::User, "first"),
+        message(2, MessageRole::Assistant, "intermediate"),
+        message(3, MessageRole::User, "latest"),
+    ];
+
+    let output = runtime.replay(events.iter()).unwrap();
+
+    assert_eq!(
+        output.runtime_projection().usage_samples(),
+        &[
+            TokenUsageSample {
+                boundary: RawBoundary(1),
+                input_tokens: 100,
+            },
+            TokenUsageSample {
+                boundary: RawBoundary(3),
+                input_tokens: 100,
+            },
+        ]
     );
 }

@@ -217,11 +217,13 @@ impl SessionState {
         if !self.session_configuration.spine_jit_enabled() {
             return None;
         }
-        let rollout = self.spine_rollout.as_deref()?;
-        let projection = self.spine_runtime.as_ref()?.runtime.projection();
+        let spine = self.spine_runtime.as_ref()?;
+        let projection = spine.runtime.projection();
         let settled_spawn_call_ids = projection.settled_spawn_call_ids.clone();
-        let samples = crate::spine::pressure::token_usage_samples(rollout);
-        let snapshot = spine_core::tree_snapshot(projection, &samples);
+        let snapshot = spine_core::tree_snapshot(
+            projection,
+            spine.runtime.runtime_projection().usage_samples(),
+        );
         let snapshot_seq = snapshot.last_boundary.map_or(0, |boundary| boundary.0);
         let active_node_id = snapshot.cursor.to_string();
         let nodes = snapshot
@@ -302,15 +304,15 @@ impl SessionState {
         if !self.session_configuration.spine_status_enabled() {
             return None;
         }
-        let rollout = self.spine_rollout.as_deref()?;
         let context_left_tokens = auto_compact_token_limit.map(|limit| {
             limit
                 .saturating_sub(self.get_total_token_usage(self.server_reasoning_included()))
                 .max(0)
         });
+        let spine = self.spine_runtime.as_ref()?;
         Some(crate::spine::status::prompt_overlay(
-            self.spine_runtime.as_ref()?.runtime.projection(),
-            rollout,
+            spine.runtime.projection(),
+            spine.runtime.runtime_projection().usage_samples(),
             context_left_tokens,
         ))
     }

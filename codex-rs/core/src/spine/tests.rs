@@ -186,7 +186,8 @@ fn spine_status_matches_spine_dev_fields_and_context_accounting() {
         token_count(42_000),
     ];
     let projection = derive_from_rollout(&rollout).spine;
-    let overlay = status::prompt_overlay(&projection, &rollout, Some(100_000));
+    let samples = pressure::token_usage_samples(&rollout);
+    let overlay = status::prompt_overlay(&projection, &samples, Some(100_000));
 
     assert_eq!(
         text(&overlay),

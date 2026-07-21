@@ -66,7 +66,7 @@ pub struct RuntimeProjection {
     spine: SpineProjection,
     pending: Vec<NativeItemRef>,
     observed_boundary: Option<RawBoundary>,
-    usage_sample: Option<TokenUsageSample>,
+    usage_samples: Vec<TokenUsageSample>,
 }
 
 impl RuntimeProjection {
@@ -82,8 +82,8 @@ impl RuntimeProjection {
         self.observed_boundary
     }
 
-    pub fn usage_sample(&self) -> Option<TokenUsageSample> {
-        self.usage_sample
+    pub fn usage_samples(&self) -> &[TokenUsageSample] {
+        &self.usage_samples
     }
 }
 
@@ -121,7 +121,7 @@ impl<H: SpineHost> SpineRuntime<H> {
             spine: compiler.projection().clone(),
             pending: Vec::new(),
             observed_boundary: None,
-            usage_sample: None,
+            usage_samples: Vec::new(),
         };
         Ok(Self {
             host,
@@ -164,6 +164,11 @@ impl<H: SpineHost> SpineRuntime<H> {
             candidate.eat(event).map_err(RuntimeError::Spine)?;
         }
         let projection = candidate.projection().clone();
+        let mut usage_samples = self.runtime_projection.usage_samples.clone();
+        if let Some(sample) = usage_sample.filter(|sample| sample.input_tokens > 0) {
+            usage_samples.push(sample);
+        }
+        retain_relevant_usage_samples(&projection, &mut usage_samples);
         let delta = ProjectionDelta {
             context_edit: ContextEdit::between(&before, &projection.visible_context),
             projection: projection.clone(),
@@ -172,7 +177,7 @@ impl<H: SpineHost> SpineRuntime<H> {
             spine: projection,
             pending: step.pending,
             observed_boundary: step.observed_boundary,
-            usage_sample,
+            usage_samples,
         };
 
         self.frontier = Some(step.frontier);
@@ -192,12 +197,16 @@ impl<H: SpineHost> SpineRuntime<H> {
             spine: self.compiler.projection().clone(),
             pending: Vec::new(),
             observed_boundary: None,
-            usage_sample: None,
+            usage_samples: Vec::new(),
         };
     }
 
     pub fn projection(&self) -> &SpineProjection {
         self.compiler.projection()
+    }
+
+    pub fn runtime_projection(&self) -> &RuntimeProjection {
+        &self.runtime_projection
     }
 
     pub fn replay<'a, I>(&mut self, inputs: I) -> Result<SpineOutput, RuntimeError<H::Error>>
@@ -238,6 +247,35 @@ impl<H: SpineHost> SpineRuntime<H> {
             runtime_projection: self.runtime_projection.clone(),
         }
     }
+}
+
+fn retain_relevant_usage_samples(
+    projection: &SpineProjection,
+    samples: &mut Vec<TokenUsageSample>,
+) {
+    let mut retain = vec![false; samples.len()];
+    for node in projection.nodes.iter().filter(|node| {
+        matches!(
+            node.status,
+            crate::NodeStatus::Live | crate::NodeStatus::Opened
+        )
+    }) {
+        if let Some(index) = samples
+            .iter()
+            .position(|sample| sample.boundary.0 > node.start.0)
+        {
+            retain[index] = true;
+        }
+    }
+    if let Some(last) = retain.last_mut() {
+        *last = true;
+    }
+    let mut index = 0;
+    samples.retain(|_| {
+        let keep = retain[index];
+        index += 1;
+        keep
+    });
 }
 
 #[derive(Debug)]
