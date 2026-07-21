@@ -4,14 +4,17 @@ use crate::RawBoundary;
 use crate::RolloutEvent;
 use crate::SpineConfig;
 use crate::SpineProjection;
+use crate::TrimProjection;
 use crate::bootstrap::InitError;
 use crate::reducer::SpineReducer;
+use crate::reducer::TrimReducer;
 use std::fmt;
 
 #[derive(Clone, Debug)]
 pub struct SpineCompiler {
     config: SpineConfig,
     reducer: SpineReducer,
+    trim_reducer: Option<TrimReducer>,
     projection: SpineProjection,
 }
 
@@ -19,10 +22,14 @@ impl SpineCompiler {
     pub fn new(config: SpineConfig) -> Result<Self, InitError> {
         config.validate()?;
         let reducer = SpineReducer::new();
+        let trim_reducer = config
+            .is_enabled(crate::Feature::Trim)
+            .then(|| TrimReducer::new(config.trim_threshold_bytes()));
         let projection = reducer.projection();
         Ok(Self {
             config,
             reducer,
+            trim_reducer,
             projection,
         })
     }
@@ -36,6 +43,9 @@ impl SpineCompiler {
                 previous,
                 next: boundary,
             });
+        }
+        if let Some(trim_reducer) = &mut self.trim_reducer {
+            trim_reducer.apply(&event);
         }
         let delta = self.reducer.apply(event);
         self.projection = delta.projection.clone();
@@ -62,11 +72,19 @@ impl SpineCompiler {
 
     pub fn reset(&mut self) {
         self.reducer = SpineReducer::new();
+        self.trim_reducer = self
+            .config
+            .is_enabled(crate::Feature::Trim)
+            .then(|| TrimReducer::new(self.config.trim_threshold_bytes()));
         self.projection = self.reducer.projection();
     }
 
     pub fn projection(&self) -> &SpineProjection {
         &self.projection
+    }
+
+    pub(crate) fn trim_projection(&self) -> Option<&TrimProjection> {
+        self.trim_reducer.as_ref().map(TrimReducer::projection)
     }
 
     pub fn extend_system_prompt(&self, base: &str) -> String {

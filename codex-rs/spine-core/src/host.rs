@@ -9,6 +9,7 @@ use crate::SpineError;
 use crate::SpineProjection;
 use crate::TokenUsageSample;
 use crate::ToolCatalog;
+use crate::TrimProjection;
 use crate::bootstrap::InitError;
 use std::fmt;
 
@@ -67,6 +68,8 @@ pub struct RuntimeProjection {
     pending: Vec<NativeItemRef>,
     observed_boundary: Option<RawBoundary>,
     usage_samples: Vec<TokenUsageSample>,
+    trim_projection: Option<TrimProjection>,
+    trim_changed_boundaries: Vec<RawBoundary>,
 }
 
 impl RuntimeProjection {
@@ -84,6 +87,14 @@ impl RuntimeProjection {
 
     pub fn usage_samples(&self) -> &[TokenUsageSample] {
         &self.usage_samples
+    }
+
+    pub fn trim_projection(&self) -> Option<&TrimProjection> {
+        self.trim_projection.as_ref()
+    }
+
+    pub fn trim_changed_boundaries(&self) -> &[RawBoundary] {
+        &self.trim_changed_boundaries
     }
 }
 
@@ -122,6 +133,8 @@ impl<H: SpineHost> SpineRuntime<H> {
             pending: Vec::new(),
             observed_boundary: None,
             usage_samples: Vec::new(),
+            trim_projection: compiler.trim_projection().cloned(),
+            trim_changed_boundaries: Vec::new(),
         };
         Ok(Self {
             host,
@@ -159,6 +172,7 @@ impl<H: SpineHost> SpineRuntime<H> {
             .map_err(RuntimeError::Host)?;
         let usage_sample = step.usage_sample();
         let before = self.compiler.projection().visible_context.clone();
+        let previous_trim = self.compiler.trim_projection().cloned();
         let mut candidate = self.compiler.clone();
         for event in step.events {
             candidate.eat(event).map_err(RuntimeError::Spine)?;
@@ -169,6 +183,13 @@ impl<H: SpineHost> SpineRuntime<H> {
             usage_samples.push(sample);
         }
         retain_relevant_usage_samples(&projection, &mut usage_samples);
+        let trim_projection = candidate.trim_projection().cloned();
+        let trim_changed_boundaries = match (&previous_trim, &trim_projection) {
+            (Some(previous), Some(current)) => current.changed_boundaries_since(previous),
+            (None, Some(current)) => current.changed_boundaries_since(&TrimProjection::default()),
+            (Some(previous), None) => TrimProjection::default().changed_boundaries_since(previous),
+            (None, None) => Vec::new(),
+        };
         let delta = ProjectionDelta {
             context_edit: ContextEdit::between(&before, &projection.visible_context),
             projection: projection.clone(),
@@ -178,6 +199,8 @@ impl<H: SpineHost> SpineRuntime<H> {
             pending: step.pending,
             observed_boundary: step.observed_boundary,
             usage_samples,
+            trim_projection,
+            trim_changed_boundaries,
         };
 
         self.frontier = Some(step.frontier);
@@ -198,6 +221,8 @@ impl<H: SpineHost> SpineRuntime<H> {
             pending: Vec::new(),
             observed_boundary: None,
             usage_samples: Vec::new(),
+            trim_projection: self.compiler.trim_projection().cloned(),
+            trim_changed_boundaries: Vec::new(),
         };
     }
 

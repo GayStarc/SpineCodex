@@ -9,6 +9,11 @@ use spine_core::SpineConfig;
 use spine_core::SpineHost;
 use spine_core::SpineRuntime;
 use spine_core::TokenUsageSample;
+use spine_core::ToolCallGroup;
+use spine_core::ToolOutcome;
+use spine_core::ToolUse;
+use spine_core::TrimEdit;
+use spine_core::TrimProjection;
 use std::convert::Infallible;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
@@ -59,6 +64,28 @@ fn message(boundary: u64, role: MessageRole, content: &str) -> RolloutEvent {
         boundary: RawBoundary(boundary),
         role,
         content: content.to_owned(),
+    })
+}
+
+fn tool_group(
+    start: u64,
+    call_id: &str,
+    name: &str,
+    arguments: &str,
+    output: &str,
+) -> RolloutEvent {
+    RolloutEvent::ToolCall(ToolCallGroup {
+        start: RawBoundary(start),
+        end: RawBoundary(start + 1),
+        leading_assistant_messages: Vec::new(),
+        calls: vec![ToolUse {
+            call_id: call_id.to_string(),
+            name: name.to_string(),
+            arguments: arguments.to_string(),
+            outcome: Some(ToolOutcome::Succeeded),
+            output: Some(output.to_string()),
+            output_boundary: Some(RawBoundary(start + 1)),
+        }],
     })
 }
 
@@ -148,5 +175,53 @@ fn runtime_retains_only_pressure_relevant_usage_samples() {
                 input_tokens: 100,
             },
         ]
+    );
+}
+
+#[test]
+fn runtime_publishes_incremental_trim_projection_and_render_invalidations() {
+    let host = SyntheticHost {
+        calls: Arc::new(AtomicUsize::new(0)),
+    };
+    let mut runtime = SpineRuntime::new(config(&[Feature::Trim]), host).unwrap();
+    let candidate = tool_group(1, "shell-call", "shell", "{}", &"evidence".repeat(2_000));
+
+    let tagged = runtime.eat(&candidate).unwrap();
+
+    assert_eq!(
+        tagged.runtime_projection().trim_changed_boundaries(),
+        &[RawBoundary(2)]
+    );
+    assert!(matches!(
+        tagged
+            .runtime_projection()
+            .trim_projection()
+            .and_then(|projection| projection.edit(RawBoundary(2), "shell-call")),
+        Some(TrimEdit::Tagged { trim_id, .. }) if trim_id == "trim_2"
+    ));
+
+    let request = tool_group(
+        3,
+        "trim-call",
+        "spine.trim",
+        r#"{"TRIM_ID":"trim_2","op":"snip"}"#,
+        "accepted",
+    );
+    let trimmed = runtime.eat(&request).unwrap();
+
+    assert_eq!(
+        trimmed.runtime_projection().trim_changed_boundaries(),
+        &[RawBoundary(2)]
+    );
+    assert!(matches!(
+        trimmed
+            .runtime_projection()
+            .trim_projection()
+            .and_then(|projection| projection.edit(RawBoundary(2), "shell-call")),
+        Some(TrimEdit::Snipped)
+    ));
+    assert_eq!(
+        trimmed.runtime_projection().trim_projection(),
+        Some(&TrimProjection::derive(&[candidate, request]))
     );
 }

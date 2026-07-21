@@ -30,6 +30,70 @@ const SPINE_TRIM: &str = "spine.trim";
 pub const TOOL_RESPONSE_TRIM_THRESHOLD_BYTES: usize = 10_000;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TrimReducer {
+    projection: TrimProjection,
+    active: Vec<RawBoundary>,
+    threshold_bytes: usize,
+}
+
+impl TrimReducer {
+    pub(crate) fn new(threshold_bytes: usize) -> Self {
+        Self {
+            projection: TrimProjection::default(),
+            active: Vec::new(),
+            threshold_bytes,
+        }
+    }
+
+    pub(crate) fn apply(&mut self, event: &RolloutEvent) {
+        let RolloutEvent::ToolCall(group) = event else {
+            return;
+        };
+        for call in group
+            .calls
+            .iter()
+            .filter(|call| call.name == SPINE_TRIM && call.outcome == Some(ToolOutcome::Succeeded))
+        {
+            let Ok(request) = TrimRequest::parse(&call.arguments) else {
+                continue;
+            };
+            apply_trim_request(&mut self.projection, &self.active, &request);
+        }
+        expire_trim_candidates(&mut self.projection, &mut self.active);
+        for call in group
+            .calls
+            .iter()
+            .filter(|call| !call.name.starts_with("spine."))
+        {
+            let (Some(boundary), Some(body)) = (call.output_boundary, call.output.as_deref())
+            else {
+                continue;
+            };
+            if body.len() <= self.threshold_bytes {
+                continue;
+            }
+            let trim_id = format!("trim_{}", boundary.0);
+            self.projection.edits.insert(
+                boundary,
+                (
+                    call.call_id.clone(),
+                    TrimEdit::Tagged {
+                        trim_id,
+                        body: body.to_string(),
+                        eligible: true,
+                    },
+                ),
+            );
+            self.active.push(boundary);
+        }
+    }
+
+    pub(crate) fn projection(&self) -> &TrimProjection {
+        &self.projection
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum NodeEntry {
     Leaf(ContextItem),
     Child(NodeId),
@@ -570,50 +634,11 @@ pub(crate) fn derive_trim_projection(
     events: &[RolloutEvent],
     threshold_bytes: usize,
 ) -> TrimProjection {
-    let mut projection = TrimProjection::default();
-    let mut active = Vec::new();
+    let mut reducer = TrimReducer::new(threshold_bytes);
     for event in events {
-        let RolloutEvent::ToolCall(group) = event else {
-            continue;
-        };
-        for call in group
-            .calls
-            .iter()
-            .filter(|call| call.name == SPINE_TRIM && call.outcome == Some(ToolOutcome::Succeeded))
-        {
-            let Ok(request) = TrimRequest::parse(&call.arguments) else {
-                continue;
-            };
-            apply_trim_request(&mut projection, &active, &request);
-        }
-        active.clear();
-        for call in group
-            .calls
-            .iter()
-            .filter(|call| !call.name.starts_with("spine."))
-        {
-            let (Some(boundary), Some(body)) = (call.output_boundary, call.output.as_deref())
-            else {
-                continue;
-            };
-            if body.len() <= threshold_bytes {
-                continue;
-            }
-            let trim_id = format!("trim_{}", boundary.0);
-            projection.edits.insert(
-                boundary,
-                (
-                    call.call_id.clone(),
-                    TrimEdit::Tagged {
-                        trim_id,
-                        body: body.to_string(),
-                    },
-                ),
-            );
-            active.push(boundary);
-        }
+        reducer.apply(event);
     }
-    projection
+    reducer.projection
 }
 
 fn apply_trim_request(
