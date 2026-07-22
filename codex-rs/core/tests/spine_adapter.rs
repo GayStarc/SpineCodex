@@ -289,6 +289,70 @@ async fn spine_adapter_preserves_host_tool_output_truncation() -> Result<()> {
 
 #[cfg(not(target_os = "windows"))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn spine_adapter_reprojects_trimmed_tool_output_for_next_request() -> Result<()> {
+    let server = start_mock_server().await;
+    let response_mock = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_response_created("spine-trim-1"),
+                ev_function_call(
+                    "large-output",
+                    "exec_command",
+                    &json!({
+                        "cmd": "python3 -c \"import sys; sys.stdout.write('x' * 50000)\""
+                    })
+                    .to_string(),
+                ),
+                ev_completed("spine-trim-1"),
+            ]),
+            sse(vec![
+                ev_response_created("spine-trim-2"),
+                ev_function_call_with_namespace(
+                    "trim-call",
+                    "spine",
+                    "trim",
+                    r#"{"TRIM_ID":"trim_4","op":"snip"}"#,
+                ),
+                ev_completed("spine-trim-2"),
+            ]),
+            sse(vec![
+                ev_response_created("spine-trim-3"),
+                ev_completed("spine-trim-3"),
+            ]),
+        ],
+    )
+    .await;
+    let test = spine_test_codex()
+        .with_spine_trim()
+        .with_config(|config| {
+            config.tool_output_token_limit = Some(20_000);
+        })
+        .build(&server)
+        .await?;
+
+    test.submit_turn("produce and trim a large tool result")
+        .await?;
+
+    let requests = response_mock.requests();
+    assert_eq!(requests.len(), 3);
+    let tagged = requests[1]
+        .function_call_output_text("large-output")
+        .context("missing tagged tool output before trim")?;
+    assert!(tagged.starts_with("[TRIM_ID: trim_4]\n"));
+    assert!(tagged.contains('x'));
+    assert!(requests[2].has_function_call("trim-call"));
+
+    assert_eq!(
+        requests[2].function_call_output_text("large-output"),
+        Some("[Old tool result content cleared]".to_string())
+    );
+
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn spine_adapter_legacy_notify_uses_native_user_evidence() -> Result<()> {
     let server = start_mock_server().await;
     let response_mock = mount_sse_once(
