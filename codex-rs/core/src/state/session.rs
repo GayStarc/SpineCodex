@@ -203,8 +203,8 @@ impl SessionState {
         self.mark_projected_usage_stale();
     }
 
-    pub(crate) fn observe_token_count(&mut self, event: &TokenCountEvent) {
-        self.append_spine_inputs(&[RolloutItem::EventMsg(EventMsg::TokenCount(event.clone()))]);
+    pub(crate) fn observe_token_count(&mut self, event: TokenCountEvent) {
+        self.append_spine_inputs(&[RolloutItem::EventMsg(EventMsg::TokenCount(event))]);
     }
 
     pub(crate) fn previous_turn_settings(&self) -> Option<PreviousTurnSettings> {

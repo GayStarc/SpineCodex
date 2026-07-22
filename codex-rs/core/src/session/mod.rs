@@ -4120,13 +4120,16 @@ impl Session {
     }
 
     pub(crate) async fn send_token_count_event(&self, turn_context: &TurnContext) {
-        let event = {
-            let mut state = self.state.lock().await;
-            let (info, rate_limits) = state.token_info_and_rate_limits();
-            let event = TokenCountEvent { info, rate_limits };
-            state.observe_token_count(&event);
-            EventMsg::TokenCount(event)
+        let (info, rate_limits) = {
+            let state = self.state.lock().await;
+            state.token_info_and_rate_limits()
         };
+        let token_count = TokenCountEvent { info, rate_limits };
+        let event = EventMsg::TokenCount(token_count.clone());
+        {
+            let mut state = self.state.lock().await;
+            state.observe_token_count(token_count);
+        }
         self.send_event(turn_context, event).await;
         self.emit_spine_tree_update(turn_context).await;
     }
