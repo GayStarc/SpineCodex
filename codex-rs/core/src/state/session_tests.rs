@@ -223,6 +223,7 @@ async fn spine_feature_off_clones_native_history_unchanged() {
     let mut state = SessionState::new(session_configuration);
     let message = response_message("user", "request");
     state.record_items(std::iter::once(&message), TruncationPolicy::Tokens(10_000));
+    state.append_spine_inputs(&[RolloutItem::ResponseItem(message.clone())]);
 
     assert_eq!(state.clone_history().raw_items(), &[message]);
 }
@@ -985,6 +986,10 @@ async fn spine_feature_on_projects_live_native_rollout_at_clone_boundary() {
         internal_chat_message_metadata_passthrough: None,
     };
     state.record_items([&call, &output], TruncationPolicy::Tokens(10_000));
+    state.append_spine_inputs(&[
+        RolloutItem::ResponseItem(call),
+        RolloutItem::ResponseItem(output),
+    ]);
 
     let projected = state.clone_history();
     assert_eq!(projected.raw_items().len(), 3);
@@ -998,6 +1003,7 @@ async fn spine_live_append_uses_source_ordinals_across_event_items() {
     let mut state = SessionState::new(session_configuration);
     let user = response_message("user", "request");
     state.record_items(std::iter::once(&user), TruncationPolicy::Tokens(10_000));
+    state.append_spine_inputs(&[RolloutItem::ResponseItem(user)]);
     state.append_spine_inputs(&[token_count(1_000)]);
 
     let call = ResponseItem::FunctionCall {
@@ -1009,6 +1015,7 @@ async fn spine_live_append_uses_source_ordinals_across_event_items() {
         internal_chat_message_metadata_passthrough: None,
     };
     state.record_items(std::iter::once(&call), TruncationPolicy::Tokens(10_000));
+    state.append_spine_inputs(&[RolloutItem::ResponseItem(call)]);
 
     let output = ResponseItem::FunctionCallOutput {
         id: None,
@@ -1020,6 +1027,7 @@ async fn spine_live_append_uses_source_ordinals_across_event_items() {
         internal_chat_message_metadata_passthrough: None,
     };
     state.record_items(std::iter::once(&output), TruncationPolicy::Tokens(10_000));
+    state.append_spine_inputs(&[RolloutItem::ResponseItem(output)]);
 
     let projected = state.clone_history();
     assert!(response_text(&projected.raw_items()[0]).contains("request"));
@@ -1054,6 +1062,10 @@ async fn spine_projection_reuses_host_truncated_tool_output() {
     };
     state.record_items([&call, &output], TruncationPolicy::Tokens(50));
     let native_output = state.history.raw_items()[1].clone();
+    state.append_spine_inputs(&[
+        RolloutItem::ResponseItem(call),
+        RolloutItem::ResponseItem(output),
+    ]);
 
     let projected = state.clone_history();
     assert_eq!(projected.raw_items()[1], native_output);
@@ -1104,6 +1116,7 @@ async fn spine_materialization_updates_trimmed_boundaries_and_rebuilds_after_com
         RolloutItem::ResponseItem(trim_output.clone()),
     ];
     state.record_items([&call, &output], TruncationPolicy::Tokens(10_000));
+    state.append_spine_inputs(&rollout[..2]);
     let tagged = state.clone_history();
     let ResponseItem::FunctionCallOutput { output, .. } = &tagged.raw_items()[1] else {
         panic!("expected tagged shell output");
@@ -1117,6 +1130,7 @@ async fn spine_materialization_updates_trimmed_boundaries_and_rebuilds_after_com
     );
 
     state.record_items([&trim_call, &trim_output], TruncationPolicy::Tokens(10_000));
+    state.append_spine_inputs(&rollout[2..]);
     let snipped = state.clone_history();
     let ResponseItem::FunctionCallOutput { output, .. } = &snipped.raw_items()[1] else {
         panic!("expected snipped shell output");
@@ -1151,6 +1165,7 @@ async fn spawn_context_install_is_atomic_and_independently_feature_gated() {
     let (call, output) = spawn_call_and_output();
 
     state.record_items([&call], TruncationPolicy::Tokens(10_000));
+    state.append_spine_inputs(&[RolloutItem::ResponseItem(call.clone())]);
     assert_eq!(state.clone_history().raw_items(), &[call.clone()]);
     assert_eq!(
         state.spine_tree_update().expect("tree enabled").nodes.len(),
@@ -1158,6 +1173,7 @@ async fn spawn_context_install_is_atomic_and_independently_feature_gated() {
     );
 
     state.record_items([&output], TruncationPolicy::Tokens(10_000));
+    state.append_spine_inputs(&[RolloutItem::ResponseItem(output.clone())]);
     let projected = state.clone_history();
     assert_eq!(projected.raw_items().len(), 8);
     assert!(response_text(&projected.raw_items()[2]).contains("spine_spawn_evidence"));
@@ -1186,6 +1202,10 @@ async fn spawn_context_install_is_atomic_and_independently_feature_gated() {
     disabled.enable_spine_jit_for_test();
     let mut disabled_state = SessionState::new(disabled);
     disabled_state.record_items([&call, &output], TruncationPolicy::Tokens(10_000));
+    disabled_state.append_spine_inputs(&[
+        RolloutItem::ResponseItem(call.clone()),
+        RolloutItem::ResponseItem(output.clone()),
+    ]);
     assert_eq!(
         disabled_state.clone_history().raw_items(),
         &[call.clone(), output.clone()]
@@ -1296,6 +1316,7 @@ async fn context_transitions_publish_compact_and_replay_before_return() {
         .map(RolloutItem::ResponseItem)
         .collect::<Vec<_>>();
     state.record_items(opened_items.iter(), TruncationPolicy::Tokens(10_000));
+    state.append_spine_inputs(&opened_rollout);
     let opened = state
         .spine_tree_update()
         .expect("opened snapshot should be available");
@@ -1502,6 +1523,7 @@ async fn live_append_after_rollback_preserves_canonical_source_ordinals() {
     live.replace_history_from_rollout(vec![first.clone()], None, &canonical);
     let open_history = rollout_history(&open_items);
     live.record_items(open_history.iter(), TruncationPolicy::Tokens(10_000));
+    live.append_spine_inputs(&open_items);
     let live_snapshot = live.spine_tree_update().expect("live snapshot");
 
     canonical.extend(open_items);
@@ -1656,6 +1678,10 @@ async fn spine_trim_only_projects_native_history_without_tree_messages() {
         internal_chat_message_metadata_passthrough: None,
     };
     state.record_items([&call, &output], TruncationPolicy::Tokens(10_000));
+    state.append_spine_inputs(&[
+        RolloutItem::ResponseItem(call),
+        RolloutItem::ResponseItem(output),
+    ]);
 
     let projected = state.clone_history();
     assert_eq!(projected.raw_items().len(), 2);
