@@ -180,7 +180,11 @@ pub(crate) fn validate_trim_request_from_effective(
         return Err("spine.trim failed: current toolcall is unavailable; do not retry".to_string());
     };
     let events_before_current = &events[..current_group];
-    let previous_completed_group = events_before_current
+    let epoch_start = events_before_current
+        .iter()
+        .rposition(|event| matches!(event, RolloutEvent::Compact { .. }))
+        .map_or(0, |index| index + 1);
+    let previous_completed_group = events_before_current[epoch_start..]
         .iter()
         .rev()
         .find(|event| matches!(event, RolloutEvent::ToolCall(group) if group.is_complete()));
@@ -783,9 +787,8 @@ fn project_toolcall_item(
                 } else {
                     "failure"
                 };
-                output.body = FunctionCallOutputBody::Text(
-                    serde_json::json!({"status": status}).to_string(),
-                );
+                output.body =
+                    FunctionCallOutputBody::Text(serde_json::json!({"status": status}).to_string());
                 output.success = Some(status == "success");
                 return item;
             }

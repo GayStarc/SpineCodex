@@ -239,12 +239,29 @@ impl<H: SpineHost> SpineRuntime<H> {
         I: IntoIterator<Item = &'a H::Input>,
         H::Input: 'a,
     {
+        let before = self.compiler.projection().visible_context.clone();
+        let previous_trim = self.runtime_projection.trim_projection.clone();
+        let previous_frontier = self.frontier.take();
+        let previous_compiler = self.compiler.clone();
+        let previous_runtime_projection = self.runtime_projection.clone();
         self.reset();
-        let mut output = None;
         for input in inputs {
-            output = Some(self.eat(input)?);
+            if let Err(error) = self.eat(input) {
+                self.frontier = previous_frontier;
+                self.compiler = previous_compiler;
+                self.runtime_projection = previous_runtime_projection;
+                return Err(error);
+            }
         }
-        Ok(output.unwrap_or_else(|| self.output()))
+        let mut output = self.output();
+        output.delta.context_edit =
+            ContextEdit::between(&before, &output.runtime_projection.spine.visible_context);
+        output.runtime_projection.trim_changed_boundaries = changed_trim_boundaries(
+            previous_trim.as_ref(),
+            output.runtime_projection.trim_projection.as_ref(),
+        );
+        self.runtime_projection = output.runtime_projection.clone();
+        Ok(output)
     }
 
     pub fn host(&self) -> &H {
@@ -305,6 +322,18 @@ fn retain_relevant_usage_samples(
         index += 1;
         keep
     });
+}
+
+fn changed_trim_boundaries(
+    previous: Option<&TrimProjection>,
+    current: Option<&TrimProjection>,
+) -> Vec<RawBoundary> {
+    match (previous, current) {
+        (Some(previous), Some(current)) => current.changed_boundaries_since(previous),
+        (None, Some(current)) => current.changed_boundaries_since(&TrimProjection::default()),
+        (Some(previous), None) => TrimProjection::default().changed_boundaries_since(previous),
+        (None, None) => Vec::new(),
+    }
 }
 
 #[derive(Debug)]

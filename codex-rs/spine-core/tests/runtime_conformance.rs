@@ -15,6 +15,7 @@ use spine_core::ToolUse;
 use spine_core::TrimEdit;
 use spine_core::TrimProjection;
 use std::convert::Infallible;
+use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -111,6 +112,116 @@ fn runtime_replays_aot_prefix_then_continues_jit_with_direct_compiler_parity() {
     assert_eq!(jit.runtime_projection().spine(), &expected.projection);
     assert_eq!(jit.delta().projection, expected.projection);
     assert!(calls.load(Ordering::Relaxed) > 0);
+}
+
+#[test]
+fn replay_returns_a_complete_edit_and_clears_trim_state_at_compact() {
+    let host = SyntheticHost {
+        calls: Arc::new(AtomicUsize::new(0)),
+    };
+    let mut runtime = SpineRuntime::new(config(&[Feature::Jit, Feature::Trim]), host).unwrap();
+    runtime.eat(&message(1, MessageRole::User, "old")).unwrap();
+    let candidate = tool_group(2, "shell", "shell", "{}", &"evidence".repeat(2_000));
+    runtime.eat(&candidate).unwrap();
+    let mut installed = runtime.projection().visible_context.clone();
+
+    let replacement = message(4, MessageRole::User, "replacement");
+    let compact = RolloutEvent::Compact {
+        boundary: RawBoundary(3),
+        replacement_history: Vec::new(),
+    };
+    let output = runtime.replay([compact, replacement].iter()).unwrap();
+    output.delta().context_edit.apply(&mut installed);
+
+    assert_eq!(
+        installed,
+        output.runtime_projection().spine().visible_context
+    );
+    assert_eq!(
+        output.runtime_projection().trim_changed_boundaries(),
+        &[RawBoundary(3)]
+    );
+    assert_eq!(
+        output.runtime_projection().trim_projection(),
+        Some(&TrimProjection::default())
+    );
+
+    let empty = runtime.replay(std::iter::empty()).unwrap();
+    empty.delta().context_edit.apply(&mut installed);
+    assert!(installed.is_empty());
+}
+
+#[derive(Clone, Debug)]
+enum FallibleInput {
+    Event(RolloutEvent),
+    Fail,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SyntheticError;
+
+impl fmt::Display for SyntheticError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("synthetic host failure")
+    }
+}
+
+impl std::error::Error for SyntheticError {}
+
+struct FallibleHost;
+
+impl SpineHost for FallibleHost {
+    type Input = FallibleInput;
+    type Frontier = usize;
+    type Error = SyntheticError;
+
+    fn initial_frontier(&self) -> Self::Frontier {
+        0
+    }
+
+    fn ingest(
+        &self,
+        frontier: &Self::Frontier,
+        input: &Self::Input,
+    ) -> Result<HostStep<Self::Frontier>, Self::Error> {
+        match input {
+            FallibleInput::Event(event) => Ok(HostStep::new(
+                frontier + 1,
+                vec![event.clone()],
+                Vec::new(),
+                Some(event.boundary()),
+            )),
+            FallibleInput::Fail => Err(SyntheticError),
+        }
+    }
+}
+
+#[test]
+fn failed_replay_restores_the_previous_runtime_state() {
+    let mut runtime = SpineRuntime::new(config(&[Feature::Jit]), FallibleHost).unwrap();
+    runtime
+        .eat(&FallibleInput::Event(message(
+            1,
+            MessageRole::User,
+            "installed",
+        )))
+        .unwrap();
+    let previous_projection = runtime.projection().clone();
+    let previous_runtime_projection = runtime.runtime_projection().clone();
+    let previous_frontier = *runtime.frontier().unwrap();
+
+    let result = runtime.replay(
+        [
+            FallibleInput::Event(message(2, MessageRole::User, "partial")),
+            FallibleInput::Fail,
+        ]
+        .iter(),
+    );
+
+    assert!(result.is_err());
+    assert_eq!(runtime.projection(), &previous_projection);
+    assert_eq!(runtime.runtime_projection(), &previous_runtime_projection);
+    assert_eq!(runtime.frontier(), Some(&previous_frontier));
 }
 
 #[test]

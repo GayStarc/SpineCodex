@@ -46,8 +46,14 @@ impl TrimReducer {
     }
 
     pub(crate) fn apply(&mut self, event: &RolloutEvent) {
-        let RolloutEvent::ToolCall(group) = event else {
-            return;
+        let group = match event {
+            RolloutEvent::Compact { .. } => {
+                self.projection = TrimProjection::default();
+                self.active.clear();
+                return;
+            }
+            RolloutEvent::ToolCall(group) => group,
+            RolloutEvent::Message(_) => return,
         };
         for call in group
             .calls

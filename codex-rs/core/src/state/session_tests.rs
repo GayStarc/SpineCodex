@@ -1727,6 +1727,31 @@ async fn spine_trim_validation_uses_only_the_previous_completed_toolcall() {
             .unwrap_err()
             .contains("previous completed toolcall does not contain TRIM_ID trim_5")
     );
+
+    let replacement = response_message("user", "compacted context");
+    let compacted = CompactedItem {
+        message: "compact memory".to_string(),
+        replacement_history: Some(vec![replacement.clone()]),
+        window_number: None,
+        first_window_id: None,
+        previous_window_id: None,
+        window_id: None,
+    };
+    state.replace_context_with_compaction(vec![replacement], None, &compacted);
+    state.append_spine_inputs_for_test(&[RolloutItem::ResponseItem(ResponseItem::FunctionCall {
+        id: None,
+        name: "trim".to_string(),
+        namespace: Some("spine".to_string()),
+        arguments: r#"{"TRIM_ID":"trim_5","op":"snip"}"#.to_string(),
+        call_id: "trim-after-compact".to_string(),
+        internal_chat_message_metadata_passthrough: None,
+    })]);
+    assert!(
+        state
+            .validate_spine_trim("trim-after-compact", &valid)
+            .unwrap_err()
+            .contains("previous completed toolcall does not contain TRIM_ID trim_5")
+    );
 }
 
 #[tokio::test]
