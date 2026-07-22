@@ -984,10 +984,7 @@ async fn spine_feature_on_projects_live_native_rollout_at_clone_boundary() {
         },
         internal_chat_message_metadata_passthrough: None,
     };
-    state.record_items(
-        [&call, &output].into_iter(),
-        TruncationPolicy::Tokens(10_000),
-    );
+    state.record_items([&call, &output], TruncationPolicy::Tokens(10_000));
 
     let projected = state.clone_history();
     assert_eq!(projected.raw_items().len(), 3);
@@ -1055,7 +1052,7 @@ async fn spine_projection_reuses_host_truncated_tool_output() {
         output: FunctionCallOutputPayload::from_text("x".repeat(50_000)),
         internal_chat_message_metadata_passthrough: None,
     };
-    state.record_items([&call, &output].into_iter(), TruncationPolicy::Tokens(50));
+    state.record_items([&call, &output], TruncationPolicy::Tokens(50));
     let native_output = state.history.raw_items()[1].clone();
 
     let projected = state.clone_history();
@@ -1106,10 +1103,7 @@ async fn spine_materialization_updates_trimmed_boundaries_and_rebuilds_after_com
         RolloutItem::ResponseItem(trim_call.clone()),
         RolloutItem::ResponseItem(trim_output.clone()),
     ];
-    state.record_items(
-        [&call, &output].into_iter(),
-        TruncationPolicy::Tokens(10_000),
-    );
+    state.record_items([&call, &output], TruncationPolicy::Tokens(10_000));
     let tagged = state.clone_history();
     let ResponseItem::FunctionCallOutput { output, .. } = &tagged.raw_items()[1] else {
         panic!("expected tagged shell output");
@@ -1122,10 +1116,7 @@ async fn spine_materialization_updates_trimmed_boundaries_and_rebuilds_after_com
             .starts_with("[TRIM_ID: trim_1]")
     );
 
-    state.record_items(
-        [&trim_call, &trim_output].into_iter(),
-        TruncationPolicy::Tokens(10_000),
-    );
+    state.record_items([&trim_call, &trim_output], TruncationPolicy::Tokens(10_000));
     let snipped = state.clone_history();
     let ResponseItem::FunctionCallOutput { output, .. } = &snipped.raw_items()[1] else {
         panic!("expected snipped shell output");
@@ -1159,14 +1150,14 @@ async fn spawn_context_install_is_atomic_and_independently_feature_gated() {
     let mut state = SessionState::new(enabled);
     let (call, output) = spawn_call_and_output();
 
-    state.record_items([&call].into_iter(), TruncationPolicy::Tokens(10_000));
+    state.record_items([&call], TruncationPolicy::Tokens(10_000));
     assert_eq!(state.clone_history().raw_items(), &[call.clone()]);
     assert_eq!(
         state.spine_tree_update().expect("tree enabled").nodes.len(),
         1
     );
 
-    state.record_items([&output].into_iter(), TruncationPolicy::Tokens(10_000));
+    state.record_items([&output], TruncationPolicy::Tokens(10_000));
     let projected = state.clone_history();
     assert_eq!(projected.raw_items().len(), 8);
     assert!(response_text(&projected.raw_items()[2]).contains("spine_spawn_evidence"));
@@ -1194,10 +1185,7 @@ async fn spawn_context_install_is_atomic_and_independently_feature_gated() {
     let mut disabled = make_session_configuration_for_tests().await;
     disabled.enable_spine_jit_for_test();
     let mut disabled_state = SessionState::new(disabled);
-    disabled_state.record_items(
-        [&call, &output].into_iter(),
-        TruncationPolicy::Tokens(10_000),
-    );
+    disabled_state.record_items([&call, &output], TruncationPolicy::Tokens(10_000));
     assert_eq!(
         disabled_state.clone_history().raw_items(),
         &[call.clone(), output.clone()]
@@ -1667,10 +1655,7 @@ async fn spine_trim_only_projects_native_history_without_tree_messages() {
         },
         internal_chat_message_metadata_passthrough: None,
     };
-    state.record_items(
-        [&call, &output].into_iter(),
-        TruncationPolicy::Tokens(10_000),
-    );
+    state.record_items([&call, &output], TruncationPolicy::Tokens(10_000));
 
     let projected = state.clone_history();
     assert_eq!(projected.raw_items().len(), 2);
