@@ -53,7 +53,7 @@ pub struct ToolDefinition {
     pub parameters: Value,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct ToolCatalog {
     definitions: Vec<ToolDefinition>,
 }

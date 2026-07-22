@@ -23,6 +23,12 @@ pub struct SpineConfig {
     features: BTreeSet<Feature>,
 }
 
+impl Default for SpineConfig {
+    fn default() -> Self {
+        Self::v1()
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ToolDescriptions {
     open: Option<String>,

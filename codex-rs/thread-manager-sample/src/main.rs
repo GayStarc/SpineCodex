@@ -291,6 +291,8 @@ fn new_config(model: Option<String>, arg0_paths: Arg0DispatchPaths) -> anyhow::R
         rollout_budget: None,
         current_time_reminder: None,
         features: Default::default(),
+        spine_config: Default::default(),
+        spine_tools: Default::default(),
         suppress_unstable_features_warning: false,
         active_project: ProjectConfig { trust_level: None },
         notices: Notice::default(),
