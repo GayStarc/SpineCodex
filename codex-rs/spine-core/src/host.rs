@@ -13,6 +13,12 @@ use crate::TrimProjection;
 use crate::bootstrap::InitError;
 use std::fmt;
 
+/// Adapts an ordered native input stream into host-neutral Spine events.
+///
+/// Since `spine-core` 0.2, implementations own only incremental ingestion and
+/// their frontier. Native rollout persistence and rendered model context stay
+/// with the host, which applies [`ContextEdit`] from [`SpineOutput`] at its
+/// context transition boundary.
 pub trait SpineHost {
     type Input;
     type Frontier;
