@@ -98,8 +98,32 @@ pub(crate) fn replay_inputs(
     let live_rollout = last_compaction.map_or(rollout, |index| &rollout[index + 1..]);
     let mut inputs = selected_inputs(archived_rollout);
 
-    // The compact event closes the archived root epoch, but reconstructed native
-    // history is the authority for the new live epoch.
+    let archived_source_count = archived_rollout
+        .iter()
+        .filter(|item| super::is_spine_source_item(item))
+        .count();
+    let live_effective = effective_rollout(live_rollout);
+    let live_source_count = live_effective
+        .iter()
+        .filter(|(_, item)| super::is_spine_source_item(item))
+        .count();
+    let history_prefix_len = inputs
+        .iter()
+        .rev()
+        .find_map(|input| match &input.item {
+            RolloutItem::Compacted(compacted) => Some(
+                compacted
+                    .replacement_history
+                    .as_ref()
+                    .map_or_else(
+                        || history.raw_items().len().saturating_sub(live_source_count),
+                        Vec::len,
+                    )
+                    .min(history.raw_items().len()),
+            ),
+            _ => None,
+        })
+        .unwrap_or(0);
     if let Some(CodexSpineInput {
         item: RolloutItem::Compacted(compacted),
         ..
@@ -107,14 +131,11 @@ pub(crate) fn replay_inputs(
         .iter_mut()
         .rfind(|input| matches!(input.item, RolloutItem::Compacted(_)))
     {
-        compacted.replacement_history = Some(Vec::new());
+        // Keep reconstructed replacement history opaque; it already contains
+        // the model-visible projection from the compacted epoch.
+        compacted.replacement_history = Some(history.raw_items()[..history_prefix_len].to_vec());
     }
-
-    let archived_source_count = archived_rollout
-        .iter()
-        .filter(|item| super::is_spine_source_item(item))
-        .count();
-    let live_effective = effective_rollout(live_rollout);
+    let live_history = &history.raw_items()[history_prefix_len..];
     let live_sources = live_effective
         .iter()
         .filter_map(|(ordinal, item)| match item {
@@ -129,9 +150,7 @@ pub(crate) fn replay_inputs(
         })
         .collect::<Vec<_>>();
     let mut source_cursor = 0;
-    let mapped_ordinals = history
-        .raw_items()
-        .iter()
+    let mapped_ordinals = live_history.iter()
         .map(|history_item| {
             let offset = live_sources[source_cursor..]
                 .iter()
@@ -147,7 +166,7 @@ pub(crate) fn replay_inputs(
     if let Some(mapped_ordinals) = mapped_ordinals {
         let mut mapped_history = mapped_ordinals
             .into_iter()
-            .zip(history.raw_items())
+            .zip(live_history)
             .peekable();
         for (ordinal, item) in live_effective {
             let ordinal = archived_source_count.saturating_add(ordinal);
@@ -174,25 +193,18 @@ pub(crate) fn replay_inputs(
         return (inputs, canonical_next_ordinal);
     }
 
-    let live_source_count = live_effective
-        .iter()
-        .filter(|(_, item)| super::is_spine_source_item(item))
-        .count();
-    let history_prefix_len = history.raw_items().len().saturating_sub(live_source_count);
     let mut usage = live_effective
         .into_iter()
         .filter_map(|(ordinal, item)| match item {
             RolloutItem::EventMsg(EventMsg::TokenCount(_)) => Some((
-                history_prefix_len
-                    .saturating_add(ordinal)
-                    .min(history.raw_items().len()),
+                ordinal.min(live_history.len()),
                 item.clone(),
             )),
             _ => None,
         })
         .peekable();
     let mut next_ordinal = archived_source_count;
-    for (position, item) in history.raw_items().iter().enumerate() {
+    for (position, item) in live_history.iter().enumerate() {
         while let Some((_, item)) = usage.next_if(|(usage_position, _)| *usage_position <= position)
         {
             inputs.push(CodexSpineInput {

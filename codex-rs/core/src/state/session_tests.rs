@@ -1384,6 +1384,42 @@ async fn context_transitions_publish_compact_and_replay_before_return() {
 }
 
 #[tokio::test]
+async fn compact_replay_does_not_project_replacement_history_twice() {
+    let mut configuration = make_session_configuration_for_tests().await;
+    configuration.enable_spine_jit_for_test();
+    let mut state = SessionState::new(configuration);
+    let first = response_message("user", "first");
+    let projected_first = response_message("user", "[U1]\nfirst");
+    let after_compact = response_message("user", "after compact");
+    let rollout = vec![
+        RolloutItem::ResponseItem(first),
+        RolloutItem::Compacted(CompactedItem {
+            message: "summary".to_string(),
+            replacement_history: Some(vec![projected_first.clone()]),
+            window_number: None,
+            first_window_id: None,
+            previous_window_id: None,
+            window_id: None,
+        }),
+        RolloutItem::ResponseItem(after_compact.clone()),
+    ];
+
+    state.replace_history_from_rollout(
+        vec![projected_first.clone(), after_compact],
+        None,
+        &rollout,
+    );
+
+    assert_eq!(
+        state.clone_history().raw_items(),
+        &[
+            projected_first,
+            response_message("user", "[U2]\nafter compact"),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn spine_tree_pressure_rederives_for_resume_and_rollback_prefixes() {
     let mut enabled = make_session_configuration_for_tests().await;
     enabled.enable_spine_jit_for_test();
