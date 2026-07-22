@@ -141,12 +141,17 @@ impl SessionState {
     }
 
     // History helpers
-    pub(crate) fn record_items<I>(&mut self, items: I, policy: TruncationPolicy)
+    pub(crate) fn record_items<'a, I>(&mut self, items: I, policy: TruncationPolicy)
     where
-        I: IntoIterator,
-        I::Item: std::ops::Deref<Target = ResponseItem>,
+        I: Iterator<Item = &'a ResponseItem> + Clone,
     {
+        let rollout_items = items
+            .clone()
+            .cloned()
+            .map(RolloutItem::ResponseItem)
+            .collect::<Vec<_>>();
         self.history.record_items(items, policy);
+        self.append_spine_inputs(&rollout_items);
     }
 
     pub(crate) fn replace_history_from_rollout(
