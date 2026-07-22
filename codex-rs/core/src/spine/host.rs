@@ -77,7 +77,7 @@ impl CodexSpineMaterialization {
     }
 }
 
-pub(crate) fn selected_inputs(rollout: &[RolloutItem]) -> Vec<CodexSpineInput> {
+fn selected_inputs(rollout: &[RolloutItem]) -> Vec<CodexSpineInput> {
     effective_rollout(rollout)
         .into_iter()
         .map(|(ordinal, item)| CodexSpineInput {
@@ -85,6 +85,133 @@ pub(crate) fn selected_inputs(rollout: &[RolloutItem]) -> Vec<CodexSpineInput> {
             item: item.clone(),
         })
         .collect()
+}
+
+pub(crate) fn replay_inputs(
+    rollout: &[RolloutItem],
+    history: &ContextManager,
+) -> (Vec<CodexSpineInput>, usize) {
+    let last_compaction = rollout
+        .iter()
+        .rposition(|item| matches!(item, RolloutItem::Compacted(_)));
+    let archived_rollout = last_compaction.map_or(&[][..], |index| &rollout[..=index]);
+    let live_rollout = last_compaction.map_or(rollout, |index| &rollout[index + 1..]);
+    let mut inputs = selected_inputs(archived_rollout);
+
+    // The compact event closes the archived root epoch, but reconstructed native
+    // history is the authority for the new live epoch.
+    if let Some(CodexSpineInput {
+        item: RolloutItem::Compacted(compacted),
+        ..
+    }) = inputs
+        .iter_mut()
+        .rfind(|input| matches!(input.item, RolloutItem::Compacted(_)))
+    {
+        compacted.replacement_history = Some(Vec::new());
+    }
+
+    let archived_source_count = archived_rollout
+        .iter()
+        .filter(|item| super::is_spine_source_item(item))
+        .count();
+    let live_effective = effective_rollout(live_rollout);
+    let live_sources = live_effective
+        .iter()
+        .filter_map(|(ordinal, item)| match item {
+            RolloutItem::ResponseItem(item) => {
+                Some((*ordinal, history.canonical_projected_item(item)))
+            }
+            RolloutItem::InterAgentCommunication(communication) => {
+                let item = communication.to_model_input_item();
+                Some((*ordinal, history.canonical_projected_item(&item)))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let mut source_cursor = 0;
+    let mapped_ordinals = history
+        .raw_items()
+        .iter()
+        .map(|history_item| {
+            let offset = live_sources[source_cursor..]
+                .iter()
+                .position(|(_, source_item)| source_item == history_item)?;
+            source_cursor = source_cursor.saturating_add(offset + 1);
+            Some(live_sources[source_cursor - 1].0)
+        })
+        .collect::<Option<Vec<_>>>();
+    let canonical_next_ordinal = rollout
+        .iter()
+        .filter(|item| super::is_spine_source_item(item))
+        .count();
+    if let Some(mapped_ordinals) = mapped_ordinals {
+        let mut mapped_history = mapped_ordinals
+            .into_iter()
+            .zip(history.raw_items())
+            .peekable();
+        for (ordinal, item) in live_effective {
+            let ordinal = archived_source_count.saturating_add(ordinal);
+            match item {
+                RolloutItem::EventMsg(EventMsg::TokenCount(_)) => {
+                    inputs.push(CodexSpineInput {
+                        ordinal,
+                        item: item.clone(),
+                    });
+                }
+                _ => {
+                    let Some((_, history_item)) = mapped_history.next_if(|(mapped_ordinal, _)| {
+                        archived_source_count.saturating_add(*mapped_ordinal) == ordinal
+                    }) else {
+                        continue;
+                    };
+                    inputs.push(CodexSpineInput {
+                        ordinal,
+                        item: RolloutItem::ResponseItem(history_item.clone()),
+                    });
+                }
+            }
+        }
+        return (inputs, canonical_next_ordinal);
+    }
+
+    let live_source_count = live_effective
+        .iter()
+        .filter(|(_, item)| super::is_spine_source_item(item))
+        .count();
+    let history_prefix_len = history.raw_items().len().saturating_sub(live_source_count);
+    let mut usage = live_effective
+        .into_iter()
+        .filter_map(|(ordinal, item)| match item {
+            RolloutItem::EventMsg(EventMsg::TokenCount(_)) => Some((
+                history_prefix_len
+                    .saturating_add(ordinal)
+                    .min(history.raw_items().len()),
+                item.clone(),
+            )),
+            _ => None,
+        })
+        .peekable();
+    let mut next_ordinal = archived_source_count;
+    for (position, item) in history.raw_items().iter().enumerate() {
+        while let Some((_, item)) = usage.next_if(|(usage_position, _)| *usage_position <= position)
+        {
+            inputs.push(CodexSpineInput {
+                ordinal: next_ordinal,
+                item,
+            });
+        }
+        inputs.push(CodexSpineInput {
+            ordinal: next_ordinal,
+            item: RolloutItem::ResponseItem(item.clone()),
+        });
+        next_ordinal = next_ordinal.saturating_add(1);
+    }
+    inputs.extend(usage.map(|(_, item)| CodexSpineInput {
+        ordinal: next_ordinal,
+        item,
+    }));
+
+    (inputs, next_ordinal.max(canonical_next_ordinal))
 }
 
 impl CodexSpineHost {

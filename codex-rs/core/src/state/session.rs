@@ -3,7 +3,6 @@
 use codex_protocol::models::AdditionalPermissionProfile;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ResponseItem;
-use codex_protocol::protocol::CompactedItem;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::RolloutItem;
 use codex_sandboxing::policy_transforms::merge_permission_profiles;
@@ -54,27 +53,6 @@ pub(crate) struct ContextPressureSnapshot {
     pub(crate) body_after_prefix_tokens: i64,
     pub(crate) body_after_prefix_prefill_tokens: Option<i64>,
 }
-
-enum ContextTransition<'a> {
-    Append {
-        items: &'a [ResponseItem],
-        policy: TruncationPolicy,
-    },
-    Compact {
-        items: Vec<ResponseItem>,
-        reference_context_item: Option<TurnContextItem>,
-        compacted_item: &'a CompactedItem,
-    },
-    Reset {
-        items: Vec<ResponseItem>,
-        reference_context_item: Option<TurnContextItem>,
-        rollout_items: &'a [RolloutItem],
-    },
-    ObserveUsage {
-        event: &'a TokenCountEvent,
-    },
-}
-
 /// Persistent, session-scoped state previously stored directly on `Session`.
 pub(crate) struct SessionState {
     pub(crate) session_configuration: SessionConfiguration,
@@ -163,42 +141,63 @@ impl SessionState {
     }
 
     // History helpers
-    pub(crate) fn append_context_items(
-        &mut self,
-        items: &[ResponseItem],
-        policy: TruncationPolicy,
-    ) {
-        self.apply_context_transition(ContextTransition::Append { items, policy });
+    pub(crate) fn record_items<I>(&mut self, items: I, policy: TruncationPolicy)
+    where
+        I: IntoIterator,
+        I::Item: std::ops::Deref<Target = ResponseItem>,
+    {
+        self.history.record_items(items, policy);
     }
 
-    pub(crate) fn replace_context_with_compaction(
-        &mut self,
-        items: Vec<ResponseItem>,
-        reference_context_item: Option<TurnContextItem>,
-        compacted_item: &CompactedItem,
-    ) {
-        self.apply_context_transition(ContextTransition::Compact {
-            items,
-            reference_context_item,
-            compacted_item,
-        });
-    }
-
-    pub(crate) fn replace_context_from_rollout(
+    pub(crate) fn replace_history_from_rollout(
         &mut self,
         items: Vec<ResponseItem>,
         reference_context_item: Option<TurnContextItem>,
         rollout_items: &[RolloutItem],
     ) {
-        self.apply_context_transition(ContextTransition::Reset {
-            items,
-            reference_context_item,
-            rollout_items,
-        });
+        self.replace_history(items, reference_context_item);
+        if self.spine_runtime.is_none() {
+            return;
+        }
+
+        let (inputs, next_ordinal) =
+            crate::spine::host::replay_inputs(rollout_items, &self.history);
+        let Some(spine) = &mut self.spine_runtime else {
+            return;
+        };
+        let output = spine
+            .runtime
+            .replay(inputs.iter())
+            .expect("native rollout history must replay deterministically");
+        spine.materialization = spine
+            .runtime
+            .host()
+            .rebuild_materialization(
+                spine
+                    .runtime
+                    .frontier()
+                    .expect("active Spine runtime must expose its frontier"),
+                &self.history,
+                output.runtime_projection(),
+            )
+            .expect("native rollout history must project deterministically");
+        spine.next_ordinal = next_ordinal;
+    }
+
+    pub(crate) fn replace_history(
+        &mut self,
+        items: Vec<ResponseItem>,
+        reference_context_item: Option<TurnContextItem>,
+    ) {
+        self.history.replace(items);
+        self.history
+            .set_reference_context_item(reference_context_item);
+        self.auto_compact_window.clear_prefill();
+        self.mark_projected_usage_stale();
     }
 
     pub(crate) fn observe_token_count(&mut self, event: &TokenCountEvent) {
-        self.apply_context_transition(ContextTransition::ObserveUsage { event });
+        self.append_spine_inputs(&[RolloutItem::EventMsg(EventMsg::TokenCount(event.clone()))]);
     }
 
     pub(crate) fn previous_turn_settings(&self) -> Option<PreviousTurnSettings> {
@@ -408,42 +407,7 @@ impl SessionState {
             .user_message_projection_entries(frontier)
     }
 
-    fn apply_context_transition(&mut self, transition: ContextTransition<'_>) {
-        match transition {
-            ContextTransition::Append { items, policy } => {
-                self.history.record_items(items.iter(), policy);
-                let rollout_items = items
-                    .iter()
-                    .cloned()
-                    .map(RolloutItem::ResponseItem)
-                    .collect::<Vec<_>>();
-                self.append_spine_inputs(&rollout_items);
-            }
-            ContextTransition::Compact {
-                items,
-                reference_context_item,
-                compacted_item,
-            } => {
-                self.replace_native_history(items, reference_context_item);
-                self.append_spine_inputs(&[RolloutItem::Compacted(compacted_item.clone())]);
-            }
-            ContextTransition::Reset {
-                items,
-                reference_context_item,
-                rollout_items,
-            } => {
-                self.replace_native_history(items, reference_context_item);
-                self.replace_spine_inputs(rollout_items);
-            }
-            ContextTransition::ObserveUsage { event } => {
-                self.append_spine_inputs(&[RolloutItem::EventMsg(EventMsg::TokenCount(
-                    event.clone(),
-                ))]);
-            }
-        }
-    }
-
-    fn append_spine_inputs(&mut self, items: &[RolloutItem]) {
+    pub(crate) fn append_spine_inputs(&mut self, items: &[RolloutItem]) {
         let Some(spine) = &mut self.spine_runtime else {
             return;
         };
@@ -473,54 +437,6 @@ impl SessionState {
                 )
                 .expect("native rollout append must materialize deterministically");
         }
-    }
-
-    fn replace_spine_inputs(&mut self, items: &[RolloutItem]) {
-        let Some(spine) = &mut self.spine_runtime else {
-            return;
-        };
-        let next_ordinal = items
-            .iter()
-            .filter(|item| crate::spine::is_spine_source_item(item))
-            .count();
-        let inputs = crate::spine::host::selected_inputs(items);
-        let output = spine
-            .runtime
-            .replay(inputs.iter())
-            .expect("native rollout replacement must replay deterministically");
-        spine.materialization = spine
-            .runtime
-            .host()
-            .rebuild_materialization(
-                spine
-                    .runtime
-                    .frontier()
-                    .expect("active Spine runtime must expose its frontier"),
-                &self.history,
-                output.runtime_projection(),
-            )
-            .expect("native rollout replacement must project deterministically");
-        spine.next_ordinal = next_ordinal;
-        self.mark_projected_usage_stale();
-    }
-
-    #[cfg(test)]
-    pub(crate) fn record_items<I>(&mut self, items: I, policy: TruncationPolicy)
-    where
-        I: IntoIterator,
-        I::Item: std::ops::Deref<Target = ResponseItem>,
-    {
-        self.history.record_items(items, policy);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn append_spine_inputs_for_test(&mut self, items: &[RolloutItem]) {
-        self.append_spine_inputs(items);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn replace_spine_inputs_for_test(&mut self, items: &[RolloutItem]) {
-        self.replace_spine_inputs(items);
     }
 
     pub(crate) fn validate_spine_control(&self, tool: spine_core::SpineTool) -> Result<(), String> {
@@ -569,27 +485,6 @@ impl SessionState {
             .validate_trim_request(frontier, current_call_id, request)
     }
 
-    #[cfg(test)]
-    pub(crate) fn replace_history(
-        &mut self,
-        items: Vec<ResponseItem>,
-        reference_context_item: Option<TurnContextItem>,
-    ) {
-        self.replace_native_history(items, reference_context_item);
-    }
-
-    fn replace_native_history(
-        &mut self,
-        items: Vec<ResponseItem>,
-        reference_context_item: Option<TurnContextItem>,
-    ) {
-        self.history.replace(items);
-        self.history
-            .set_reference_context_item(reference_context_item);
-        self.auto_compact_window.clear_prefill();
-        self.mark_projected_usage_stale();
-    }
-
     pub(crate) fn replace_last_turn_images(&mut self, placeholder: &str) -> bool {
         let replaced = self.history.replace_last_turn_images(placeholder);
         if replaced {
@@ -597,7 +492,6 @@ impl SessionState {
         }
         replaced
     }
-
     pub(crate) fn set_token_info(&mut self, info: Option<TokenUsageInfo>) {
         self.history.set_token_info(info);
     }

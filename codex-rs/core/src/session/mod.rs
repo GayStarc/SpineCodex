@@ -1523,7 +1523,7 @@ impl Session {
         prepare_response_items(&mut history);
         {
             let mut state = self.state.lock().await;
-            state.replace_context_from_rollout(history, reference_context_item, rollout_items);
+            state.replace_history_from_rollout(history, reference_context_item, rollout_items);
             if let Some(world_state) = world_state_baseline {
                 state.history.set_world_state_baseline(world_state);
             }
@@ -3005,7 +3005,16 @@ impl Session {
         {
             let mut state = self.state.lock().await;
             state.current_time_reminder.note_recorded_items(items);
-            state.append_context_items(items, turn_context.model_info.truncation_policy.into());
+            state.record_items(
+                items.iter(),
+                turn_context.model_info.truncation_policy.into(),
+            );
+            let rollout_items = items
+                .iter()
+                .cloned()
+                .map(RolloutItem::ResponseItem)
+                .collect::<Vec<_>>();
+            state.append_spine_inputs(&rollout_items);
             if state.projected_usage_enabled()
                 && items
                     .iter()
@@ -3117,7 +3126,11 @@ impl Session {
         {
             let mut state = self.state.lock().await;
             state.current_time_reminder.note_recorded_items(items);
-            state.append_context_items(items, turn_context.model_info.truncation_policy.into());
+            state.record_items(
+                items.iter(),
+                turn_context.model_info.truncation_policy.into(),
+            );
+            state.append_spine_inputs(&[RolloutItem::ResponseItem(response_item.clone())]);
         }
         self.persist_rollout_items(&[
             RolloutItem::InterAgentCommunicationMetadata {
@@ -3283,7 +3296,8 @@ impl Session {
         let RolloutItem::Compacted(compacted_item) = compacted_rollout_item else {
             unreachable!("compacted history installation requires a compacted rollout item");
         };
-        state.replace_context_with_compaction(items, reference_context_item, compacted_item);
+        state.replace_history(items, reference_context_item);
+        state.append_spine_inputs(std::slice::from_ref(compacted_rollout_item));
         state.install_auto_compact_window(auto_compact_window.0, auto_compact_window.1);
         if let Some(world_state) = world_state_baseline {
             let snapshot = world_state.snapshot();
