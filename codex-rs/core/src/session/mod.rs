@@ -3009,12 +3009,6 @@ impl Session {
                 items.iter(),
                 turn_context.model_info.truncation_policy.into(),
             );
-            let rollout_items = items
-                .iter()
-                .cloned()
-                .map(RolloutItem::ResponseItem)
-                .collect::<Vec<_>>();
-            state.append_spine_inputs(&rollout_items);
             if state.projected_usage_enabled()
                 && items
                     .iter()
@@ -3130,7 +3124,6 @@ impl Session {
                 items.iter(),
                 turn_context.model_info.truncation_policy.into(),
             );
-            state.append_spine_inputs(&[RolloutItem::ResponseItem(response_item.clone())]);
         }
         self.persist_rollout_items(&[
             RolloutItem::InterAgentCommunicationMetadata {

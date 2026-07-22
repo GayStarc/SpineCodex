@@ -9,6 +9,7 @@ use codex_sandboxing::policy_transforms::merge_permission_profiles;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
+use std::ops::Deref;
 
 use super::AdditionalContextStore;
 use super::auto_compact_window::AutoCompactWindow;
@@ -144,9 +145,18 @@ impl SessionState {
     pub(crate) fn record_items<I>(&mut self, items: I, policy: TruncationPolicy)
     where
         I: IntoIterator,
-        I::Item: std::ops::Deref<Target = ResponseItem>,
+        I::Item: Deref<Target = ResponseItem>,
     {
-        self.history.record_items(items, policy);
+        let items = items
+            .into_iter()
+            .map(|item| item.deref().clone())
+            .collect::<Vec<_>>();
+        self.history.record_items(items.iter(), policy);
+        let rollout_items = items
+            .into_iter()
+            .map(RolloutItem::ResponseItem)
+            .collect::<Vec<_>>();
+        self.append_spine_inputs(&rollout_items);
     }
 
     pub(crate) fn replace_history_from_rollout(
