@@ -27,6 +27,19 @@ SpineJIT is enabled by default. For one run, disable it with
 spine_jit = false
 ```
 
+## Feature controls
+
+- `/experimental` exposes `spine_spawn` for running independent child tasks
+  concurrently and importing their results into the Spine tree. It remains
+  disabled by default and is available only for direct, non-Plan model calls.
+- `--enable spinetree_memory_projection` projects closed-node memory as
+  read-only Markdown under `.codex/spinetree/` for local inspection. Each
+  projection session also maintains a derived `USER.md`; normal User messages
+  append to it, while resume/rollback/fork reconstruction replaces it from the
+  active typed rollout history.
+- The same projection feature can be enabled from `/experimental`; it remains
+  disabled by default and also requires `spine_jit`.
+
 Release artifacts are published from the
 [SpineCodex releases page](https://github.com/GhabiX/SpineCodex/releases).
 

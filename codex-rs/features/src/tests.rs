@@ -33,6 +33,13 @@ fn spinetree_memory_projection_is_explicit_and_disabled_by_default() {
         feature_for_key("spinetree_memory_projection"),
         Some(Feature::SpinetreeMemoryProjection)
     );
+    let stage = Feature::SpinetreeMemoryProjection.stage();
+    assert!(matches!(stage, Stage::Experimental { .. }));
+    assert_eq!(
+        stage.experimental_menu_name(),
+        Some("Spinetree memory projection")
+    );
+    assert!(stage.experimental_menu_description().is_some());
     assert_eq!(Feature::SpinetreeMemoryProjection.default_enabled(), false);
 }
 
@@ -46,7 +53,10 @@ fn spine_jit_is_stable_and_enabled_by_default() {
 #[test]
 fn spine_spawn_is_explicit_and_disabled_by_default() {
     assert_eq!(feature_for_key("spine_spawn"), Some(Feature::SpineSpawn));
-    assert_eq!(Feature::SpineSpawn.stage(), Stage::UnderDevelopment);
+    let stage = Feature::SpineSpawn.stage();
+    assert!(matches!(stage, Stage::Experimental { .. }));
+    assert_eq!(stage.experimental_menu_name(), Some("Spine spawn"));
+    assert!(stage.experimental_menu_description().is_some());
     assert_eq!(Feature::SpineSpawn.default_enabled(), false);
     let mut features = Features::with_defaults();
     assert!(!features.enabled(Feature::SpineSpawn));

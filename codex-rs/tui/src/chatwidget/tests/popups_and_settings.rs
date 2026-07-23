@@ -2954,6 +2954,23 @@ async fn experimental_popup_omits_stable_guardian_approval() {
 }
 
 #[tokio::test]
+async fn experimental_popup_includes_spine_features() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.open_experimental_popup();
+
+    let popup = render_bottom_popup(&chat, /*width*/ 120);
+    assert!(
+        popup.contains("Spine spawn"),
+        "expected Spine spawn to be shown in the experimental popup, got:\n{popup}"
+    );
+    assert!(
+        popup.contains("Spinetree memory projection"),
+        "expected Spinetree memory projection to be shown in the experimental popup, got:\n{popup}"
+    );
+}
+
+#[tokio::test]
 async fn multi_agent_enable_prompt_snapshot() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 

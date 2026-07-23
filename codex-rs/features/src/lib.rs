@@ -1271,7 +1271,11 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::SpineSpawn,
         key: "spine_spawn",
-        stage: Stage::UnderDevelopment,
+        stage: Stage::Experimental {
+            name: "Spine spawn",
+            menu_description: "Run independent child tasks concurrently and import their results into the Spine tree.",
+            announcement: "NEW: Spine spawn is now available in /experimental.",
+        },
         default_enabled: false,
     },
     FeatureSpec {
@@ -1283,7 +1287,11 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::SpinetreeMemoryProjection,
         key: "spinetree_memory_projection",
-        stage: Stage::UnderDevelopment,
+        stage: Stage::Experimental {
+            name: "Spinetree memory projection",
+            menu_description: "Project closed-node memory to Markdown files under .codex/spinetree/ for local inspection.",
+            announcement: "NEW: Spinetree memory projection is now available in /experimental.",
+        },
         default_enabled: false,
     },
     FeatureSpec {
