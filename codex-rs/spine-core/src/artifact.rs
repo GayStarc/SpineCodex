@@ -1,6 +1,10 @@
 //! Host-neutral artifact facts derived from a Spine projection.
 
-use crate::{MemorySlot, NodeId, NodeKind, NodeStatus, SpineProjection};
+use crate::MemorySlot;
+use crate::NodeId;
+use crate::NodeKind;
+use crate::NodeStatus;
+use crate::SpineProjection;
 
 pub const TRIM_SNIPPED_BODY: &str = "[Old tool result content cleared]";
 

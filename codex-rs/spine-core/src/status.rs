@@ -1,6 +1,9 @@
 //! Host-neutral status facts; terminal and protocol rendering stay host-owned.
 
-use crate::{NodeId, NodeStatus, RawBoundary, SpineProjection};
+use crate::NodeId;
+use crate::NodeStatus;
+use crate::RawBoundary;
+use crate::SpineProjection;
 use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, PartialEq, Eq)]

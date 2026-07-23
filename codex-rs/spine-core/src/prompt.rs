@@ -1,6 +1,7 @@
 //! Configured, feature-gated prompt extension.
 
-use crate::{Feature, SpineConfig};
+use crate::Feature;
+use crate::SpineConfig;
 
 const SPINE_VIEW_START_MARKER: &str = "\n\n<spine_view>";
 
