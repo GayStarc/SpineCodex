@@ -585,6 +585,13 @@ impl ToolCallGroup {
 pub enum RolloutEvent {
     Message(Message),
     ToolCall(ToolCallGroup),
+    Opaque {
+        boundary: RawBoundary,
+    },
+    Synthetic {
+        boundary: RawBoundary,
+        item: ContextItem,
+    },
     Compact {
         boundary: RawBoundary,
         replacement_history: Vec<ContextItem>,
@@ -596,7 +603,9 @@ impl RolloutEvent {
         match self {
             Self::Message(message) => message.boundary,
             Self::ToolCall(group) => group.end,
-            Self::Compact { boundary, .. } => *boundary,
+            Self::Opaque { boundary }
+            | Self::Synthetic { boundary, .. }
+            | Self::Compact { boundary, .. } => *boundary,
         }
     }
 
@@ -615,6 +624,8 @@ impl RolloutEvent {
                         .saturating_add(call.output.as_ref().map_or(0, String::len))
                 }))
                 .fold(0usize, usize::saturating_add),
+            Self::Opaque { .. } => 0,
+            Self::Synthetic { item, .. } => item.retained_synthetic_bytes(),
             Self::Compact {
                 replacement_history,
                 ..

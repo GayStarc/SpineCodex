@@ -1,20 +1,30 @@
 use crate::CellId;
 use crate::ContextItem;
+use crate::ParseStack;
 use crate::TrimEdit;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ContextLabel {
     UserAnchor(u64),
     ToolOutput(TrimEdit),
+    SpawnOutput { succeeded: bool },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ContextInsert {
+    /// Reuses a cell that was present in the context before this event batch.
+    ///
+    /// `source_index` is always an index in the pre-batch context. A handler
+    /// must resolve all existing inserts against that original snapshot rather
+    /// than against a context already modified by an earlier event.
     Existing {
         cell_id: CellId,
         source_index: usize,
     },
-    Synthetic(ContextItem),
+    Synthetic {
+        cell_id: CellId,
+        item: ContextItem,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -91,7 +101,9 @@ pub enum ContextEventError {
 /// `prepare_context` must be side-effect free. Once it succeeds,
 /// `commit_context` must be infallible. The runtime verifies event sizes before
 /// preparation and checks that the committed context still matches its parse
-/// stack.
+/// stack. Events are applied in order; `Existing::source_index` values always
+/// refer to the history snapshot passed to `prepare_context`, before any event
+/// in the batch is applied.
 pub trait SpineContextEventHandler {
     type History;
     type PreparedContext;
@@ -102,6 +114,7 @@ pub trait SpineContextEventHandler {
     fn prepare_context(
         &self,
         history: &Self::History,
+        stack: &ParseStack,
         events: &[ContextEvent],
     ) -> Result<Self::PreparedContext, Self::Error>;
 

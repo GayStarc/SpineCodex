@@ -1253,7 +1253,9 @@ fn bounded_event_space_preserves_prefix_replay_equivalence() {
                     group.start = boundary(start);
                     group.end = boundary(start + 1);
                 }
-                RolloutEvent::Compact { boundary: item, .. } => *item = boundary(start),
+                RolloutEvent::Opaque { boundary: item }
+                | RolloutEvent::Synthetic { boundary: item, .. }
+                | RolloutEvent::Compact { boundary: item, .. } => *item = boundary(start),
             }
             events.push(event);
             encoded /= alphabet.len();

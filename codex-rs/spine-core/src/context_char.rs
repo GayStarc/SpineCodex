@@ -1,4 +1,5 @@
 use crate::ContextItem;
+use crate::ContextLabel;
 use crate::Message;
 use crate::RawBoundary;
 use crate::RolloutEvent;
@@ -10,8 +11,8 @@ use std::fmt;
 
 /// One character in Spine's agent-neutral context alphabet.
 ///
-/// Item variants have width one and correspond to one item in the host's live
-/// model context. `Compact` and `Usage` are zero-width signals.
+/// Every character corresponds to exactly one item in the host's live model
+/// context. Zero-width observations are represented by [`SpineSignal`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SpineChar {
     Message(Message),
@@ -24,10 +25,13 @@ pub enum SpineChar {
         boundary: RawBoundary,
         item: ContextItem,
     },
-    Compact {
-        boundary: RawBoundary,
-        replacement_history: Vec<ContextItem>,
-    },
+}
+
+/// A zero-width observation that changes Spine state without adding a context
+/// cell.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpineSignal {
+    Compact { boundary: RawBoundary },
     Usage(TokenUsageSample),
 }
 
@@ -37,22 +41,12 @@ impl SpineChar {
             Self::Message(message) => message.boundary,
             Self::ToolRequest(request) => request.boundary,
             Self::ToolResponse(response) => response.boundary,
-            Self::Opaque { boundary }
-            | Self::Synthetic { boundary, .. }
-            | Self::Compact { boundary, .. } => *boundary,
-            Self::Usage(sample) => sample.boundary,
+            Self::Opaque { boundary } | Self::Synthetic { boundary, .. } => *boundary,
         }
     }
 
-    pub fn width(&self) -> usize {
-        match self {
-            Self::Message(_)
-            | Self::ToolRequest(_)
-            | Self::ToolResponse(_)
-            | Self::Opaque { .. }
-            | Self::Synthetic { .. } => 1,
-            Self::Compact { .. } | Self::Usage(_) => 0,
-        }
+    pub const fn width(&self) -> usize {
+        1
     }
 }
 
@@ -99,11 +93,16 @@ impl ParseStack {
 pub struct ParseCell {
     id: CellId,
     character: SpineChar,
+    labels: Vec<ContextLabel>,
 }
 
 impl ParseCell {
     pub fn new(id: CellId, character: SpineChar) -> Self {
-        Self { id, character }
+        Self {
+            id,
+            character,
+            labels: Vec::new(),
+        }
     }
 
     pub fn id(&self) -> CellId {
@@ -112,6 +111,15 @@ impl ParseCell {
 
     pub fn character(&self) -> &SpineChar {
         &self.character
+    }
+
+    pub fn labels(&self) -> &[ContextLabel] {
+        &self.labels
+    }
+
+    pub(crate) fn with_labels(mut self, labels: Vec<ContextLabel>) -> Self {
+        self.labels = labels;
+        self
     }
 }
 
@@ -173,9 +181,24 @@ impl SpineCharParser {
         self.stack = stack;
     }
 
+    pub(crate) fn replace_stack(&mut self, stack: ParseStack) {
+        self.next_cell_id = stack
+            .cells
+            .iter()
+            .map(|cell| cell.id.value())
+            .max()
+            .map_or(self.next_cell_id, |id| {
+                self.next_cell_id.max(id.saturating_add(1))
+            });
+        self.stack = stack;
+    }
+
+    pub(crate) fn synthetic_cell(&mut self, boundary: RawBoundary, item: ContextItem) -> ParseCell {
+        self.new_cell(SpineChar::Synthetic { boundary, item })
+    }
+
     fn apply(&mut self, character: SpineChar) -> Result<CharParseStep, CharParseError> {
         let mut events = Vec::new();
-        let mut usage_sample = None;
         self.last_boundary = Some(character.boundary());
 
         match character {
@@ -254,38 +277,22 @@ impl SpineCharParser {
                 self.require_no_pending_tool_group(boundary)?;
                 self.flush_trailing_assistant(&mut events);
                 self.push_cell(SpineChar::Opaque { boundary });
+                events.push(RolloutEvent::Opaque { boundary });
             }
             SpineChar::Synthetic { boundary, item } => {
                 self.require_no_pending_tool_group(boundary)?;
                 self.flush_trailing_assistant(&mut events);
-                self.push_cell(SpineChar::Synthetic { boundary, item });
-            }
-            SpineChar::Compact {
-                boundary,
-                replacement_history,
-            } => {
-                let cells = replacement_history
-                    .iter()
-                    .cloned()
-                    .map(|item| self.new_cell(SpineChar::Synthetic { boundary, item }))
-                    .collect();
-                self.stack.cells = cells;
-                self.trailing_assistant.clear();
-                self.pending_tool_group = None;
-                events.push(RolloutEvent::Compact {
+                self.push_cell(SpineChar::Synthetic {
                     boundary,
-                    replacement_history,
+                    item: item.clone(),
                 });
-            }
-            SpineChar::Usage(sample) => {
-                usage_sample = Some(sample);
+                events.push(RolloutEvent::Synthetic { boundary, item });
             }
         }
 
         Ok(CharParseStep {
             events,
             pending_boundaries: self.pending_boundaries(),
-            usage_sample,
             stack_size: self.stack.len(),
         })
     }
@@ -312,7 +319,7 @@ impl SpineCharParser {
         events.extend(self.trailing_assistant.drain(..).map(RolloutEvent::Message));
     }
 
-    fn pending_boundaries(&self) -> Vec<RawBoundary> {
+    pub(crate) fn pending_boundaries(&self) -> Vec<RawBoundary> {
         self.trailing_assistant
             .iter()
             .map(|message| message.boundary)
@@ -346,7 +353,6 @@ impl PendingToolGroup {
 pub struct CharParseStep {
     events: Vec<RolloutEvent>,
     pending_boundaries: Vec<RawBoundary>,
-    usage_sample: Option<TokenUsageSample>,
     stack_size: usize,
 }
 
@@ -357,10 +363,6 @@ impl CharParseStep {
 
     pub fn pending_boundaries(&self) -> &[RawBoundary] {
         &self.pending_boundaries
-    }
-
-    pub fn usage_sample(&self) -> Option<TokenUsageSample> {
-        self.usage_sample
     }
 
     pub fn stack_size(&self) -> usize {

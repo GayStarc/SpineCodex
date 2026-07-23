@@ -110,48 +110,39 @@ fn parallel_tool_group_reduces_only_after_every_response() {
 }
 
 #[test]
-fn usage_is_zero_width_and_compact_resets_the_live_stack() {
+fn opaque_and_synthetic_chars_are_one_cell_semantic_inputs() {
     let mut parser = SpineCharParser::default();
-    parser.eat(message(1, MessageRole::User, "before")).unwrap();
-
-    let usage = parser
-        .eat(SpineChar::Usage(TokenUsageSample {
+    let opaque = parser
+        .eat(SpineChar::Opaque {
             boundary: RawBoundary(1),
-            input_tokens: 42,
-        }))
-        .unwrap();
-    assert_eq!(usage.stack_size(), 1);
-    assert_eq!(usage.usage_sample().unwrap().input_tokens, 42);
-
-    let replacement = ContextItem::Message {
-        message: Message {
-            boundary: RawBoundary(2),
-            role: MessageRole::Assistant,
-            content: "replacement".to_string(),
-        },
-        user_anchor: None,
-    };
-    let compact = parser
-        .eat(SpineChar::Compact {
-            boundary: RawBoundary(2),
-            replacement_history: vec![replacement.clone()],
         })
         .unwrap();
-    assert_eq!(compact.stack_size(), 1);
     assert_eq!(
-        parser.stack().cells()[0].character(),
-        &SpineChar::Synthetic {
-            boundary: RawBoundary(2),
-            item: replacement.clone(),
-        }
-    );
-    assert_eq!(
-        compact.events(),
-        &[RolloutEvent::Compact {
-            boundary: RawBoundary(2),
-            replacement_history: vec![replacement],
+        opaque.events(),
+        &[RolloutEvent::Opaque {
+            boundary: RawBoundary(1)
         }]
     );
+
+    let item = ContextItem::SyntheticNode {
+        node_id: crate::NodeId::root_epoch(1),
+        summary: "root".to_string(),
+        status: crate::NodeStatus::Live,
+    };
+    let synthetic = parser
+        .eat(SpineChar::Synthetic {
+            boundary: RawBoundary(2),
+            item: item.clone(),
+        })
+        .unwrap();
+    assert_eq!(
+        synthetic.events(),
+        &[RolloutEvent::Synthetic {
+            boundary: RawBoundary(2),
+            item,
+        }]
+    );
+    assert_eq!(synthetic.stack_size(), 2);
 }
 
 #[test]

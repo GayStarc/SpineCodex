@@ -53,7 +53,9 @@ impl TrimReducer {
                 return;
             }
             RolloutEvent::ToolCall(group) => group,
-            RolloutEvent::Message(_) => return,
+            RolloutEvent::Message(_)
+            | RolloutEvent::Opaque { .. }
+            | RolloutEvent::Synthetic { .. } => return,
         };
         for call in group
             .calls
@@ -193,6 +195,14 @@ impl SpineReducer {
         match event {
             RolloutEvent::Message(message) => self.apply_message(message),
             RolloutEvent::ToolCall(group) => self.apply_toolcall(group),
+            RolloutEvent::Opaque { boundary } => {
+                self.push_cursor_entry(NodeEntry::Leaf(ContextItem::Native {
+                    source: crate::NativeItemRef::Rollout { ordinal: boundary },
+                }));
+            }
+            RolloutEvent::Synthetic { item, .. } => {
+                self.push_cursor_entry(NodeEntry::Leaf(item));
+            }
             RolloutEvent::Compact {
                 boundary,
                 replacement_history,

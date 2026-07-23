@@ -18,11 +18,14 @@ fn tag_is_size_neutral_and_splice_unifies_structural_operations() {
                     cell_id: CellId::new(8),
                     source_index: 2,
                 },
-                ContextInsert::Synthetic(ContextItem::SyntheticNode {
-                    node_id: NodeId::root_epoch(1),
-                    summary: "root".to_string(),
-                    status: NodeStatus::Live,
-                }),
+                ContextInsert::Synthetic {
+                    cell_id: CellId::new(9),
+                    item: ContextItem::SyntheticNode {
+                        node_id: NodeId::root_epoch(1),
+                        summary: "root".to_string(),
+                        status: NodeStatus::Live,
+                    },
+                },
             ],
         },
     ];
