@@ -1,12 +1,7 @@
 use super::*;
 use crate::session::tests::make_session_configuration_for_tests;
 use crate::state::AutoCompactWindowSnapshot;
-use crate::tools::code_mode::spine_bridge::CODE_MODE_SPINE_CARRIER_MARKER;
-use crate::tools::code_mode::spine_bridge::CodeModeOutputCarrierV1;
-use crate::tools::code_mode::spine_bridge::NestedSpineCallV1;
-use crate::tools::code_mode::spine_bridge::NestedSpineOutputV1;
-use crate::tools::code_mode::spine_bridge::NestedSpineToolName;
-use crate::tools::code_mode::spine_bridge::encode_carrier;
+use codex_protocol::AgentPath;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::FunctionCallOutputContentItem;
@@ -14,6 +9,7 @@ use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::CompactedItem;
 use codex_protocol::protocol::CreditsSnapshot;
+use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::RateLimitWindow;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SpendControlLimitSnapshot;
@@ -976,6 +972,7 @@ async fn historical_code_mode_carrier_is_projected_with_spine_features_off() {
 async fn spine_jit_is_enabled_in_default_session_state() {
     let session_configuration = make_session_configuration_for_tests().await;
     assert!(session_configuration.spine_jit_enabled());
+    assert!(session_configuration.spine_status_enabled());
     assert!(
         SessionState::new(session_configuration)
             .spine_tree_update()
@@ -984,27 +981,30 @@ async fn spine_jit_is_enabled_in_default_session_state() {
 }
 
 #[tokio::test]
-async fn spine_transition_status_requires_spine_jit_only() {
+async fn spine_status_requires_both_spine_jit_and_spine_status() {
     let enabled = make_session_configuration_for_tests().await;
+    assert!(enabled.spine_status_enabled());
     assert!(
         SessionState::new(enabled)
-            .spine_transition_status_item(None, None)
+            .spine_status_prompt_overlay(None)
             .is_some()
     );
 
     let mut status_disabled = make_session_configuration_for_tests().await;
     status_disabled.disable_spine_status_for_test();
+    assert!(!status_disabled.spine_status_enabled());
     assert!(
         SessionState::new(status_disabled)
-            .spine_transition_status_item(None, None)
-            .is_some()
+            .spine_status_prompt_overlay(None)
+            .is_none()
     );
 
     let mut jit_disabled = make_session_configuration_for_tests().await;
     jit_disabled.disable_spine_jit_for_test();
+    assert!(!jit_disabled.spine_status_enabled());
     assert!(
         SessionState::new(jit_disabled)
-            .spine_transition_status_item(None, None)
+            .spine_status_prompt_overlay(None)
             .is_none()
     );
 }
@@ -1393,8 +1393,8 @@ async fn spawn_context_install_is_atomic_and_independently_feature_gated() {
     assert!(
         response_text(
             &disabled_state
-                .spine_transition_status_item(None, None)
-                .expect("Spine transition status enabled")
+                .spine_status_prompt_overlay(None)
+                .expect("status overlay enabled")
         )
         .contains("cursor=\"1\"")
     );
@@ -1615,6 +1615,106 @@ async fn compact_replay_does_not_project_replacement_history_twice() {
             projected_first,
             response_message("user", "[U2]\nafter compact"),
         ]
+    );
+}
+
+#[tokio::test]
+async fn legacy_compact_recovery_keeps_reconstructed_prefix_opaque() {
+    let mut configuration = make_session_configuration_for_tests().await;
+    configuration.enable_spine_jit_for_test();
+    let mut state = SessionState::new(configuration);
+    let before = response_message("user", "before compact");
+    let replacement = response_message("user", "legacy baseline");
+    let after = response_message("user", "after compact");
+    let rollout = vec![
+        RolloutItem::ResponseItem(before),
+        RolloutItem::Compacted(CompactedItem {
+            message: "legacy summary".to_string(),
+            replacement_history: None,
+            window_number: None,
+            first_window_id: None,
+            previous_window_id: None,
+            window_id: None,
+        }),
+        RolloutItem::ResponseItem(after.clone()),
+    ];
+
+    state.replace_history_from_rollout(vec![replacement.clone(), after], None, &rollout);
+
+    assert_eq!(
+        state.clone_history().raw_items(),
+        &[replacement, response_message("user", "[U2]\nafter compact"),]
+    );
+}
+
+#[tokio::test]
+async fn archived_inter_agent_message_preserves_anchor_sequence_after_compact() {
+    let mut configuration = make_session_configuration_for_tests().await;
+    configuration.enable_spine_jit_for_test();
+    let mut state = SessionState::new(configuration);
+    let communication = InterAgentCommunication::new(
+        AgentPath::root(),
+        AgentPath::root().join("worker").expect("worker path"),
+        Vec::new(),
+        "archived child message".to_string(),
+        /*trigger_turn*/ false,
+    );
+    let replacement = response_message("user", "replacement");
+    let after = response_message("user", "after compact");
+    let rollout = vec![
+        RolloutItem::InterAgentCommunication(communication),
+        RolloutItem::Compacted(CompactedItem {
+            message: "summary".to_string(),
+            replacement_history: Some(vec![replacement.clone()]),
+            window_number: None,
+            first_window_id: None,
+            previous_window_id: None,
+            window_id: None,
+        }),
+        RolloutItem::ResponseItem(after.clone()),
+    ];
+
+    state.replace_history_from_rollout(vec![replacement.clone(), after], None, &rollout);
+
+    assert_eq!(
+        state.clone_history().raw_items(),
+        &[replacement, response_message("user", "[U2]\nafter compact"),]
+    );
+}
+
+#[tokio::test]
+async fn post_compact_usage_is_recovered_for_the_live_root_epoch() {
+    let mut configuration = make_session_configuration_for_tests().await;
+    configuration.enable_spine_jit_for_test();
+    let mut state = SessionState::new(configuration);
+    let replacement = response_message("assistant", "replacement");
+    let after = response_message("user", "after compact");
+    let rollout = vec![
+        RolloutItem::ResponseItem(response_message("user", "before compact")),
+        token_count(10_000),
+        RolloutItem::Compacted(CompactedItem {
+            message: "summary".to_string(),
+            replacement_history: Some(vec![replacement.clone()]),
+            window_number: None,
+            first_window_id: None,
+            previous_window_id: None,
+            window_id: None,
+        }),
+        RolloutItem::ResponseItem(after.clone()),
+        token_count(42_000),
+    ];
+
+    state.replace_history_from_rollout(vec![replacement, after], None, &rollout);
+
+    assert_eq!(
+        state
+            .spine_tree_update()
+            .expect("recovered tree")
+            .nodes
+            .last()
+            .and_then(|node| node.context_pressure.as_ref())
+            .and_then(|pressure| pressure.current_input_tokens),
+        Some(42_000)
     );
 }
 

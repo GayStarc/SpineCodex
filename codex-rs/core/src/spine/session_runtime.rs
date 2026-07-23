@@ -129,46 +129,75 @@ impl SessionSpineRuntime {
         let last_compact = effective
             .iter()
             .rposition(|(_, item)| matches!(item, RolloutItem::Compacted(_)));
+        self.pending_calls.clear();
         let mut archived = Vec::new();
-        if let Some(last_compact) = last_compact {
-            for (ordinal, item) in effective.iter().take(last_compact + 1).copied() {
-                match item {
-                    RolloutItem::ResponseItem(item) => {
-                        archived.push(SpineRecoveryInput::Char(response_item_to_char(
-                            item,
-                            RawBoundary(ordinal as u64),
-                            &mut self.pending_calls,
-                            self.runtime.handler().spawn_enabled(),
-                        )))
-                    }
-                    RolloutItem::Compacted(_) => {
-                        archived.push(SpineRecoveryInput::Signal(SpineSignal::Compact {
-                            boundary: RawBoundary(ordinal as u64),
-                        }))
-                    }
-                    RolloutItem::EventMsg(EventMsg::TokenCount(event)) => {
-                        if let Some(usage) = event.info.as_ref().map(|info| &info.last_token_usage)
-                        {
-                            archived.push(SpineRecoveryInput::Signal(SpineSignal::Usage(
-                                spine_core::TokenUsageSample {
-                                    boundary: RawBoundary(ordinal as u64),
-                                    input_tokens: usage.input_tokens,
-                                },
-                            )));
-                        }
-                    }
-                    _ => {}
+        for (index, (ordinal, item)) in effective.iter().copied().enumerate() {
+            let archived_context = last_compact.is_some_and(|last| index <= last);
+            match item {
+                RolloutItem::ResponseItem(item) if archived_context => {
+                    archived.push(SpineRecoveryInput::Char(response_item_to_char(
+                        item,
+                        RawBoundary(ordinal as u64),
+                        &mut self.pending_calls,
+                        self.runtime.handler().spawn_enabled(),
+                    )))
                 }
+                RolloutItem::InterAgentCommunication(communication) if archived_context => {
+                    let item = communication.to_model_input_item();
+                    archived.push(SpineRecoveryInput::Char(response_item_to_char(
+                        &item,
+                        RawBoundary(ordinal as u64),
+                        &mut self.pending_calls,
+                        self.runtime.handler().spawn_enabled(),
+                    )))
+                }
+                RolloutItem::Compacted(_) if archived_context => {
+                    archived.push(SpineRecoveryInput::Signal(SpineSignal::Compact {
+                        boundary: RawBoundary(ordinal as u64),
+                    }))
+                }
+                RolloutItem::EventMsg(EventMsg::TokenCount(event)) => {
+                    if let Some(usage) = event.info.as_ref().map(|info| &info.last_token_usage) {
+                        archived.push(SpineRecoveryInput::Signal(SpineSignal::Usage(
+                            spine_core::TokenUsageSample {
+                                boundary: RawBoundary(ordinal as u64),
+                                input_tokens: usage.input_tokens,
+                            },
+                        )));
+                    }
+                }
+                _ => {}
             }
         }
         self.runtime.handler_mut().reset_sources();
         self.pending_calls.clear();
         let compact_boundary = last_compact.map(|index| effective[index].0 as u64);
+        let postcompact_source_count = last_compact.map_or(0, |index| {
+            effective
+                .iter()
+                .skip(index + 1)
+                .filter(|(_, item)| {
+                    matches!(
+                        item,
+                        RolloutItem::ResponseItem(_) | RolloutItem::InterAgentCommunication(_)
+                    )
+                })
+                .count()
+        });
         let replacement_len = last_compact
             .and_then(|index| match effective[index].1 {
-                RolloutItem::Compacted(compacted) => {
-                    compacted.replacement_history.as_ref().map(Vec::len)
-                }
+                RolloutItem::Compacted(compacted) => compacted
+                    .replacement_history
+                    .as_ref()
+                    .map(|items| items.len().min(history.raw_items().len()))
+                    .or_else(|| {
+                        Some(
+                            history
+                                .raw_items()
+                                .len()
+                                .saturating_sub(postcompact_source_count),
+                        )
+                    }),
                 _ => None,
             })
             .unwrap_or_default();
