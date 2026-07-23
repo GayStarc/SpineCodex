@@ -38,9 +38,6 @@ use std::sync::LazyLock;
 pub(crate) struct ContextManager {
     /// The oldest items are at the beginning of the vector.
     items: Vec<ResponseItem>,
-    /// Model-visible view installed by an optional context-transition handler.
-    /// Native items remain authoritative and are never replaced by this view.
-    projected_items: Option<Vec<ResponseItem>>,
     /// Bumped whenever history is rewritten, such as compaction or rollback.
     history_version: u64,
     token_info: Option<TokenUsageInfo>,
@@ -63,7 +60,6 @@ impl ContextManager {
     pub(crate) fn new() -> Self {
         Self {
             items: Vec::new(),
-            projected_items: None,
             history_version: 0,
             token_info: TokenUsageInfo::new_or_append(
                 &None, &None, /*model_context_window*/ None,
@@ -157,35 +153,6 @@ impl ContextManager {
         self.items
     }
 
-    pub(crate) fn set_projected_items(&mut self, items: Vec<ResponseItem>) {
-        if self
-            .projected_items
-            .as_ref()
-            .is_some_and(|previous| !items.starts_with(previous))
-        {
-            self.history_version = self.history_version.saturating_add(1);
-        }
-        self.projected_items = Some(items);
-    }
-
-    pub(crate) fn into_projected_history(mut self) -> Self {
-        if let Some(items) = self.projected_items.take() {
-            self.items = items;
-        }
-        self
-    }
-
-    /// Reuse the host-normalized representation for a rollout item selected by
-    /// Spine. The rollout is authoritative for ordering and identity, while
-    /// this history snapshot owns host policies such as tool-output truncation.
-    pub(crate) fn canonical_projected_item(&self, source: &ResponseItem) -> ResponseItem {
-        self.items
-            .iter()
-            .find(|candidate| same_projected_identity(candidate, source))
-            .cloned()
-            .unwrap_or_else(|| source.clone())
-    }
-
     pub(crate) fn history_version(&self) -> u64 {
         self.history_version
     }
@@ -219,7 +186,6 @@ impl ContextManager {
 
     pub(crate) fn remove_first_item(&mut self) {
         if !self.items.is_empty() {
-            self.projected_items = None;
             // Remove the oldest item (front of the list). Items are ordered from
             // oldest → newest, so index 0 is the first entry recorded.
             let removed = self.items.remove(0);
@@ -233,7 +199,6 @@ impl ContextManager {
 
     pub(crate) fn replace(&mut self, items: Vec<ResponseItem>) {
         self.items = items;
-        self.projected_items = None;
         self.history_version = self.history_version.saturating_add(1);
         self.world_state_baseline = None;
     }
@@ -241,14 +206,35 @@ impl ContextManager {
     /// Replace image content in the last turn if it originated from a tool output.
     /// Returns true when a tool image was replaced, false otherwise.
     pub(crate) fn replace_last_turn_images(&mut self, placeholder: &str) -> bool {
-        let replaced = replace_last_turn_images_in(&mut self.items, placeholder);
-        if replaced {
-            if let Some(projected_items) = &mut self.projected_items {
-                replace_last_turn_images_in(projected_items, placeholder);
+        let Some(index) = self.items.iter().rposition(|item| {
+            matches!(item, ResponseItem::FunctionCallOutput { .. }) || is_user_turn_boundary(item)
+        }) else {
+            return false;
+        };
+
+        match &mut self.items[index] {
+            ResponseItem::FunctionCallOutput { output, .. } => {
+                let Some(content_items) = output.content_items_mut() else {
+                    return false;
+                };
+                let mut replaced = false;
+                let placeholder = placeholder.to_string();
+                for item in content_items.iter_mut() {
+                    if matches!(item, FunctionCallOutputContentItem::InputImage { .. }) {
+                        *item = FunctionCallOutputContentItem::InputText {
+                            text: placeholder.clone(),
+                        };
+                        replaced = true;
+                    }
+                }
+                if replaced {
+                    self.history_version = self.history_version.saturating_add(1);
+                }
+                replaced
             }
-            self.history_version = self.history_version.saturating_add(1);
+            ResponseItem::Message { .. } => false,
+            _ => false,
         }
-        replaced
     }
 
     /// Drop the last `num_turns` instruction turns from this history.
@@ -471,48 +457,6 @@ impl ContextManager {
             }
         }
         cut_idx
-    }
-}
-
-fn replace_last_turn_images_in(items: &mut [ResponseItem], placeholder: &str) -> bool {
-    let Some(index) = items.iter().rposition(|item| {
-        matches!(item, ResponseItem::FunctionCallOutput { .. }) || is_user_turn_boundary(item)
-    }) else {
-        return false;
-    };
-    let ResponseItem::FunctionCallOutput { output, .. } = &mut items[index] else {
-        return false;
-    };
-    let Some(content_items) = output.content_items_mut() else {
-        return false;
-    };
-    let mut replaced = false;
-    for item in content_items {
-        if matches!(item, FunctionCallOutputContentItem::InputImage { .. }) {
-            *item = FunctionCallOutputContentItem::InputText {
-                text: placeholder.to_string(),
-            };
-            replaced = true;
-        }
-    }
-    replaced
-}
-
-fn same_projected_identity(left: &ResponseItem, right: &ResponseItem) -> bool {
-    if let (Some(left_id), Some(right_id)) = (left.id(), right.id()) {
-        return left_id == right_id;
-    }
-
-    match (left, right) {
-        (
-            ResponseItem::FunctionCallOutput { call_id: left, .. },
-            ResponseItem::FunctionCallOutput { call_id: right, .. },
-        )
-        | (
-            ResponseItem::CustomToolCallOutput { call_id: left, .. },
-            ResponseItem::CustomToolCallOutput { call_id: right, .. },
-        ) => left == right,
-        _ => false,
     }
 }
 

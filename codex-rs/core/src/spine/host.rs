@@ -1,3 +1,4 @@
+use super::canonical_projected_item;
 use super::effective_rollout;
 use super::effective_rollout_from_source;
 use super::materialize_context;
@@ -5,6 +6,8 @@ use super::materialize_trim_only_context;
 use super::project_trim_item;
 use super::response_item_at;
 use crate::context_manager::ContextManager;
+use crate::context_manager::is_user_turn_boundary;
+use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::RolloutItem;
@@ -176,11 +179,11 @@ pub(crate) fn replay_inputs(
         .iter()
         .filter_map(|(ordinal, item)| match item {
             RolloutItem::ResponseItem(item) => {
-                Some((*ordinal, history.canonical_projected_item(item)))
+                Some((*ordinal, canonical_projected_item(history, item)))
             }
             RolloutItem::InterAgentCommunication(communication) => {
                 let item = communication.to_model_input_item();
-                Some((*ordinal, history.canonical_projected_item(&item)))
+                Some((*ordinal, canonical_projected_item(history, &item)))
             }
             _ => None,
         })
@@ -346,6 +349,35 @@ impl CodexSpineEventHandlers {
     pub(crate) fn materialization_stats(&self) -> MaterializationStats {
         self.materialization.stats.clone()
     }
+
+    pub(crate) fn projected_items(&self) -> Vec<ResponseItem> {
+        self.materialization.projected_items()
+    }
+
+    pub(crate) fn replace_last_turn_images(
+        &mut self,
+        placeholder: &str,
+        history_version: u64,
+    ) -> bool {
+        let replaced = match &mut self.materialization.ledger {
+            MaterializationLedger::Jit { entries, pending } => {
+                pending.iter_mut().rev().any(|item| {
+                    replace_last_turn_images_in(std::slice::from_mut(item), placeholder)
+                }) || entries
+                    .iter_mut()
+                    .rev()
+                    .any(|entry| replace_last_turn_images_in(&mut entry.rendered, placeholder))
+            }
+            MaterializationLedger::TrimOnly { entries } => entries
+                .iter_mut()
+                .rev()
+                .any(|entry| replace_last_turn_images_in(&mut entry.rendered, placeholder)),
+        };
+        if replaced {
+            self.materialization.history_version = history_version;
+        }
+        replaced
+    }
 }
 
 impl SpineEventHandlers<CodexSpineFrontier> for CodexSpineEventHandlers {
@@ -407,7 +439,6 @@ impl SpineEventHandlers<CodexSpineFrontier> for CodexSpineEventHandlers {
         history: &mut Self::History,
         mut materialization: Self::PreparedContext,
     ) {
-        history.set_projected_items(materialization.projected_items());
         materialization.history_version = history.history_version();
         self.materialization = materialization;
     }
@@ -727,4 +758,28 @@ fn item_references_boundary(item: &ContextItem, boundary: RawBoundary) -> bool {
             source: NativeItemRef::CompactReplacement { .. },
         } => false,
     }
+}
+
+fn replace_last_turn_images_in(items: &mut [ResponseItem], placeholder: &str) -> bool {
+    let Some(index) = items.iter().rposition(|item| {
+        matches!(item, ResponseItem::FunctionCallOutput { .. }) || is_user_turn_boundary(item)
+    }) else {
+        return false;
+    };
+    let ResponseItem::FunctionCallOutput { output, .. } = &mut items[index] else {
+        return false;
+    };
+    let Some(content_items) = output.content_items_mut() else {
+        return false;
+    };
+    let mut replaced = false;
+    for item in content_items {
+        if matches!(item, FunctionCallOutputContentItem::InputImage { .. }) {
+            *item = FunctionCallOutputContentItem::InputText {
+                text: placeholder.to_string(),
+            };
+            replaced = true;
+        }
+    }
+    replaced
 }

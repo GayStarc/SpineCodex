@@ -250,10 +250,25 @@ impl SessionState {
     }
 
     pub(crate) fn clone_history(&self) -> ContextManager {
-        if self.spine_runtime.is_some() {
-            return self.history.clone().into_projected_history();
+        if let Some(spine) = &self.spine_runtime {
+            let mut history = self.history.clone();
+            history.replace(spine.runtime.handlers().projected_items());
+            return history;
         }
         self.history.clone()
+    }
+
+    pub(crate) fn replace_last_turn_images(&mut self, placeholder: &str) -> bool {
+        if !self.history.replace_last_turn_images(placeholder) {
+            return false;
+        }
+        if let Some(spine) = &mut self.spine_runtime {
+            spine
+                .runtime
+                .handlers_mut()
+                .replace_last_turn_images(placeholder, self.history.history_version());
+        }
+        true
     }
 
     #[cfg(test)]

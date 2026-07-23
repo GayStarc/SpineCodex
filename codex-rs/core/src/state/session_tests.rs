@@ -1252,7 +1252,7 @@ async fn codex_context_handler_prepare_failure_preserves_committed_state() {
         .expect("active runtime should expose its frontier")
         .clone();
     let runtime_projection = spine.runtime.runtime_projection().clone();
-    let before_items = history.clone().into_projected_history().into_raw_items();
+    let before_items = spine.runtime.handlers().projected_items();
     let expected_tree = crate::spine::observer::tree_update(&runtime_projection);
     let invalid_context = Vec::new();
     let result = spine.runtime.handlers().prepare_context(
@@ -1265,10 +1265,7 @@ async fn codex_context_handler_prepare_failure_preserves_committed_state() {
     );
     assert!(result.is_err());
 
-    assert_eq!(
-        history.clone().into_projected_history().into_raw_items(),
-        before_items
-    );
+    assert_eq!(spine.runtime.handlers().projected_items(), before_items);
     assert_eq!(
         spine
             .runtime

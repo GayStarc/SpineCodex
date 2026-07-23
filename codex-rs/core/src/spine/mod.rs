@@ -48,6 +48,36 @@ pub(crate) mod tool_response;
 
 pub(crate) const TOOL_RESULT_CLEARED_MESSAGE: &str = spine_core::TRIM_SNIPPED_BODY;
 
+pub(crate) fn canonical_projected_item(
+    history: &ContextManager,
+    source: &ResponseItem,
+) -> ResponseItem {
+    history
+        .raw_items()
+        .iter()
+        .find(|candidate| same_projected_identity(candidate, source))
+        .cloned()
+        .unwrap_or_else(|| source.clone())
+}
+
+fn same_projected_identity(left: &ResponseItem, right: &ResponseItem) -> bool {
+    if let (Some(left_id), Some(right_id)) = (left.id(), right.id()) {
+        return left_id == right_id;
+    }
+
+    match (left, right) {
+        (
+            ResponseItem::FunctionCallOutput { call_id: left, .. },
+            ResponseItem::FunctionCallOutput { call_id: right, .. },
+        )
+        | (
+            ResponseItem::CustomToolCallOutput { call_id: left, .. },
+            ResponseItem::CustomToolCallOutput { call_id: right, .. },
+        ) => left == right,
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct CodexSpineProjection {
@@ -809,7 +839,7 @@ fn materialize_trim_only_context(
         match item {
             RolloutItem::ResponseItem(item) => {
                 let item = host_history
-                    .map(|history| history.canonical_projected_item(item))
+                    .map(|history| canonical_projected_item(history, item))
                     .unwrap_or_else(|| item.clone());
                 context.push(project_trim_item(item, *raw_index, trim))
             }
@@ -820,7 +850,7 @@ fn materialize_trim_only_context(
                 if let Some(replacement) = &compacted.replacement_history {
                     context.extend(replacement.iter().map(|item| {
                         host_history
-                            .map(|history| history.canonical_projected_item(item))
+                            .map(|history| canonical_projected_item(history, item))
                             .unwrap_or_else(|| item.clone())
                     }));
                 } else {
@@ -838,7 +868,7 @@ fn materialize_trim_only_context(
             match item {
                 RolloutItem::ResponseItem(item) => Some(
                     host_history
-                        .map(|history| history.canonical_projected_item(item))
+                        .map(|history| canonical_projected_item(history, item))
                         .unwrap_or_else(|| item.clone()),
                 ),
                 _ => None,
@@ -889,7 +919,7 @@ fn response_item_at(
     {
         RolloutItem::ResponseItem(item) => Some(
             host_history
-                .map(|history| history.canonical_projected_item(item))
+                .map(|history| canonical_projected_item(history, item))
                 .unwrap_or_else(|| item.clone()),
         ),
         RolloutItem::InterAgentCommunication(communication) => {
