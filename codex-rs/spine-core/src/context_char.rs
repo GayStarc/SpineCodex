@@ -1,0 +1,360 @@
+use crate::ContextItem;
+use crate::Message;
+use crate::RawBoundary;
+use crate::RolloutEvent;
+use crate::TokenUsageSample;
+use crate::ToolCallGroup;
+use crate::ToolOutcome;
+use crate::ToolUse;
+use std::fmt;
+
+/// One character in Spine's agent-neutral context alphabet.
+///
+/// Item variants have width one and correspond to one item in the host's live
+/// model context. `Compact` and `Usage` are zero-width signals.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SpineChar {
+    Message(Message),
+    ToolRequest(ToolRequestChar),
+    ToolResponse(ToolResponseChar),
+    Opaque {
+        boundary: RawBoundary,
+    },
+    Synthetic {
+        boundary: RawBoundary,
+        item: ContextItem,
+    },
+    Compact {
+        boundary: RawBoundary,
+        replacement_history: Vec<ContextItem>,
+    },
+    Usage(TokenUsageSample),
+}
+
+impl SpineChar {
+    pub fn boundary(&self) -> RawBoundary {
+        match self {
+            Self::Message(message) => message.boundary,
+            Self::ToolRequest(request) => request.boundary,
+            Self::ToolResponse(response) => response.boundary,
+            Self::Opaque { boundary }
+            | Self::Synthetic { boundary, .. }
+            | Self::Compact { boundary, .. } => *boundary,
+            Self::Usage(sample) => sample.boundary,
+        }
+    }
+
+    pub fn width(&self) -> usize {
+        match self {
+            Self::Message(_)
+            | Self::ToolRequest(_)
+            | Self::ToolResponse(_)
+            | Self::Opaque { .. }
+            | Self::Synthetic { .. } => 1,
+            Self::Compact { .. } | Self::Usage(_) => 0,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ToolRequestChar {
+    pub boundary: RawBoundary,
+    pub call_id: String,
+    pub name: String,
+    pub arguments: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ToolResponseChar {
+    pub boundary: RawBoundary,
+    pub call_id: String,
+    pub outcome: ToolOutcome,
+    pub output: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ParseStack {
+    cells: Vec<SpineChar>,
+}
+
+impl ParseStack {
+    pub fn cells(&self) -> &[SpineChar] {
+        &self.cells
+    }
+
+    pub fn len(&self) -> usize {
+        self.cells.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.cells.is_empty()
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SpineCharParser {
+    stack: ParseStack,
+    trailing_assistant: Vec<Message>,
+    pending_tool_group: Option<PendingToolGroup>,
+    last_boundary: Option<RawBoundary>,
+}
+
+impl SpineCharParser {
+    pub fn stack(&self) -> &ParseStack {
+        &self.stack
+    }
+
+    pub fn eat(&mut self, character: SpineChar) -> Result<CharParseStep, CharParseError> {
+        if let Some(previous) = self.last_boundary
+            && character.boundary() < previous
+        {
+            return Err(CharParseError::NonMonotonicBoundary {
+                previous,
+                next: character.boundary(),
+            });
+        }
+
+        let mut candidate = self.clone();
+        let step = candidate.apply(character)?;
+        *self = candidate;
+        Ok(step)
+    }
+
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    fn apply(&mut self, character: SpineChar) -> Result<CharParseStep, CharParseError> {
+        let mut events = Vec::new();
+        let mut usage_sample = None;
+        self.last_boundary = Some(character.boundary());
+
+        match character {
+            SpineChar::Message(message) => {
+                self.require_no_pending_tool_group(message.boundary)?;
+                self.stack.cells.push(SpineChar::Message(message.clone()));
+                if message.role == crate::MessageRole::Assistant {
+                    self.trailing_assistant.push(message);
+                } else {
+                    self.flush_trailing_assistant(&mut events);
+                    events.push(RolloutEvent::Message(message));
+                }
+            }
+            SpineChar::ToolRequest(request) => {
+                self.stack
+                    .cells
+                    .push(SpineChar::ToolRequest(request.clone()));
+                let group = self.pending_tool_group.get_or_insert_with(|| {
+                    let leading_assistant_messages = std::mem::take(&mut self.trailing_assistant);
+                    let start = leading_assistant_messages
+                        .first()
+                        .map_or(request.boundary, |message| message.boundary);
+                    PendingToolGroup {
+                        start,
+                        leading_assistant_messages,
+                        calls: Vec::new(),
+                        boundaries: Vec::new(),
+                    }
+                });
+                group.boundaries.push(request.boundary);
+                group.calls.push(ToolUse {
+                    call_id: request.call_id,
+                    name: request.name,
+                    arguments: request.arguments,
+                    outcome: None,
+                    output: None,
+                    output_boundary: None,
+                });
+            }
+            SpineChar::ToolResponse(response) => {
+                self.stack
+                    .cells
+                    .push(SpineChar::ToolResponse(response.clone()));
+                let group = self.pending_tool_group.as_mut().ok_or_else(|| {
+                    CharParseError::UnmatchedToolResponse {
+                        call_id: response.call_id.clone(),
+                    }
+                })?;
+                group.boundaries.push(response.boundary);
+                let call = group
+                    .calls
+                    .iter_mut()
+                    .find(|call| call.call_id == response.call_id)
+                    .ok_or_else(|| CharParseError::UnmatchedToolResponse {
+                        call_id: response.call_id.clone(),
+                    })?;
+                if call.output.is_some() {
+                    return Err(CharParseError::DuplicateToolResponse {
+                        call_id: response.call_id,
+                    });
+                }
+                call.outcome = Some(response.outcome);
+                call.output = Some(response.output);
+                call.output_boundary = Some(response.boundary);
+                if group.calls.iter().all(|call| call.output.is_some()) {
+                    let group = self.pending_tool_group.take().ok_or_else(|| {
+                        CharParseError::UnmatchedToolResponse {
+                            call_id: response.call_id.clone(),
+                        }
+                    })?;
+                    events.push(RolloutEvent::ToolCall(ToolCallGroup {
+                        start: group.start,
+                        end: response.boundary,
+                        leading_assistant_messages: group.leading_assistant_messages,
+                        calls: group.calls,
+                    }));
+                }
+            }
+            SpineChar::Opaque { boundary } => {
+                self.require_no_pending_tool_group(boundary)?;
+                self.flush_trailing_assistant(&mut events);
+                self.stack.cells.push(SpineChar::Opaque { boundary });
+            }
+            SpineChar::Synthetic { boundary, item } => {
+                self.require_no_pending_tool_group(boundary)?;
+                self.flush_trailing_assistant(&mut events);
+                self.stack
+                    .cells
+                    .push(SpineChar::Synthetic { boundary, item });
+            }
+            SpineChar::Compact {
+                boundary,
+                replacement_history,
+            } => {
+                self.stack.cells = replacement_history
+                    .iter()
+                    .cloned()
+                    .map(|item| SpineChar::Synthetic { boundary, item })
+                    .collect();
+                self.trailing_assistant.clear();
+                self.pending_tool_group = None;
+                events.push(RolloutEvent::Compact {
+                    boundary,
+                    replacement_history,
+                });
+            }
+            SpineChar::Usage(sample) => {
+                usage_sample = Some(sample);
+            }
+        }
+
+        Ok(CharParseStep {
+            events,
+            pending_boundaries: self.pending_boundaries(),
+            usage_sample,
+            stack_size: self.stack.len(),
+        })
+    }
+
+    fn require_no_pending_tool_group(&self, boundary: RawBoundary) -> Result<(), CharParseError> {
+        if self.pending_tool_group.is_some() {
+            return Err(CharParseError::IncompleteToolGroup { boundary });
+        }
+        Ok(())
+    }
+
+    fn flush_trailing_assistant(&mut self, events: &mut Vec<RolloutEvent>) {
+        events.extend(self.trailing_assistant.drain(..).map(RolloutEvent::Message));
+    }
+
+    fn pending_boundaries(&self) -> Vec<RawBoundary> {
+        self.trailing_assistant
+            .iter()
+            .map(|message| message.boundary)
+            .chain(
+                self.pending_tool_group
+                    .iter()
+                    .flat_map(PendingToolGroup::boundaries),
+            )
+            .collect()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PendingToolGroup {
+    start: RawBoundary,
+    leading_assistant_messages: Vec<Message>,
+    calls: Vec<ToolUse>,
+    boundaries: Vec<RawBoundary>,
+}
+
+impl PendingToolGroup {
+    fn boundaries(&self) -> impl Iterator<Item = RawBoundary> + '_ {
+        self.leading_assistant_messages
+            .iter()
+            .map(|message| message.boundary)
+            .chain(self.boundaries.iter().copied())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CharParseStep {
+    events: Vec<RolloutEvent>,
+    pending_boundaries: Vec<RawBoundary>,
+    usage_sample: Option<TokenUsageSample>,
+    stack_size: usize,
+}
+
+impl CharParseStep {
+    pub fn events(&self) -> &[RolloutEvent] {
+        &self.events
+    }
+
+    pub fn pending_boundaries(&self) -> &[RawBoundary] {
+        &self.pending_boundaries
+    }
+
+    pub fn usage_sample(&self) -> Option<TokenUsageSample> {
+        self.usage_sample
+    }
+
+    pub fn stack_size(&self) -> usize {
+        self.stack_size
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CharParseError {
+    NonMonotonicBoundary {
+        previous: RawBoundary,
+        next: RawBoundary,
+    },
+    IncompleteToolGroup {
+        boundary: RawBoundary,
+    },
+    UnmatchedToolResponse {
+        call_id: String,
+    },
+    DuplicateToolResponse {
+        call_id: String,
+    },
+}
+
+impl fmt::Display for CharParseError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NonMonotonicBoundary { previous, next } => write!(
+                formatter,
+                "Spine character boundary {} precedes {}",
+                next.0, previous.0
+            ),
+            Self::IncompleteToolGroup { boundary } => write!(
+                formatter,
+                "Spine character at boundary {} interrupts an incomplete tool group",
+                boundary.0
+            ),
+            Self::UnmatchedToolResponse { call_id } => {
+                write!(formatter, "Spine tool response `{call_id}` has no request")
+            }
+            Self::DuplicateToolResponse { call_id } => {
+                write!(formatter, "Spine tool response `{call_id}` is duplicated")
+            }
+        }
+    }
+}
+
+impl std::error::Error for CharParseError {}
+
+#[cfg(test)]
+#[path = "context_char_tests.rs"]
+mod tests;
