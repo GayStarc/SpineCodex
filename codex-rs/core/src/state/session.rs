@@ -114,12 +114,10 @@ impl SessionState {
     {
         let start = self.history.raw_items().len();
         self.history.record_items(items, policy);
-        let rollout_items = self.history.raw_items()[start..]
-            .iter()
-            .cloned()
-            .map(RolloutItem::ResponseItem)
-            .collect::<Vec<_>>();
-        self.append_spine_inputs(&rollout_items);
+        if let Some(spine) = &mut self.spine_runtime {
+            let appended = self.history.raw_items()[start..].to_vec();
+            spine.append_response_items(&appended, &mut self.history);
+        }
     }
 
     pub(crate) fn replace_history_from_rollout(

@@ -14,6 +14,7 @@ use spine_core::ContextPressureProblem;
 use spine_core::NodeKind;
 use spine_core::NodeStatus;
 use spine_core::RuntimeProjection;
+use spine_core::SpineContextProjection;
 use spine_core::SpineObserverCause;
 use spine_core::SpineObserverEvent;
 
@@ -76,8 +77,19 @@ fn should_publish_memory(cause: SpineObserverCause, frontier: &CodexSpineFrontie
 }
 
 pub(crate) fn tree_update(projection: &RuntimeProjection) -> SpineTreeUpdateEvent {
-    let settled_spawn_call_ids = projection.spine().settled_spawn_call_ids.clone();
-    let snapshot = spine_core::tree_snapshot(projection.spine(), projection.usage_samples());
+    tree_update_from_parts(projection.spine(), projection.usage_samples())
+}
+
+pub(crate) fn context_tree_update(projection: &SpineContextProjection) -> SpineTreeUpdateEvent {
+    tree_update_from_parts(projection.spine(), projection.usage_samples())
+}
+
+fn tree_update_from_parts(
+    projection: &spine_core::SpineProjection,
+    usage_samples: &[spine_core::TokenUsageSample],
+) -> SpineTreeUpdateEvent {
+    let settled_spawn_call_ids = projection.settled_spawn_call_ids.clone();
+    let snapshot = spine_core::tree_snapshot(projection, usage_samples);
     SpineTreeUpdateEvent {
         snapshot_seq: snapshot.last_boundary.map_or(0, |boundary| boundary.0),
         active_node_id: snapshot.cursor.to_string(),

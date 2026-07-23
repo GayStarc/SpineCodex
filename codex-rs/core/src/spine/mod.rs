@@ -37,6 +37,7 @@ use spine_core::TrimProjection;
 use spine_core::TrimRequest;
 
 pub(crate) mod config;
+pub(crate) mod context_handler;
 pub(crate) mod host;
 pub(crate) mod memory_projection;
 pub(crate) mod observer;
@@ -235,7 +236,7 @@ pub(crate) fn validate_trim_request_from_effective(
     projection.validate(request)
 }
 
-fn effective_rollout(rollout: &[RolloutItem]) -> Vec<(usize, &RolloutItem)> {
+pub(crate) fn effective_rollout(rollout: &[RolloutItem]) -> Vec<(usize, &RolloutItem)> {
     let mut source = Vec::new();
     let mut response_ordinal = 0;
     for item in rollout {

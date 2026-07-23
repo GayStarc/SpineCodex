@@ -1,106 +1,258 @@
+use super::context_handler::CodexContextHandler;
+use super::context_handler::response_item_to_char;
+use super::observer::CodexSpineObserverEffect;
 use crate::context_manager::ContextManager;
 use crate::session::session::SessionConfiguration;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::RolloutItem;
-#[cfg(test)]
-use codex_protocol::protocol::SpineTreeUpdateEvent;
-use spine_core::SpineRuntime;
+use codex_protocol::protocol::TokenCountEvent;
+use spine_core::RawBoundary;
+use spine_core::SpineContextRuntime;
+use spine_core::SpineRecoveryInput;
+use spine_core::SpineSignal;
+use spine_core::ToolUse;
+use std::collections::HashMap;
 
-use super::host::CodexSpineEventHandlers;
-use super::host::CodexSpineHost;
-use super::host::CodexSpineInput;
-use super::observer::CodexSpineObserverEffect;
-
-/// Codex's narrow ownership boundary for the SDK runtime and its derived views.
-///
-/// The session state owns this adapter, while runtime details, source ordinals,
-/// projection replacement, and Spine validation remain local to the Spine module.
 pub(crate) struct SessionSpineRuntime {
-    pub(crate) runtime: SpineRuntime<CodexSpineHost, CodexSpineEventHandlers>,
-    next_ordinal: usize,
+    pub(crate) runtime: SpineContextRuntime<CodexContextHandler>,
+    next_boundary: u64,
+    pending_calls: HashMap<String, ToolUse>,
     trim_enabled: bool,
+    jit_enabled: bool,
+    memory_projection_enabled: bool,
+    pending_observer_effect: Option<CodexSpineObserverEffect>,
 }
 
 impl SessionSpineRuntime {
     pub(crate) fn new(configuration: &SessionConfiguration) -> Option<Self> {
         let enabled = configuration.spine_jit_enabled() || configuration.spine_trim_enabled();
-        enabled.then(|| {
-            let host = CodexSpineHost {
-                jit_enabled: configuration.spine_jit_enabled(),
-                spawn_enabled: configuration.spine_spawn_enabled(),
-            };
-            let handlers = CodexSpineEventHandlers::new(
-                host,
-                configuration.spinetree_memory_projection_enabled(),
-            );
-            let runtime = SpineRuntime::new(configuration.spine_sdk_config(), host, handlers)
-                .expect("validated session Spine configuration must initialize");
-            Self {
-                runtime,
-                next_ordinal: 0,
-                trim_enabled: configuration.spine_trim_enabled(),
-            }
+        enabled.then(|| Self {
+            runtime: SpineContextRuntime::new(
+                configuration.spine_sdk_config(),
+                CodexContextHandler::new(configuration.spine_spawn_enabled()),
+            )
+            .expect("validated session Spine configuration must initialize"),
+            next_boundary: 0,
+            pending_calls: HashMap::new(),
+            trim_enabled: configuration.spine_trim_enabled(),
+            jit_enabled: configuration.spine_jit_enabled(),
+            memory_projection_enabled: configuration.spinetree_memory_projection_enabled(),
+            pending_observer_effect: None,
         })
+    }
+
+    pub(crate) fn append_response_items(
+        &mut self,
+        items: &[ResponseItem],
+        history: &mut ContextManager,
+    ) {
+        let mut sources = Vec::with_capacity(items.len());
+        let chars = items
+            .iter()
+            .map(|item| {
+                let boundary = RawBoundary(self.next_boundary);
+                self.next_boundary = self.next_boundary.saturating_add(1);
+                sources.push((boundary, item.clone()));
+                response_item_to_char(
+                    item,
+                    boundary,
+                    &mut self.pending_calls,
+                    self.runtime.handler().spawn_enabled(),
+                )
+            })
+            .collect::<Vec<_>>();
+        self.runtime.handler_mut().stage_sources(sources);
+        self.runtime
+            .append(chars, history)
+            .expect("native context append must produce a valid Spine projection");
+        self.queue_observer(true);
     }
 
     pub(crate) fn append(&mut self, items: &[RolloutItem], history: &mut ContextManager) {
         for item in items {
-            let input = CodexSpineInput {
-                ordinal: self.next_ordinal,
-                item: item.clone(),
-            };
-            self.runtime
-                .eat(&input, history)
-                .expect("native rollout append must produce a valid Spine projection");
-            if super::is_spine_source_item(item) {
-                self.next_ordinal = self.next_ordinal.saturating_add(1);
+            match item {
+                RolloutItem::ResponseItem(item) => {
+                    self.append_response_items(std::slice::from_ref(item), history)
+                }
+                RolloutItem::EventMsg(EventMsg::TokenCount(event)) => {
+                    self.observe_token_count(event.clone());
+                }
+                RolloutItem::Compacted(compacted) => {
+                    self.compact_live(compacted, history);
+                }
+                RolloutItem::InterAgentCommunication(_) => {}
+                _ => {}
             }
         }
     }
 
-    pub(crate) fn replay(&mut self, rollout_items: &[RolloutItem], history: &mut ContextManager) {
-        let (inputs, next_ordinal) = super::host::replay_inputs(rollout_items, history);
-        self.runtime
-            .replay(inputs.iter(), history)
-            .expect("native rollout history must replay deterministically");
-        self.next_ordinal = next_ordinal;
+    pub(crate) fn observe_token_count(&mut self, event: TokenCountEvent) {
+        if let Some(usage) = event.info.map(|info| info.last_token_usage) {
+            self.runtime.observe_usage(spine_core::TokenUsageSample {
+                boundary: RawBoundary(self.next_boundary),
+                input_tokens: usage.input_tokens,
+            });
+            self.queue_observer(false);
+        }
     }
 
-    pub(crate) fn replace_last_turn_images(
+    fn compact_live(
         &mut self,
-        placeholder: &str,
-        history_version: u64,
-    ) -> bool {
+        _compacted: &codex_protocol::protocol::CompactedItem,
+        history: &mut ContextManager,
+    ) {
+        let compact_boundary = RawBoundary(self.next_boundary);
+        self.next_boundary = self.next_boundary.saturating_add(1);
+        self.runtime.handler_mut().reset_sources();
+        self.pending_calls.clear();
+        let mut sources = Vec::with_capacity(history.raw_items().len());
+        let chars = history
+            .raw_items()
+            .iter()
+            .map(|item| {
+                let boundary = RawBoundary(self.next_boundary);
+                self.next_boundary = self.next_boundary.saturating_add(1);
+                sources.push((boundary, item.clone()));
+                spine_core::SpineChar::Opaque { boundary }
+            })
+            .collect::<Vec<_>>();
+        self.runtime.handler_mut().stage_sources(sources);
         self.runtime
-            .handlers_mut()
-            .replace_last_turn_images(placeholder, history_version)
+            .compact_live(compact_boundary, chars, history)
+            .expect("compacted context must produce a valid Spine projection");
+        self.queue_observer(true);
+    }
+
+    pub(crate) fn replay(&mut self, rollout_items: &[RolloutItem], history: &mut ContextManager) {
+        let effective = super::effective_rollout(rollout_items);
+        let last_compact = effective
+            .iter()
+            .rposition(|(_, item)| matches!(item, RolloutItem::Compacted(_)));
+        let mut archived = Vec::new();
+        if let Some(last_compact) = last_compact {
+            for (ordinal, item) in effective.iter().take(last_compact + 1).copied() {
+                match item {
+                    RolloutItem::ResponseItem(item) => {
+                        archived.push(SpineRecoveryInput::Char(response_item_to_char(
+                            item,
+                            RawBoundary(ordinal as u64),
+                            &mut self.pending_calls,
+                            self.runtime.handler().spawn_enabled(),
+                        )))
+                    }
+                    RolloutItem::Compacted(_) => {
+                        archived.push(SpineRecoveryInput::Signal(SpineSignal::Compact {
+                            boundary: RawBoundary(ordinal as u64),
+                        }))
+                    }
+                    RolloutItem::EventMsg(EventMsg::TokenCount(event)) => {
+                        if let Some(usage) = event.info.as_ref().map(|info| &info.last_token_usage)
+                        {
+                            archived.push(SpineRecoveryInput::Signal(SpineSignal::Usage(
+                                spine_core::TokenUsageSample {
+                                    boundary: RawBoundary(ordinal as u64),
+                                    input_tokens: usage.input_tokens,
+                                },
+                            )));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        self.runtime.handler_mut().reset_sources();
+        self.pending_calls.clear();
+        let compact_boundary = last_compact.map(|index| effective[index].0 as u64);
+        let replacement_len = last_compact
+            .and_then(|index| match effective[index].1 {
+                RolloutItem::Compacted(compacted) => {
+                    compacted.replacement_history.as_ref().map(Vec::len)
+                }
+                _ => None,
+            })
+            .unwrap_or_default();
+        self.next_boundary = compact_boundary.map_or(0, |boundary| boundary + 1);
+        let mut sources = Vec::with_capacity(history.raw_items().len());
+        let chars = history
+            .raw_items()
+            .iter()
+            .enumerate()
+            .map(|(index, item)| {
+                let boundary = RawBoundary(self.next_boundary);
+                self.next_boundary = self.next_boundary.saturating_add(1);
+                sources.push((boundary, item.clone()));
+                if compact_boundary.is_some_and(|_| index < replacement_len) {
+                    spine_core::SpineChar::Opaque { boundary }
+                } else {
+                    response_item_to_char(
+                        item,
+                        boundary,
+                        &mut self.pending_calls,
+                        self.runtime.handler().spawn_enabled(),
+                    )
+                }
+            })
+            .collect::<Vec<_>>();
+        self.runtime.handler_mut().stage_sources(sources);
+        self.runtime
+            .recover(archived, chars, history)
+            .expect("native rollout history must recover deterministically");
+        self.queue_observer(true);
+    }
+
+    pub(crate) fn replace_last_turn_images(&mut self, placeholder: &str, _history_version: u64) {
+        self.runtime
+            .handler_mut()
+            .replace_last_turn_images(placeholder);
     }
 
     #[cfg(test)]
-    pub(crate) fn tree_update(&self) -> Option<SpineTreeUpdateEvent> {
-        self.runtime
-            .host()
-            .jit_enabled
-            .then(|| super::observer::tree_update(self.runtime.runtime_projection()))
+    pub(crate) fn tree_update(&self) -> Option<codex_protocol::protocol::SpineTreeUpdateEvent> {
+        self.jit_enabled
+            .then(|| super::observer::context_tree_update(self.runtime.projection()))
     }
 
     pub(crate) fn status_prompt_overlay(
         &self,
         context_left_tokens: Option<i64>,
     ) -> Option<ResponseItem> {
-        if !self.runtime.host().jit_enabled {
-            return None;
-        }
-        let projection = self.runtime.runtime_projection();
-        super::status::prompt_overlay(
-            projection.spine(),
-            projection.usage_samples(),
-            context_left_tokens,
-        )
+        self.jit_enabled.then(|| {
+            super::status::prompt_overlay(
+                self.runtime.projection().spine(),
+                self.runtime.projection().usage_samples(),
+                context_left_tokens,
+            )
+        })?
     }
 
     pub(crate) fn take_observer_effect(&mut self) -> Option<CodexSpineObserverEffect> {
-        self.runtime.handlers_mut().take_observer_effect()
+        self.pending_observer_effect.take()
+    }
+
+    fn queue_observer(&mut self, memory: bool) {
+        if !self.jit_enabled {
+            return;
+        }
+        let projection = self.runtime.projection();
+        let mut effect = CodexSpineObserverEffect {
+            tree_update: Some(super::observer::context_tree_update(projection)),
+            memory_projection: None,
+        };
+        if memory && self.memory_projection_enabled {
+            effect.memory_projection = Some(super::observer::CodexSpineMemoryProjection {
+                entries: super::closed_memory_projection_entries(projection.spine()),
+                user_messages: self
+                    .runtime
+                    .handler()
+                    .user_message_projection_entries(projection.stack()),
+            });
+        }
+        if let Some(previous) = &mut self.pending_observer_effect {
+            previous.merge(effect);
+        } else {
+            self.pending_observer_effect = Some(effect);
+        }
     }
 
     pub(crate) fn validate_control(&self, tool: spine_core::SpineTool) -> Result<(), String> {
@@ -108,7 +260,7 @@ impl SessionSpineRuntime {
             tool,
             spine_core::SpineTool::Close | spine_core::SpineTool::Next
         ) {
-            let projection = self.runtime.projection();
+            let projection = self.runtime.projection().spine();
             let cursor = projection
                 .nodes
                 .iter()
@@ -129,12 +281,19 @@ impl SessionSpineRuntime {
         if !self.trim_enabled {
             return Err("Spine trim is not enabled for this session".to_string());
         }
-        let frontier = self
-            .runtime
-            .frontier()
-            .ok_or_else(|| "Spine trim runtime is unavailable".to_string())?;
+        if self
+            .pending_calls
+            .get(current_call_id)
+            .is_none_or(|call| call.name != "spine.trim")
+        {
+            return Err(
+                "spine.trim failed: current toolcall is unavailable; do not retry".to_string(),
+            );
+        }
         self.runtime
-            .host()
-            .validate_trim_request(frontier, current_call_id, request)
+            .projection()
+            .trim_projection()
+            .ok_or_else(|| "Spine trim runtime is unavailable".to_string())?
+            .validate(request)
     }
 }

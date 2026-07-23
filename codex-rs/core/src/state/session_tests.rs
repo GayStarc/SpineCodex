@@ -22,8 +22,6 @@ use codex_protocol::protocol::TokenCountEvent;
 use codex_protocol::protocol::TokenUsage;
 use codex_protocol::protocol::TokenUsageInfo;
 use pretty_assertions::assert_eq;
-use spine_core::HandlerCardinality;
-use spine_core::SpineEventHandlers;
 
 fn response_message(role: &str, text: &str) -> ResponseItem {
     ResponseItem::Message {
@@ -1011,112 +1009,6 @@ async fn spine_transition_status_requires_spine_jit_only() {
     );
 }
 
-#[tokio::test]
-async fn codex_spine_runtime_registers_one_context_owner_and_one_observer() {
-    let mut session_configuration = make_session_configuration_for_tests().await;
-    session_configuration.enable_spine_jit_for_test();
-    let state = SessionState::new(session_configuration);
-    let handlers = state
-        .spine_runtime
-        .as_ref()
-        .expect("Spine runtime should be enabled")
-        .runtime
-        .handlers();
-
-    assert_eq!(
-        handlers.cardinality(),
-        HandlerCardinality {
-            context_owners: 1,
-            observers: 1,
-        }
-    );
-}
-
-#[tokio::test]
-async fn codex_spine_materialization_rebuilds_only_for_history_rewrite_or_replay() {
-    let mut session_configuration = make_session_configuration_for_tests().await;
-    session_configuration.enable_spine_jit_for_test();
-    let mut state = SessionState::new(session_configuration);
-    let first = response_message("user", "first");
-    state.record_items(std::iter::once(&first), TruncationPolicy::Tokens(10_000));
-    let after_first = state
-        .spine_runtime
-        .as_ref()
-        .expect("Spine runtime should be enabled")
-        .runtime
-        .handlers()
-        .materialization_stats();
-
-    let second = response_message("user", "second");
-    state.record_items(std::iter::once(&second), TruncationPolicy::Tokens(10_000));
-    let after_append = state
-        .spine_runtime
-        .as_ref()
-        .expect("Spine runtime should be enabled")
-        .runtime
-        .handlers()
-        .materialization_stats();
-    assert_eq!(after_append.full_rebuilds, 0);
-    assert_eq!(
-        after_append.incremental_renders,
-        after_first.incremental_renders + 1
-    );
-
-    let open = spine_open_items("child", "open-child");
-    state.record_items(open.iter(), TruncationPolicy::Tokens(10_000));
-    let after_control = state
-        .spine_runtime
-        .as_ref()
-        .expect("Spine runtime should be enabled")
-        .runtime
-        .handlers()
-        .materialization_stats();
-    let detail = response_message("user", "child detail");
-    state.record_items(std::iter::once(&detail), TruncationPolicy::Tokens(10_000));
-    let after_control_append = state
-        .spine_runtime
-        .as_ref()
-        .expect("Spine runtime should be enabled")
-        .runtime
-        .handlers()
-        .materialization_stats();
-    assert_eq!(
-        after_control_append.full_rebuilds,
-        after_control.full_rebuilds
-    );
-
-    let native = state.history.raw_items().to_vec();
-    state.replace_history(native, None);
-    let third = response_message("user", "third");
-    state.record_items(std::iter::once(&third), TruncationPolicy::Tokens(10_000));
-    let after_rewrite = state
-        .spine_runtime
-        .as_ref()
-        .expect("Spine runtime should be enabled")
-        .runtime
-        .handlers()
-        .materialization_stats();
-    assert_eq!(after_rewrite.full_rebuilds, 1);
-
-    let rollout = vec![
-        RolloutItem::ResponseItem(first),
-        RolloutItem::ResponseItem(second),
-        RolloutItem::ResponseItem(open[0].clone()),
-        RolloutItem::ResponseItem(open[1].clone()),
-        RolloutItem::ResponseItem(detail),
-        RolloutItem::ResponseItem(third),
-    ];
-    state.replace_history_from_rollout(rollout_history(&rollout), None, &rollout);
-    let after_replay = state
-        .spine_runtime
-        .as_ref()
-        .expect("Spine runtime should be enabled")
-        .runtime
-        .handlers()
-        .materialization_stats();
-    assert_eq!(after_replay.full_rebuilds, after_rewrite.full_rebuilds + 1);
-}
-
 fn assert_incremental_matches_rebuild(
     configuration: &SessionConfiguration,
     live: &SessionState,
@@ -1261,52 +1153,6 @@ async fn trim_only_materialization_matches_full_rebuild() {
     live.record_items(trim.iter(), TruncationPolicy::Tokens(10_000));
     rollout.extend(trim.into_iter().map(RolloutItem::ResponseItem));
     assert_incremental_matches_rebuild(&configuration, &live, &rollout);
-}
-
-#[tokio::test]
-async fn codex_context_handler_prepare_failure_preserves_committed_state() {
-    let mut session_configuration = make_session_configuration_for_tests().await;
-    session_configuration.enable_spine_jit_for_test();
-    let mut state = SessionState::new(session_configuration);
-    let message = response_message("user", "request");
-    state.record_items(std::iter::once(&message), TruncationPolicy::Tokens(10_000));
-
-    let SessionState {
-        history,
-        spine_runtime: Some(spine),
-        ..
-    } = &mut state
-    else {
-        panic!("Spine runtime should be enabled");
-    };
-    let frontier = spine
-        .runtime
-        .frontier()
-        .expect("active runtime should expose its frontier")
-        .clone();
-    let runtime_projection = spine.runtime.runtime_projection().clone();
-    let before_items = spine.runtime.handlers().projected_items();
-    let expected_tree = crate::spine::observer::tree_update(&runtime_projection);
-    let invalid_context = Vec::new();
-    let result = spine.runtime.handlers().prepare_context(
-        history,
-        spine_core::SpineTransitionEvent {
-            transition: spine_core::ContextTransition::ContextEpochReset(&invalid_context),
-            frontier: &frontier,
-            runtime_projection: &runtime_projection,
-        },
-    );
-    assert!(result.is_err());
-
-    assert_eq!(spine.runtime.handlers().projected_items(), before_items);
-    assert_eq!(
-        spine
-            .runtime
-            .handlers_mut()
-            .take_observer_effect()
-            .and_then(|effect| effect.tree_update),
-        Some(expected_tree)
-    );
 }
 
 #[tokio::test]
@@ -1462,24 +1308,7 @@ async fn spine_materialization_updates_trimmed_boundaries_and_rebuilds_after_com
             .expect("tagged output should be text")
             .starts_with("[TRIM_ID: trim_1]")
     );
-    let before_trim = state
-        .spine_runtime
-        .as_ref()
-        .expect("Spine runtime should be enabled")
-        .runtime
-        .handlers()
-        .materialization_stats();
-
     state.record_items([&trim_call, &trim_output], TruncationPolicy::Tokens(10_000));
-    let after_trim = state
-        .spine_runtime
-        .as_ref()
-        .expect("Spine runtime should be enabled")
-        .runtime
-        .handlers()
-        .materialization_stats();
-    assert_eq!(after_trim.full_rebuilds, before_trim.full_rebuilds);
-    assert!(after_trim.incremental_renders > before_trim.incremental_renders);
     let snipped = state.clone_history();
     let ResponseItem::FunctionCallOutput { output, .. } = &snipped.raw_items()[1] else {
         panic!("expected snipped shell output");
