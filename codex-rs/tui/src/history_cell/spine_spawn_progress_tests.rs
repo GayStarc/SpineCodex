@@ -6,6 +6,7 @@ use codex_app_server_protocol::CollabAgentStatus;
 use codex_app_server_protocol::SpineSpawnProgressUpdatedNotification;
 use codex_app_server_protocol::SpineSpawnTaskProgress;
 use codex_app_server_protocol::ThreadItem;
+use ratatui::style::Modifier;
 
 #[test]
 fn renders_live_mixed_child_statuses() {
@@ -34,14 +35,22 @@ fn renders_live_mixed_child_statuses() {
         .map(|line| line.to_string())
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(
-        rendered.contains("spine.spawn 1 running · 1 complete"),
-        "{rendered}"
-    );
+    assert!(!rendered.contains("spine.spawn"), "{rendered}");
     assert!(rendered.contains("├┈ ✓ [0] inspect native events"));
     assert!(rendered.contains("└┈ ◐ [1] verify cancellation"));
     assert!(rendered.contains("Waiting for activity..."));
-    assert_eq!(cell.display_lines("  │  ", true, 80).len(), 6);
+    assert_eq!(cell.display_lines("  │  ", true, 80).len(), 5);
+
+    let lines = cell.display_lines("  │  ", true, 80);
+    for task_line in [&lines[0], &lines[1]] {
+        assert!(
+            task_line.spans[3]
+                .style
+                .add_modifier
+                .contains(Modifier::DIM),
+            "task label should be dim: {task_line:?}"
+        );
+    }
 }
 
 #[test]
@@ -80,11 +89,11 @@ fn activity_refresh_keeps_the_newest_three_lines() {
     assert!(rendered.contains("activity 2\n"));
     assert!(rendered.contains("activity 3\n"));
     assert!(rendered.ends_with("activity 4"));
-    assert_eq!(overlay.display_lines("  ", true, 80).len(), 5);
+    assert_eq!(overlay.display_lines("  ", true, 80).len(), 4);
 }
 
 #[test]
-fn aggregate_status_keeps_terminal_outcomes_truthful() {
+fn terminal_tasks_render_without_an_aggregate_row() {
     let cell = SpineSpawnOverlay::new(SpineSpawnProgressUpdatedNotification {
         thread_id: "parent".to_string(),
         turn_id: "turn-1".to_string(),
@@ -121,12 +130,34 @@ fn aggregate_status_keeps_terminal_outcomes_truthful() {
         .map(|line| line.to_string())
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(rendered.contains("0 running"), "{rendered}");
-    assert!(rendered.contains("1 complete"), "{rendered}");
-    assert!(rendered.contains("1 failed"), "{rendered}");
-    assert!(rendered.contains("1 interrupted"), "{rendered}");
-    assert!(rendered.contains("1 stopped"), "{rendered}");
-    assert!(!rendered.contains("✓ spine.spawn"));
+    assert!(!rendered.contains("spine.spawn"), "{rendered}");
+    assert!(rendered.contains("✓ [0] completed"), "{rendered}");
+    assert!(rendered.contains("! [1] interrupted"), "{rendered}");
+    assert!(rendered.contains("× [2] failed"), "{rendered}");
+    assert!(rendered.contains("× [3] stopped"), "{rendered}");
+}
+
+#[test]
+fn pending_task_uses_a_pending_specific_empty_state() {
+    let cell = SpineSpawnOverlay::new(SpineSpawnProgressUpdatedNotification {
+        thread_id: "parent".to_string(),
+        turn_id: "turn-1".to_string(),
+        call_id: "spawn-1".to_string(),
+        tasks: vec![SpineSpawnTaskProgress {
+            ordinal: 0,
+            summary: "waiting child".to_string(),
+            agent_path: None,
+            status: CollabAgentStatus::PendingInit,
+        }],
+    });
+
+    let rendered = plain_lines(cell.display_lines("  ", true, 80))
+        .into_iter()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(rendered.contains("Waiting to start..."), "{rendered}");
+    assert!(!rendered.contains("Waiting for activity..."), "{rendered}");
 }
 
 #[test]
@@ -162,6 +193,6 @@ fn narrow_width_preserves_tree_prefixes_and_fixed_activity_rows() {
     assert!(
         activity_rows
             .iter()
-            .all(|line| line.to_string().starts_with("  │     "))
+            .all(|line| line.to_string().starts_with("  │  "))
     );
 }

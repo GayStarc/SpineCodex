@@ -63,6 +63,12 @@ use codex_app_server_protocol::RequestId as AppServerRequestId;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerRequest;
 use codex_app_server_protocol::SessionSource;
+use codex_app_server_protocol::SpineSpawnProgressUpdatedNotification;
+use codex_app_server_protocol::SpineSpawnTaskProgress;
+use codex_app_server_protocol::SpineTreeNode;
+use codex_app_server_protocol::SpineTreeNodeKind;
+use codex_app_server_protocol::SpineTreeNodeStatus;
+use codex_app_server_protocol::SpineTreeUpdatedNotification;
 use codex_app_server_protocol::Thread;
 use codex_app_server_protocol::ThreadClosedNotification;
 use codex_app_server_protocol::ThreadItem;
@@ -494,6 +500,114 @@ async fn enqueue_thread_event_does_not_block_when_channel_full() -> Result<()> {
         .await
         .expect("timed out waiting for second event")
         .expect("channel closed unexpectedly");
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn enqueue_thread_notification_refreshes_spawn_activity_on_message_delta() -> Result<()> {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let child_thread_id = ThreadId::new();
+    let agent_path = "/root/live-worker".to_string();
+    app.agent_navigation.upsert(
+        child_thread_id,
+        /*agent_nickname*/ None,
+        /*agent_role*/ None,
+        /*is_closed*/ false,
+    );
+    app.agent_navigation
+        .set_agent_path(child_thread_id, Some(agent_path.clone()));
+
+    app.enqueue_thread_notification(
+        child_thread_id,
+        ServerNotification::AgentMessageDelta(AgentMessageDeltaNotification {
+            thread_id: child_thread_id.to_string(),
+            turn_id: "turn-live".to_string(),
+            item_id: "message-live".to_string(),
+            delta: "streaming child content".to_string(),
+        }),
+    )
+    .await?;
+
+    assert!(
+        time::timeout(Duration::from_millis(50), app_event_rx.recv())
+            .await
+            .is_err(),
+        "activity without a live spine.spawn overlay must not emit a refresh"
+    );
+
+    let tree = crate::history_cell::new_spine_tree_update(
+        "turn-live".to_string(),
+        SpineTreeUpdatedNotification {
+            thread_id: "parent".to_string(),
+            turn_id: "turn-live".to_string(),
+            snapshot_seq: 1,
+            active_node_id: "1".to_string(),
+            nodes: vec![SpineTreeNode {
+                node_id: "1".to_string(),
+                parent_id: None,
+                kind: SpineTreeNodeKind::Task,
+                status: SpineTreeNodeStatus::Live,
+                summary: Some("active".to_string()),
+                memory_summary: None,
+                start: 0,
+                end: None,
+                context_pressure: None,
+            }],
+        },
+    )
+    .with_spawn_progress(SpineSpawnProgressUpdatedNotification {
+        thread_id: "parent".to_string(),
+        turn_id: "turn-live".to_string(),
+        call_id: "spawn-live".to_string(),
+        tasks: vec![SpineSpawnTaskProgress {
+            ordinal: 0,
+            summary: "live worker".to_string(),
+            agent_path: Some(agent_path.clone()),
+            status: codex_app_server_protocol::CollabAgentStatus::Running,
+        }],
+    });
+    app.transcript_cells.push(Arc::new(tree));
+    app.thread_event_channels
+        .get(&child_thread_id)
+        .expect("child channel should exist")
+        .store
+        .lock()
+        .await
+        .enable_spine_spawn_activity();
+
+    app.enqueue_thread_notification(
+        child_thread_id,
+        ServerNotification::AgentMessageDelta(AgentMessageDeltaNotification {
+            thread_id: child_thread_id.to_string(),
+            turn_id: "turn-live".to_string(),
+            item_id: "message-live".to_string(),
+            delta: " continues".to_string(),
+        }),
+    )
+    .await?;
+
+    let event = time::timeout(Duration::from_secs(1), app_event_rx.recv())
+        .await
+        .expect("delta should emit a refresh event")
+        .expect("app event channel should stay open");
+    let AppEvent::RefreshSpineSpawnActivity {
+        agent_path: refreshed_path,
+        preview,
+        status,
+    } = event
+    else {
+        panic!("expected RefreshSpineSpawnActivity, got {event:?}");
+    };
+    assert_eq!(refreshed_path, agent_path);
+    assert_eq!(status, None);
+    let rendered = preview
+        .lines(80)
+        .into_iter()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(rendered.contains("streaming child content"), "{rendered}");
 
     Ok(())
 }

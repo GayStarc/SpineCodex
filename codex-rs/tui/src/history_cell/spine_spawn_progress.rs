@@ -60,6 +60,13 @@ impl SpineSpawnOverlay {
         true
     }
 
+    pub(crate) fn has_agent_path(&self, agent_path: &str) -> bool {
+        self.notification
+            .tasks
+            .iter()
+            .any(|task| task.agent_path.as_deref() == Some(agent_path))
+    }
+
     pub(crate) fn display_lines(
         &self,
         prefix: &str,
@@ -67,31 +74,16 @@ impl SpineSpawnOverlay {
         width: u16,
     ) -> Vec<Line<'static>> {
         let mut lines = Vec::new();
-        let counts = task_counts(&self.notification);
-        let aggregate = aggregate_label(counts);
-        let aggregate_line = Line::from(vec![
-            Span::from(format!("{prefix}{}", dotted_branch(is_last))).dim(),
-            aggregate_status_span(counts),
-            " ".into(),
-            aggregate.magenta().bold(),
-        ]);
-        push_wrapped_line(
-            aggregate_line,
-            format!("{prefix}{}  ", child_prefix(is_last)),
-            width,
-            &mut lines,
-        );
-
-        let task_prefix = format!("{prefix}{}", child_prefix(is_last));
+        let task_prefix = prefix.to_string();
         let task_count = self.notification.tasks.len();
         for (index, task) in self.notification.tasks.iter().enumerate() {
-            let task_is_last = index + 1 == task_count;
+            let task_is_last = is_last && index + 1 == task_count;
             let label = format!("[{}] {}", task.ordinal, task.summary.trim());
             let label_line = Line::from(vec![
                 Span::from(format!("{task_prefix}{}", dotted_branch(task_is_last))).dim(),
                 status_span(&task.status),
                 " ".into(),
-                label.into(),
+                label.dim(),
             ]);
             let continuation = format!("{task_prefix}{}  ", child_prefix(task_is_last));
             push_wrapped_line(label_line, continuation, width, &mut lines);
@@ -114,7 +106,12 @@ impl SpineSpawnOverlay {
                 .map(|preview| preview.lines(activity_width))
                 .unwrap_or_default();
             if preview_lines.is_empty() {
-                preview_lines.push("Waiting for activity...".dim().italic().into());
+                let empty_state = match task.status {
+                    CollabAgentStatus::PendingInit => "Waiting to start...",
+                    CollabAgentStatus::Running => "Waiting for activity...",
+                    _ => unreachable!("activity preview only renders pending/running tasks"),
+                };
+                preview_lines.push(empty_state.dim().italic().into());
             }
             while preview_lines.len() < 3 {
                 preview_lines.push(Line::default());
@@ -139,60 +136,6 @@ fn push_wrapped_line(
         RtOptions::new(width.max(1) as usize).subsequent_indent(continuation.into()),
     );
     push_owned_lines(&wrapped, out);
-}
-
-#[derive(Default, Clone, Copy)]
-struct TaskCounts {
-    running: usize,
-    complete: usize,
-    interrupted: usize,
-    failed: usize,
-    stopped: usize,
-}
-
-fn task_counts(notification: &SpineSpawnProgressUpdatedNotification) -> TaskCounts {
-    notification
-        .tasks
-        .iter()
-        .fold(TaskCounts::default(), |mut counts, task| {
-            match task.status {
-                CollabAgentStatus::PendingInit | CollabAgentStatus::Running => counts.running += 1,
-                CollabAgentStatus::Completed => counts.complete += 1,
-                CollabAgentStatus::Interrupted => counts.interrupted += 1,
-                CollabAgentStatus::Errored | CollabAgentStatus::NotFound => counts.failed += 1,
-                CollabAgentStatus::Shutdown => counts.stopped += 1,
-            }
-            counts
-        })
-}
-
-fn aggregate_label(counts: TaskCounts) -> String {
-    let mut parts = vec![
-        format!("{} running", counts.running),
-        format!("{} complete", counts.complete),
-    ];
-    if counts.failed > 0 {
-        parts.push(format!("{} failed", counts.failed));
-    }
-    if counts.interrupted > 0 {
-        parts.push(format!("{} interrupted", counts.interrupted));
-    }
-    if counts.stopped > 0 {
-        parts.push(format!("{} stopped", counts.stopped));
-    }
-    format!("spine.spawn {}", parts.join(" · "))
-}
-
-fn aggregate_status_span(counts: TaskCounts) -> Span<'static> {
-    if counts.failed > 0 {
-        "×".red()
-    } else if counts.running > 0 {
-        "◐".cyan().bold()
-    } else if counts.interrupted > 0 || counts.stopped > 0 {
-        "!".yellow()
-    } else {
-        "✓".green()
-    }
 }
 
 fn dotted_branch(is_last: bool) -> &'static str {

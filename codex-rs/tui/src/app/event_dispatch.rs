@@ -269,21 +269,27 @@ impl App {
                         let thread_id = self.agent_navigation.thread_id_for_agent_path(path)?;
                         let store = self.thread_event_channels.get(&thread_id)?.store.clone();
                         Some((path.to_string(), store))
-                    });
-                let mut previews = Vec::new();
-                for (path, store) in preview_stores {
-                    let preview = store.lock().await.agent_activity_preview(
-                        crate::multi_agents::AgentActivityPathDisplay::Hide,
-                    );
-                    previews.push((path, preview));
-                }
+                    })
+                    .collect::<Vec<_>>();
                 let updated = spine_spawn_progress_update(
                     self.transcript_cells.last(),
                     self.chat_widget.spine_tree_snapshot(),
                     notification,
-                    &previews,
                 );
                 if let Some((replace_last, updated)) = updated {
+                    let mut updated = updated;
+                    for (path, store) in preview_stores {
+                        let preview = {
+                            let mut store = store.lock().await;
+                            store.enable_spine_spawn_activity();
+                            store.spine_spawn_activity_preview()
+                        };
+                        if let Some(next) =
+                            updated.with_spawn_activity(&path, preview, /*status*/ None)
+                        {
+                            updated = next;
+                        }
+                    }
                     if replace_last {
                         if let Some(existing) = self.transcript_cells.last_mut() {
                             *existing = Arc::new(updated);
@@ -2630,7 +2636,6 @@ fn spine_spawn_progress_update(
     last_cell: Option<&Arc<dyn HistoryCell>>,
     cached_snapshot: Option<&codex_app_server_protocol::SpineTreeUpdatedNotification>,
     notification: codex_app_server_protocol::SpineSpawnProgressUpdatedNotification,
-    previews: &[(String, crate::multi_agents::AgentActivityPreview)],
 ) -> Option<(bool, history_cell::SpineTreeUpdateCell)> {
     let current = trailing_live_spine_tree(last_cell, &notification.turn_id);
     let tree = current.cloned().or_else(|| {
@@ -2638,15 +2643,7 @@ fn spine_spawn_progress_update(
             history_cell::new_spine_tree_update(notification.turn_id.clone(), snapshot)
         })
     })?;
-    let mut updated = tree.with_spawn_progress(notification);
-    for (agent_path, preview) in previews {
-        if let Some(next) =
-            updated.with_spawn_activity(agent_path, preview.clone(), /*status*/ None)
-        {
-            updated = next;
-        }
-    }
-    Some((current.is_some(), updated))
+    Some((current.is_some(), tree.with_spawn_progress(notification)))
 }
 
 fn spine_spawn_activity_update(
@@ -2766,7 +2763,6 @@ mod spine_tree_tests {
             None,
             Some(&cached),
             spawn_progress("turn-2", "spawn-1", "/root/worker"),
-            &[],
         )
         .expect("cached tree should materialize a live cell");
 
@@ -2777,12 +2773,23 @@ mod spine_tree_tests {
     }
 
     #[test]
+    fn spawn_progress_without_tree_or_snapshot_is_ignored() {
+        assert!(
+            spine_spawn_progress_update(
+                None,
+                None,
+                spawn_progress("turn-1", "spawn-1", "/root/worker"),
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
     fn multiple_spawn_calls_share_the_matching_live_tree_cell() {
         let first = spine_spawn_progress_update(
             None,
             Some(&snapshot("turn-1", 4)),
             spawn_progress("turn-2", "spawn-1", "/root/worker-1"),
-            &[],
         )
         .expect("first spawn should materialize a live cell")
         .1;
@@ -2792,7 +2799,6 @@ mod spine_tree_tests {
             Some(&first),
             Some(&snapshot("turn-1", 4)),
             spawn_progress("turn-2", "spawn-2", "/root/worker-2"),
-            &[],
         )
         .expect("second spawn should update the existing live cell");
 
@@ -2807,7 +2813,6 @@ mod spine_tree_tests {
             None,
             Some(&snapshot("turn-1", 4)),
             spawn_progress("turn-2", "spawn-1", "/root/worker"),
-            &[],
         )
         .expect("spawn should materialize a live cell")
         .1;
@@ -2841,7 +2846,6 @@ mod spine_tree_tests {
             None,
             Some(&snapshot("turn-1", 4)),
             spawn_progress("turn-2", "spawn-1", "/root/worker"),
-            &[],
         )
         .expect("spawn should materialize a live cell")
         .1;

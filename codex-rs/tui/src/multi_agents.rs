@@ -11,6 +11,7 @@ use codex_app_server_protocol::CollabAgentState;
 use codex_app_server_protocol::CollabAgentStatus;
 use codex_app_server_protocol::CollabAgentTool;
 use codex_app_server_protocol::CollabAgentToolCallStatus;
+use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::SubAgentActivityKind;
 use codex_app_server_protocol::ThreadItem;
 use codex_protocol::ThreadId;
@@ -25,6 +26,8 @@ use ratatui::style::Stylize;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use std::collections::HashSet;
+use std::collections::VecDeque;
+use unicode_segmentation::UnicodeSegmentation;
 
 const COLLAB_PROMPT_PREVIEW_GRAPHEMES: usize = 160;
 const COLLAB_AGENT_ERROR_PREVIEW_GRAPHEMES: usize = 160;
@@ -66,6 +69,16 @@ impl AgentActivityPreview {
         Self { activity }
     }
 
+    fn from_summaries<'a>(summaries: impl Iterator<Item = &'a str>) -> Self {
+        let mut activity = summaries
+            .filter_map(bounded_agent_activity_summary)
+            .collect::<Vec<_>>();
+        if activity.len() > AGENT_ACTIVITY_PREVIEW_ITEMS {
+            activity.drain(..activity.len() - AGENT_ACTIVITY_PREVIEW_ITEMS);
+        }
+        Self { activity }
+    }
+
     pub(crate) fn lines(&self, width: u16) -> Vec<Line<'static>> {
         let mut lines = self
             .activity
@@ -78,6 +91,135 @@ impl AgentActivityPreview {
             lines.drain(..lines.len() - AGENT_ACTIVITY_PREVIEW_LINES);
         }
         lines
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct AgentActivityTracker {
+    entries: VecDeque<AgentActivityEntry>,
+}
+
+#[derive(Debug, Clone)]
+struct AgentActivityEntry {
+    item_id: String,
+    summary_index: Option<i64>,
+    summary: String,
+}
+
+impl AgentActivityTracker {
+    pub(crate) fn apply(&mut self, notification: &ServerNotification) -> bool {
+        match notification {
+            ServerNotification::ItemStarted(notification) => {
+                self.touch_started_item(&notification.item)
+            }
+            ServerNotification::ItemCompleted(notification) => {
+                let item_id = notification.item.id().to_string();
+                let removed = self.remove_item(&item_id);
+                let inserted = self.push_summary(
+                    item_id,
+                    None,
+                    agent_activity_summary(&notification.item, AgentActivityPathDisplay::Hide),
+                );
+                removed || inserted
+            }
+            ServerNotification::AgentMessageDelta(notification) => {
+                self.append_delta(&notification.item_id, None, &notification.delta)
+            }
+            ServerNotification::PlanDelta(notification) => {
+                self.append_delta(&notification.item_id, None, &notification.delta)
+            }
+            ServerNotification::ReasoningSummaryTextDelta(notification) => self.append_delta(
+                &notification.item_id,
+                Some(notification.summary_index),
+                &notification.delta,
+            ),
+            // Part boundaries have no visible text. The following delta carries its
+            // summary_index and creates a distinct entry.
+            _ => false,
+        }
+    }
+
+    pub(crate) fn preview(&self) -> AgentActivityPreview {
+        AgentActivityPreview::from_summaries(
+            self.entries.iter().map(|entry| entry.summary.as_str()),
+        )
+    }
+
+    fn touch_started_item(&mut self, item: &ThreadItem) -> bool {
+        let item_id = item.id().to_string();
+        let summary = agent_activity_summary(item, AgentActivityPathDisplay::Hide);
+        let Some(summary) = summary.and_then(|summary| bounded_agent_activity_summary(&summary))
+        else {
+            return false;
+        };
+        if let Some(position) = self.position(&item_id, None) {
+            let entry = self.entries.remove(position).expect("position must exist");
+            self.entries.push_back(entry);
+        } else {
+            self.entries.push_back(AgentActivityEntry {
+                item_id,
+                summary_index: None,
+                summary,
+            });
+            self.trim();
+        }
+        true
+    }
+
+    fn push_summary(
+        &mut self,
+        item_id: String,
+        summary_index: Option<i64>,
+        summary: Option<String>,
+    ) -> bool {
+        let Some(summary) = summary.and_then(|summary| bounded_agent_activity_summary(&summary))
+        else {
+            return false;
+        };
+        self.entries.push_back(AgentActivityEntry {
+            item_id,
+            summary_index,
+            summary,
+        });
+        self.trim();
+        true
+    }
+
+    fn append_delta(&mut self, item_id: &str, summary_index: Option<i64>, delta: &str) -> bool {
+        if delta.is_empty() {
+            return false;
+        }
+        let mut entry = self
+            .position(item_id, summary_index)
+            .and_then(|position| self.entries.remove(position))
+            .unwrap_or_else(|| AgentActivityEntry {
+                item_id: item_id.to_string(),
+                summary_index,
+                summary: String::new(),
+            });
+        entry.summary.push_str(delta);
+        entry.summary = truncate_activity_summary(&entry.summary);
+        self.entries.push_back(entry);
+        self.trim();
+        true
+    }
+
+    fn remove_item(&mut self, item_id: &str) -> bool {
+        let old_len = self.entries.len();
+        self.entries.retain(|entry| entry.item_id != item_id);
+        old_len != self.entries.len()
+    }
+
+    fn position(&self, item_id: &str, summary_index: Option<i64>) -> Option<usize> {
+        self.entries
+            .iter()
+            .position(|entry| entry.item_id == item_id && entry.summary_index == summary_index)
+    }
+
+    fn trim(&mut self) {
+        while self.entries.len() > AGENT_ACTIVITY_PREVIEW_ITEMS {
+            self.entries.pop_front();
+        }
     }
 }
 
@@ -156,6 +298,18 @@ fn bounded_agent_activity_summary(summary: &str) -> Option<String> {
     let summary = truncate_text(summary, AGENT_ACTIVITY_PREVIEW_GRAPHEMES);
     let summary = summary.split_whitespace().collect::<Vec<_>>().join(" ");
     (!summary.is_empty()).then_some(summary)
+}
+
+fn truncate_activity_summary(summary: &str) -> String {
+    let grapheme_count = summary.graphemes(true).count();
+    if grapheme_count <= AGENT_ACTIVITY_PREVIEW_GRAPHEMES {
+        summary.to_string()
+    } else {
+        summary
+            .graphemes(true)
+            .skip(grapheme_count - AGENT_ACTIVITY_PREVIEW_GRAPHEMES)
+            .collect()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1025,6 +1179,31 @@ mod tests {
         let rendered = preview.lines(80)[0].to_string();
         assert_eq!(rendered, "Started sub-agent");
         assert!(!rendered.contains("/root/worker"));
+    }
+
+    #[test]
+    fn spine_spawn_activity_tracker_bounds_entries_and_text() {
+        let mut tracker = AgentActivityTracker::default();
+        for index in 0..=AGENT_ACTIVITY_PREVIEW_ITEMS {
+            assert!(tracker.append_delta(
+                &format!("message-{index}"),
+                None,
+                &format!("activity {index}"),
+            ));
+        }
+        assert_eq!(tracker.entries.len(), AGENT_ACTIVITY_PREVIEW_ITEMS);
+        assert_eq!(tracker.entries.front().unwrap().item_id, "message-1");
+
+        assert!(tracker.append_delta(
+            "message-long",
+            None,
+            &"界".repeat(AGENT_ACTIVITY_PREVIEW_GRAPHEMES + 40),
+        ));
+        let summary = &tracker.entries.back().unwrap().summary;
+        assert_eq!(
+            summary.graphemes(true).count(),
+            AGENT_ACTIVITY_PREVIEW_GRAPHEMES
+        );
     }
 
     #[test]

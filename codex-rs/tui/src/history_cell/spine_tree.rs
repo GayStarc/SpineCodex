@@ -130,6 +130,12 @@ impl SpineTreeUpdateCell {
         }
         changed.then_some(next)
     }
+
+    pub(crate) fn has_spawn_agent_path(&self, agent_path: &str) -> bool {
+        self.spawn_overlays
+            .iter()
+            .any(|overlay| overlay.has_agent_path(agent_path))
+    }
 }
 
 impl HistoryCell for SpineTreeUpdateCell {
@@ -940,7 +946,47 @@ mod tests {
         });
 
         let rendered = render(&cell.display_lines(80));
-        assert!(rendered.contains("    └ ◉ active\n      └┈ ◐ spine.spawn"));
+        assert!(rendered.contains("    └ ◉ active\n      └┈ ◐ [0] inspect events"));
+        assert!(!rendered.contains("spine.spawn"));
         assert!(!rendered.contains("/root/inspector"));
+    }
+
+    #[test]
+    fn multiple_spawn_overlays_share_direct_task_sibling_branches() {
+        let spawn_progress = |call_id: &str, summary: &str, agent_path: &str| {
+            SpineSpawnProgressUpdatedNotification {
+                thread_id: "thread".to_string(),
+                turn_id: "turn".to_string(),
+                call_id: call_id.to_string(),
+                tasks: vec![codex_app_server_protocol::SpineSpawnTaskProgress {
+                    ordinal: 0,
+                    summary: summary.to_string(),
+                    agent_path: Some(agent_path.to_string()),
+                    status: codex_app_server_protocol::CollabAgentStatus::Running,
+                }],
+            }
+        };
+        let cell = new_spine_tree_update(
+            "turn".to_string(),
+            snapshot(
+                "1.1",
+                vec![
+                    node("1", None, Some("parent"), SpineTreeNodeStatus::Opened),
+                    node("1.1", Some("1"), Some("active"), SpineTreeNodeStatus::Live),
+                ],
+            ),
+        )
+        .with_spawn_progress(spawn_progress("spawn-1", "first task", "/root/first"))
+        .with_spawn_progress(spawn_progress("spawn-2", "second task", "/root/second"));
+
+        let task_lines = cell
+            .display_lines(80)
+            .into_iter()
+            .map(|line| line.to_string())
+            .filter(|line| line.contains("[0]"))
+            .collect::<Vec<_>>();
+        assert_eq!(task_lines.len(), 2, "{task_lines:?}");
+        assert!(task_lines[0].starts_with("      ├┈ "), "{task_lines:?}");
+        assert!(task_lines[1].starts_with("      └┈ "), "{task_lines:?}");
     }
 }

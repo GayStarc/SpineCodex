@@ -49,6 +49,16 @@ impl App {
             .or_insert_with(|| ThreadEventChannel::new(THREAD_EVENT_CHANNEL_CAPACITY))
     }
 
+    fn has_live_spine_spawn_agent(&self, agent_path: &str) -> bool {
+        self.transcript_cells
+            .last()
+            .and_then(|cell| {
+                cell.as_any()
+                    .downcast_ref::<crate::history_cell::SpineTreeUpdateCell>()
+            })
+            .is_some_and(|tree| tree.is_live_update() && tree.has_spawn_agent_path(agent_path))
+    }
+
     pub(super) async fn set_thread_active(&mut self, thread_id: ThreadId, active: bool) {
         if let Some(channel) = self.thread_event_channels.get_mut(&thread_id) {
             let mut store = channel.store.lock().await;
@@ -899,37 +909,33 @@ impl App {
             let channel = self.ensure_thread_channel(thread_id);
             (channel.sender.clone(), Arc::clone(&channel.store))
         };
+        let activity_status = spine_spawn_status(&notification);
+        let live_agent_path = self
+            .agent_navigation
+            .get(&thread_id)
+            .and_then(|entry| entry.agent_path.clone())
+            .filter(|agent_path| self.has_live_spine_spawn_agent(agent_path));
 
-        let (should_send, pending_status) = {
+        let (should_send, pending_status, activity_preview) = {
             let mut guard = store.lock().await;
             if guard.session.is_none()
                 && let Some(session) = inferred_session
             {
                 guard.session = Some(session);
             }
-            guard.push_notification(notification.clone());
-            (guard.active, guard.side_parent_pending_status())
-        };
-        let refresh_activity = matches!(
-            notification,
-            ServerNotification::ItemStarted(_) | ServerNotification::ItemCompleted(_)
-        );
-        let activity_status = spine_spawn_status(&notification);
-        let activity_preview = if refresh_activity || activity_status.is_some() {
-            let store = store.lock().await;
-            self.agent_navigation
-                .get(&thread_id)
-                .and_then(|entry| entry.agent_path.clone())
-                .map(|agent_path| {
-                    (
-                        agent_path,
-                        store.agent_activity_preview(
-                            crate::multi_agents::AgentActivityPathDisplay::Hide,
-                        ),
-                    )
-                })
-        } else {
-            None
+            let activity_changed = guard.push_notification(notification.clone());
+            let activity_preview = if activity_changed || activity_status.is_some() {
+                live_agent_path
+                    .clone()
+                    .map(|agent_path| (agent_path, guard.spine_spawn_activity_preview()))
+            } else {
+                None
+            };
+            (
+                guard.active,
+                guard.side_parent_pending_status(),
+                activity_preview,
+            )
         };
         let notification_status_change = SideParentStatusChange::for_notification(&notification);
 
@@ -1273,7 +1279,7 @@ impl App {
         let AppServerStartedThread { session, turns } = started;
         if let Some(channel) = self.thread_event_channels.get(&thread_id) {
             let mut store = channel.store.lock().await;
-            store.set_session(session.clone(), turns.clone());
+            store.set_session_without_activity_rebuild(session.clone(), turns.clone());
             store.rebase_buffer_after_session_refresh();
         }
         snapshot.session = Some(session);

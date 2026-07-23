@@ -8,6 +8,7 @@
 use super::*;
 use crate::multi_agents::AgentActivityPathDisplay;
 use crate::multi_agents::AgentActivityPreview;
+use crate::multi_agents::AgentActivityTracker;
 
 #[derive(Debug, Clone)]
 pub(super) struct ThreadEventSnapshot {
@@ -49,6 +50,7 @@ pub(super) struct ThreadEventStore {
     pub(super) input_state: Option<ThreadInputState>,
     pub(super) capacity: usize,
     pub(super) active: bool,
+    spine_spawn_activity: Option<AgentActivityTracker>,
 }
 
 impl ThreadEventStore {
@@ -73,6 +75,26 @@ impl ThreadEventStore {
         )
     }
 
+    pub(super) fn spine_spawn_activity_preview(&self) -> AgentActivityPreview {
+        self.spine_spawn_activity
+            .as_ref()
+            .map(AgentActivityTracker::preview)
+            .unwrap_or_default()
+    }
+
+    pub(super) fn enable_spine_spawn_activity(&mut self) {
+        if self.spine_spawn_activity.is_some() {
+            return;
+        }
+        let mut activity = AgentActivityTracker::default();
+        for event in &self.buffer {
+            if let ThreadBufferedEvent::Notification(notification) = event {
+                activity.apply(notification);
+            }
+        }
+        self.spine_spawn_activity = Some(activity);
+    }
+
     pub(super) fn event_survives_session_refresh(event: &ThreadBufferedEvent) -> bool {
         matches!(
             event,
@@ -94,6 +116,7 @@ impl ThreadEventStore {
             input_state: None,
             capacity,
             active: false,
+            spine_spawn_activity: None,
         }
     }
 
@@ -112,10 +135,21 @@ impl ThreadEventStore {
     pub(super) fn set_session(&mut self, session: ThreadSessionState, turns: Vec<Turn>) {
         self.session = Some(session);
         self.set_turns(turns);
+        self.rebuild_spine_spawn_activity();
+    }
+
+    pub(super) fn set_session_without_activity_rebuild(
+        &mut self,
+        session: ThreadSessionState,
+        turns: Vec<Turn>,
+    ) {
+        self.session = Some(session);
+        self.set_turns(turns);
     }
 
     pub(super) fn rebase_buffer_after_session_refresh(&mut self) {
         self.buffer.retain(Self::event_survives_session_refresh);
+        self.rebuild_spine_spawn_activity();
     }
 
     pub(super) fn set_turns(&mut self, turns: Vec<Turn>) {
@@ -127,9 +161,13 @@ impl ThreadEventStore {
         self.turns = turns;
     }
 
-    pub(super) fn push_notification(&mut self, notification: ServerNotification) {
+    pub(super) fn push_notification(&mut self, notification: ServerNotification) -> bool {
         self.pending_interactive_replay
             .note_server_notification(&notification);
+        let spine_spawn_activity_changed = self
+            .spine_spawn_activity
+            .as_mut()
+            .is_some_and(|activity| activity.apply(&notification));
         match &notification {
             ServerNotification::TurnStarted(turn) => {
                 self.active_turn_id = Some(turn.turn.id.clone());
@@ -153,6 +191,7 @@ impl ThreadEventStore {
             self.pending_interactive_replay
                 .note_evicted_server_request(request);
         }
+        spine_spawn_activity_changed
     }
 
     pub(super) fn push_request(&mut self, request: ServerRequest) {
@@ -224,8 +263,24 @@ impl ThreadEventStore {
     pub(super) fn apply_thread_rollback(&mut self, response: &ThreadRollbackResponse) {
         self.turns = response.thread.turns.clone();
         self.buffer.clear();
+        if self.spine_spawn_activity.is_some() {
+            self.spine_spawn_activity = Some(AgentActivityTracker::default());
+        }
         self.pending_interactive_replay = PendingInteractiveReplayState::default();
         self.active_turn_id = None;
+    }
+
+    fn rebuild_spine_spawn_activity(&mut self) {
+        if self.spine_spawn_activity.is_none() {
+            return;
+        }
+        let mut activity = AgentActivityTracker::default();
+        for event in &self.buffer {
+            if let ThreadBufferedEvent::Notification(notification) = event {
+                activity.apply(notification);
+            }
+        }
+        self.spine_spawn_activity = Some(activity);
     }
 
     pub(super) fn snapshot(&self) -> ThreadEventSnapshot {
@@ -359,6 +414,7 @@ mod tests {
     use super::*;
     use crate::test_support::PathBufExt;
     use crate::test_support::test_path_buf;
+    use codex_app_server_protocol::AgentMessageDeltaNotification;
     use codex_app_server_protocol::AskForApproval;
     use codex_app_server_protocol::CommandExecutionRequestApprovalParams;
     use codex_app_server_protocol::HookCompletedNotification;
@@ -371,6 +427,12 @@ mod tests {
     use codex_app_server_protocol::HookRunSummary as AppServerHookRunSummary;
     use codex_app_server_protocol::HookScope as AppServerHookScope;
     use codex_app_server_protocol::HookStartedNotification;
+    use codex_app_server_protocol::ItemCompletedNotification;
+    use codex_app_server_protocol::ItemStartedNotification;
+    use codex_app_server_protocol::PlanDeltaNotification;
+    use codex_app_server_protocol::ReasoningSummaryPartAddedNotification;
+    use codex_app_server_protocol::ReasoningSummaryTextDeltaNotification;
+    use codex_app_server_protocol::ReasoningTextDeltaNotification;
     use codex_app_server_protocol::RequestId as AppServerRequestId;
     use codex_app_server_protocol::TurnCompletedNotification;
     use codex_app_server_protocol::TurnStartedNotification;
@@ -659,5 +721,238 @@ mod tests {
             serde_json::to_value(actual).expect("MCP notification should serialize"),
             serde_json::to_value(notification).expect("MCP notification should serialize"),
         );
+    }
+
+    #[test]
+    fn spine_spawn_activity_is_opt_in_and_seeds_buffer_on_enable() {
+        let mut store = ThreadEventStore::new(/*capacity*/ 16);
+        store.push_notification(ServerNotification::AgentMessageDelta(
+            AgentMessageDeltaNotification {
+                thread_id: "child".to_string(),
+                turn_id: "turn-1".to_string(),
+                item_id: "message-1".to_string(),
+                delta: "buffered before overlay mount".to_string(),
+            },
+        ));
+
+        assert!(
+            store
+                .spine_spawn_activity_preview()
+                .lines(/*width*/ 80)
+                .is_empty()
+        );
+
+        store.enable_spine_spawn_activity();
+        let rendered = store
+            .spine_spawn_activity_preview()
+            .lines(/*width*/ 80)
+            .into_iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            rendered.contains("buffered before overlay mount"),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn spine_spawn_activity_projects_safe_streaming_deltas_without_changing_agent_status() {
+        let thread_id = ThreadId::new().to_string();
+        let mut store = ThreadEventStore::new(/*capacity*/ 16);
+        store.enable_spine_spawn_activity();
+        store.push_notification(ServerNotification::ItemStarted(ItemStartedNotification {
+            item: ThreadItem::AgentMessage {
+                id: "message-1".to_string(),
+                text: String::new(),
+                phase: None,
+                memory_citation: None,
+            },
+            thread_id: thread_id.clone(),
+            turn_id: "turn-1".to_string(),
+            started_at_ms: 1,
+        }));
+        store.push_notification(ServerNotification::AgentMessageDelta(
+            AgentMessageDeltaNotification {
+                thread_id: thread_id.clone(),
+                turn_id: "turn-1".to_string(),
+                item_id: "message-1".to_string(),
+                delta: "checking the live event stream".to_string(),
+            },
+        ));
+        store.push_notification(ServerNotification::PlanDelta(PlanDeltaNotification {
+            thread_id: thread_id.clone(),
+            turn_id: "turn-1".to_string(),
+            item_id: "plan-1".to_string(),
+            delta: "validate the notification path".to_string(),
+        }));
+        store.push_notification(ServerNotification::ReasoningSummaryTextDelta(
+            ReasoningSummaryTextDeltaNotification {
+                thread_id: thread_id.clone(),
+                turn_id: "turn-1".to_string(),
+                item_id: "reasoning-1".to_string(),
+                delta: "reviewing safe summary".to_string(),
+                summary_index: 0,
+            },
+        ));
+        store.push_notification(ServerNotification::ReasoningTextDelta(
+            ReasoningTextDeltaNotification {
+                thread_id,
+                turn_id: "turn-1".to_string(),
+                item_id: "reasoning-1".to_string(),
+                delta: "hidden raw reasoning".to_string(),
+                content_index: 0,
+            },
+        ));
+
+        let agent_status_rendered = store
+            .agent_activity_preview(AgentActivityPathDisplay::Hide)
+            .lines(/*width*/ 80)
+            .into_iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(agent_status_rendered.is_empty(), "{agent_status_rendered}");
+
+        let rendered = store
+            .spine_spawn_activity_preview()
+            .lines(/*width*/ 80)
+            .into_iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(
+            rendered.contains("checking the live event stream"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("validate the notification path"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("reviewing safe summary"), "{rendered}");
+        assert!(!rendered.contains("hidden raw reasoning"), "{rendered}");
+
+        store.push_notification(ServerNotification::ItemCompleted(
+            ItemCompletedNotification {
+                item: ThreadItem::AgentMessage {
+                    id: "message-1".to_string(),
+                    text: "final completed message".to_string(),
+                    phase: None,
+                    memory_citation: None,
+                },
+                thread_id: "child".to_string(),
+                turn_id: "turn-1".to_string(),
+                completed_at_ms: 2,
+            },
+        ));
+        let completed_rendered = store
+            .spine_spawn_activity_preview()
+            .lines(/*width*/ 80)
+            .into_iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(completed_rendered.contains("final completed message"));
+        assert!(!completed_rendered.contains("checking the live event stream"));
+    }
+
+    #[test]
+    fn spine_spawn_activity_orders_entries_by_latest_visible_event() {
+        let mut store = ThreadEventStore::new(/*capacity*/ 16);
+        store.enable_spine_spawn_activity();
+        let delta = |item_id: &str, delta: &str| {
+            ServerNotification::AgentMessageDelta(AgentMessageDeltaNotification {
+                thread_id: "child".to_string(),
+                turn_id: "turn-1".to_string(),
+                item_id: item_id.to_string(),
+                delta: delta.to_string(),
+            })
+        };
+        store.push_notification(delta("message-a", "activity A"));
+        store.push_notification(delta("message-b", "activity B"));
+        store.push_notification(delta("message-c", "activity C"));
+        store.push_notification(delta("message-a", " latest"));
+
+        let rendered = store
+            .spine_spawn_activity_preview()
+            .lines(/*width*/ 80)
+            .into_iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            rendered,
+            vec![
+                "activity B".to_string(),
+                "activity C".to_string(),
+                "activity A latest".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn spine_spawn_activity_separates_reasoning_parts_and_uses_completed_last_summary() {
+        let mut store = ThreadEventStore::new(/*capacity*/ 16);
+        store.enable_spine_spawn_activity();
+        let summary_delta = |summary_index: i64, delta: &str| {
+            ServerNotification::ReasoningSummaryTextDelta(ReasoningSummaryTextDeltaNotification {
+                thread_id: "child".to_string(),
+                turn_id: "turn-1".to_string(),
+                item_id: "reasoning-1".to_string(),
+                delta: delta.to_string(),
+                summary_index,
+            })
+        };
+        store.push_notification(summary_delta(0, "first summary part"));
+        assert!(
+            !store.push_notification(ServerNotification::ReasoningSummaryPartAdded(
+                ReasoningSummaryPartAddedNotification {
+                    thread_id: "child".to_string(),
+                    turn_id: "turn-1".to_string(),
+                    item_id: "reasoning-1".to_string(),
+                    summary_index: 1,
+                }
+            ))
+        );
+        store.push_notification(summary_delta(1, "second summary part"));
+
+        let live = store
+            .spine_spawn_activity_preview()
+            .lines(/*width*/ 80)
+            .into_iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            live,
+            vec![
+                "first summary part".to_string(),
+                "second summary part".to_string(),
+            ]
+        );
+
+        store.push_notification(ServerNotification::ItemCompleted(
+            ItemCompletedNotification {
+                item: ThreadItem::Reasoning {
+                    id: "reasoning-1".to_string(),
+                    summary: vec![
+                        "first final summary".to_string(),
+                        "second final summary".to_string(),
+                    ],
+                    content: vec!["hidden raw reasoning".to_string()],
+                },
+                thread_id: "child".to_string(),
+                turn_id: "turn-1".to_string(),
+                completed_at_ms: 2,
+            },
+        ));
+
+        let completed = store
+            .spine_spawn_activity_preview()
+            .lines(/*width*/ 80)
+            .into_iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(completed, vec!["second final summary".to_string()]);
     }
 }
