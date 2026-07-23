@@ -9,6 +9,7 @@ use crate::ContextEventError;
 use crate::Feature;
 use crate::ParseStack;
 use crate::RawBoundary;
+use crate::RolloutEvent;
 use crate::SpineChar;
 use crate::SpineCharParser;
 use crate::SpineCompiler;
@@ -16,6 +17,8 @@ use crate::SpineConfig;
 use crate::SpineContextEventHandler;
 use crate::SpineError;
 use crate::SpineProjection;
+use crate::SpineRecoveryInput;
+use crate::SpineSignal;
 use crate::TokenUsageSample;
 use crate::ToolCatalog;
 use crate::TrimProjection;
@@ -120,30 +123,148 @@ where
     {
         let characters = characters.into_iter().collect::<Vec<_>>();
         let expected_before = self.parser.stack().len().saturating_add(characters.len());
-        let actual_before = self.handler.context_size(history);
-        if actual_before != expected_before {
-            return Err(SpineContextRuntimeError::ContextSizeMismatch {
-                phase: ContextSizePhase::BeforePrepare,
-                expected: expected_before,
-                actual: actual_before,
-            });
-        }
-
+        self.verify_context_size(history, expected_before)?;
         let mut parser = self.parser.clone();
         let mut compiler = self.compiler.clone();
-        let mut pending_boundaries = parser.pending_boundaries();
-        for character in characters {
-            let step = parser
-                .eat(character)
-                .map_err(SpineContextRuntimeError::Parse)?;
-            pending_boundaries = step.pending_boundaries().to_vec();
-            for event in step.events().iter().cloned() {
-                compiler
-                    .eat(event)
-                    .map_err(SpineContextRuntimeError::Spine)?;
+        let pending_boundaries = compile_characters(&mut parser, &mut compiler, characters)?;
+        self.commit_candidate(
+            parser,
+            compiler,
+            pending_boundaries,
+            self.projection.usage_samples.clone(),
+            history,
+        )
+    }
+
+    /// Archives the current live root epoch and compiles a replacement context
+    /// that the host has already installed.
+    pub fn compact_live<I>(
+        &mut self,
+        boundary: RawBoundary,
+        characters: I,
+        history: &mut D::History,
+    ) -> Result<SpineContextOutput, SpineContextRuntimeError<D::Error>>
+    where
+        I: IntoIterator<Item = SpineChar>,
+    {
+        let characters = characters.into_iter().collect::<Vec<_>>();
+        self.verify_context_size(history, characters.len())?;
+        let mut parser = self.parser.clone();
+        let mut compiler = self.compiler.clone();
+        for event in parser
+            .finish_epoch(boundary)
+            .map_err(SpineContextRuntimeError::Parse)?
+        {
+            compiler
+                .eat(event)
+                .map_err(SpineContextRuntimeError::Spine)?;
+        }
+        compiler
+            .eat(RolloutEvent::Compact {
+                boundary,
+                replacement_history: Vec::new(),
+            })
+            .map_err(SpineContextRuntimeError::Spine)?;
+        parser.reset();
+        let pending_boundaries = compile_characters(&mut parser, &mut compiler, characters)?;
+        self.commit_candidate(
+            parser,
+            compiler,
+            pending_boundaries,
+            self.projection.usage_samples.clone(),
+            history,
+        )
+    }
+
+    /// Rebuilds archived root epochs, then compiles the host's installed live
+    /// context without replaying that live context from archival input.
+    ///
+    /// The final non-usage recovery input must be a compact signal. If no
+    /// compact exists, recovery input must contain usage signals only and the
+    /// complete live root must be supplied through `characters`.
+    pub fn recover<A, I>(
+        &mut self,
+        archived: A,
+        characters: I,
+        history: &mut D::History,
+    ) -> Result<SpineContextOutput, SpineContextRuntimeError<D::Error>>
+    where
+        A: IntoIterator<Item = SpineRecoveryInput>,
+        I: IntoIterator<Item = SpineChar>,
+    {
+        let characters = characters.into_iter().collect::<Vec<_>>();
+        self.verify_context_size(history, characters.len())?;
+        let mut parser = SpineCharParser::default();
+        let mut compiler = self.compiler.clone();
+        compiler.reset();
+        let mut usage_samples = Vec::new();
+        let mut saw_archived_context = false;
+        let mut ended_at_compact = false;
+        for input in archived {
+            match input {
+                SpineRecoveryInput::Char(character) => {
+                    compile_characters(&mut parser, &mut compiler, [character])?;
+                    saw_archived_context = true;
+                    ended_at_compact = false;
+                }
+                SpineRecoveryInput::Signal(SpineSignal::Compact { boundary }) => {
+                    for event in parser
+                        .finish_epoch(boundary)
+                        .map_err(SpineContextRuntimeError::Parse)?
+                    {
+                        compiler
+                            .eat(event)
+                            .map_err(SpineContextRuntimeError::Spine)?;
+                    }
+                    compiler
+                        .eat(RolloutEvent::Compact {
+                            boundary,
+                            replacement_history: Vec::new(),
+                        })
+                        .map_err(SpineContextRuntimeError::Spine)?;
+                    parser.reset();
+                    saw_archived_context = true;
+                    ended_at_compact = true;
+                }
+                SpineRecoveryInput::Signal(SpineSignal::Usage(sample)) => {
+                    if sample.input_tokens > 0 {
+                        usage_samples.push(sample);
+                    }
+                }
             }
         }
+        if saw_archived_context && !ended_at_compact {
+            return Err(SpineContextRuntimeError::ArchivedTraceHasLiveTail);
+        }
+        let pending_boundaries = compile_characters(&mut parser, &mut compiler, characters)?;
+        self.commit_candidate(parser, compiler, pending_boundaries, usage_samples, history)
+    }
 
+    fn verify_context_size(
+        &self,
+        history: &D::History,
+        expected: usize,
+    ) -> Result<(), SpineContextRuntimeError<D::Error>> {
+        let actual = self.handler.context_size(history);
+        if actual != expected {
+            return Err(SpineContextRuntimeError::ContextSizeMismatch {
+                phase: ContextSizePhase::BeforePrepare,
+                expected,
+                actual,
+            });
+        }
+        Ok(())
+    }
+
+    fn commit_candidate(
+        &mut self,
+        mut parser: SpineCharParser,
+        compiler: SpineCompiler,
+        pending_boundaries: Vec<RawBoundary>,
+        mut usage_samples: Vec<TokenUsageSample>,
+        history: &mut D::History,
+    ) -> Result<SpineContextOutput, SpineContextRuntimeError<D::Error>> {
+        let actual_before = self.handler.context_size(history);
         let raw_stack = parser.stack().clone();
         let target_stack = if self.jit_enabled {
             project_jit_stack::<D::Error>(
@@ -172,10 +293,11 @@ where
             .prepare_context(history, &target_stack, &events)
             .map_err(SpineContextRuntimeError::Handler)?;
         parser.replace_stack(target_stack.clone());
+        retain_relevant_usage_samples(compiler.projection(), &mut usage_samples);
         let projection = SpineContextProjection {
             spine: compiler.projection().clone(),
             stack: target_stack,
-            usage_samples: self.projection.usage_samples.clone(),
+            usage_samples,
             trim_projection: compiler.trim_projection().cloned(),
         };
         self.parser = parser;
@@ -223,6 +345,29 @@ where
     pub fn extend_system_prompt(&self, base: &str) -> String {
         self.compiler.extend_system_prompt(base)
     }
+}
+
+fn compile_characters<E>(
+    parser: &mut SpineCharParser,
+    compiler: &mut SpineCompiler,
+    characters: impl IntoIterator<Item = SpineChar>,
+) -> Result<Vec<RawBoundary>, SpineContextRuntimeError<E>>
+where
+    E: std::error::Error,
+{
+    let mut pending_boundaries = parser.pending_boundaries();
+    for character in characters {
+        let step = parser
+            .eat(character)
+            .map_err(SpineContextRuntimeError::Parse)?;
+        pending_boundaries = step.pending_boundaries().to_vec();
+        for event in step.events().iter().cloned() {
+            compiler
+                .eat(event)
+                .map_err(SpineContextRuntimeError::Spine)?;
+        }
+    }
+    Ok(pending_boundaries)
 }
 
 fn retain_relevant_usage_samples(
@@ -275,6 +420,7 @@ pub enum SpineContextRuntimeError<E> {
         boundary: RawBoundary,
     },
     ArchivedSourceInLiveContext,
+    ArchivedTraceHasLiveTail,
 }
 
 impl<E: fmt::Display> fmt::Display for SpineContextRuntimeError<E> {
@@ -297,6 +443,9 @@ impl<E: fmt::Display> fmt::Display for SpineContextRuntimeError<E> {
             }
             Self::ArchivedSourceInLiveContext => {
                 formatter.write_str("archived compact source appeared in live context")
+            }
+            Self::ArchivedTraceHasLiveTail => {
+                formatter.write_str("archived recovery input contains a live context tail")
             }
         }
     }

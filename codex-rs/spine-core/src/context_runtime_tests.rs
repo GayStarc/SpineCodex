@@ -7,9 +7,13 @@ use crate::ContextLabel;
 use crate::Feature;
 use crate::Message;
 use crate::MessageRole;
+use crate::NodeId;
+use crate::NodeStatus;
 use crate::ParseCell;
 use crate::SpineConfig;
 use crate::SpineContextEventHandler;
+use crate::SpineRecoveryInput;
+use crate::SpineSignal;
 use crate::ToolOutcome;
 use crate::ToolRequestChar;
 use crate::ToolResponseChar;
@@ -290,4 +294,175 @@ fn label_reset_after_structural_splice_uses_original_source_index() {
             },
         ]
     );
+}
+
+#[test]
+fn compact_live_archives_the_old_root_and_compiles_the_installed_context() {
+    let mut history = TestHistory { cells: vec![0] };
+    let mut runtime =
+        SpineContextRuntime::new(config(&[Feature::Jit]), TestHandler::default()).unwrap();
+    runtime
+        .append([message(1, MessageRole::User, "before")], &mut history)
+        .unwrap();
+
+    history.cells = vec![10];
+    runtime
+        .compact_live(
+            RawBoundary(2),
+            [SpineChar::Opaque {
+                boundary: RawBoundary(2),
+            }],
+            &mut history,
+        )
+        .unwrap();
+    history.cells.push(11);
+    let output = runtime
+        .append([message(3, MessageRole::User, "after")], &mut history)
+        .unwrap();
+
+    assert_eq!(
+        output
+            .projection()
+            .spine()
+            .nodes
+            .iter()
+            .map(|node| (&node.id, node.status))
+            .collect::<Vec<_>>(),
+        vec![
+            (&NodeId::root_epoch(1), NodeStatus::Compacted),
+            (&NodeId::root_epoch(2), NodeStatus::Live),
+        ]
+    );
+    assert!(output.events().contains(&ContextEvent::Tag {
+        index: 1,
+        label: ContextLabel::UserAnchor(2),
+    }));
+}
+
+#[test]
+fn archived_recovery_matches_live_compact_projection() {
+    let mut live_history = TestHistory { cells: vec![0] };
+    let mut live =
+        SpineContextRuntime::new(config(&[Feature::Jit]), TestHandler::default()).unwrap();
+    live.append([message(1, MessageRole::User, "before")], &mut live_history)
+        .unwrap();
+    live_history.cells = vec![10];
+    live.compact_live(
+        RawBoundary(2),
+        [SpineChar::Opaque {
+            boundary: RawBoundary(2),
+        }],
+        &mut live_history,
+    )
+    .unwrap();
+    live_history.cells.push(11);
+    live.append([message(3, MessageRole::User, "after")], &mut live_history)
+        .unwrap();
+
+    let mut recovered_history = TestHistory {
+        cells: vec![20, 21],
+    };
+    let mut recovered =
+        SpineContextRuntime::new(config(&[Feature::Jit]), TestHandler::default()).unwrap();
+    recovered
+        .recover(
+            [
+                SpineRecoveryInput::Char(message(1, MessageRole::User, "before")),
+                SpineRecoveryInput::Signal(SpineSignal::Compact {
+                    boundary: RawBoundary(2),
+                }),
+            ],
+            [
+                SpineChar::Opaque {
+                    boundary: RawBoundary(2),
+                },
+                message(3, MessageRole::User, "after"),
+            ],
+            &mut recovered_history,
+        )
+        .unwrap();
+
+    assert_eq!(recovered.projection().spine(), live.projection().spine());
+    assert_eq!(recovered_history.cells.len(), 2);
+}
+
+#[test]
+fn recovery_rejects_archived_live_tail_without_committing() {
+    let mut history = TestHistory { cells: vec![0] };
+    let mut runtime =
+        SpineContextRuntime::new(config(&[Feature::Jit]), TestHandler::default()).unwrap();
+    let before = runtime.projection().clone();
+
+    let result = runtime.recover(
+        [SpineRecoveryInput::Char(message(
+            1,
+            MessageRole::User,
+            "live tail",
+        ))],
+        [message(1, MessageRole::User, "installed")],
+        &mut history,
+    );
+
+    assert!(matches!(
+        result,
+        Err(SpineContextRuntimeError::ArchivedTraceHasLiveTail)
+    ));
+    assert_eq!(runtime.projection(), &before);
+}
+
+#[test]
+fn recovery_restores_usage_after_the_archived_compact() {
+    let mut history = TestHistory { cells: vec![0] };
+    let mut runtime =
+        SpineContextRuntime::new(config(&[Feature::Jit]), TestHandler::default()).unwrap();
+
+    runtime
+        .recover(
+            [
+                SpineRecoveryInput::Signal(SpineSignal::Compact {
+                    boundary: RawBoundary(1),
+                }),
+                SpineRecoveryInput::Signal(SpineSignal::Usage(TokenUsageSample {
+                    boundary: RawBoundary(2),
+                    input_tokens: 42,
+                })),
+            ],
+            [SpineChar::Opaque {
+                boundary: RawBoundary(1),
+            }],
+            &mut history,
+        )
+        .unwrap();
+
+    assert_eq!(
+        runtime.projection().usage_samples(),
+        &[TokenUsageSample {
+            boundary: RawBoundary(2),
+            input_tokens: 42,
+        }]
+    );
+}
+
+#[test]
+fn recovery_handler_failure_preserves_runtime_state() {
+    let mut history = TestHistory { cells: vec![0] };
+    let mut runtime =
+        SpineContextRuntime::new(config(&[Feature::Jit]), TestHandler::default()).unwrap();
+    runtime
+        .append([message(1, MessageRole::User, "before")], &mut history)
+        .unwrap();
+    let before = runtime.projection().clone();
+    runtime.handler_mut().reject = true;
+
+    let result = runtime.recover(
+        std::iter::empty(),
+        [message(1, MessageRole::User, "installed")],
+        &mut history,
+    );
+
+    assert!(matches!(
+        result,
+        Err(SpineContextRuntimeError::Handler(TestError))
+    ));
+    assert_eq!(runtime.projection(), &before);
 }

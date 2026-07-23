@@ -31,6 +31,7 @@ pub use context_char::ParseCell;
 pub use context_char::ParseStack;
 pub use context_char::SpineChar;
 pub use context_char::SpineCharParser;
+pub use context_char::SpineRecoveryInput;
 pub use context_char::SpineSignal;
 pub use context_char::ToolRequestChar;
 pub use context_char::ToolResponseChar;

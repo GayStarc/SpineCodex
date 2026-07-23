@@ -35,6 +35,16 @@ pub enum SpineSignal {
     Usage(TokenUsageSample),
 }
 
+/// Historical input used only to recover state absent from the live context.
+///
+/// Live context items must be passed separately to
+/// [`SpineContextRuntime::recover`](crate::SpineContextRuntime::recover).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SpineRecoveryInput {
+    Char(SpineChar),
+    Signal(SpineSignal),
+}
+
 impl SpineChar {
     pub fn boundary(&self) -> RawBoundary {
         match self {
@@ -329,6 +339,25 @@ impl SpineCharParser {
                     .flat_map(PendingToolGroup::boundaries),
             )
             .collect()
+    }
+
+    pub(crate) fn finish_epoch(
+        &mut self,
+        boundary: RawBoundary,
+    ) -> Result<Vec<RolloutEvent>, CharParseError> {
+        if let Some(previous) = self.last_boundary
+            && boundary < previous
+        {
+            return Err(CharParseError::NonMonotonicBoundary {
+                previous,
+                next: boundary,
+            });
+        }
+        self.require_no_pending_tool_group(boundary)?;
+        let mut events = Vec::new();
+        self.flush_trailing_assistant(&mut events);
+        self.last_boundary = Some(boundary);
+        Ok(events)
     }
 }
 
