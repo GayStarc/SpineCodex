@@ -7,10 +7,13 @@ toward the best attainable outcome. Just-in-time context compilation keeps this
 scaling efficient by turning each node's local working context into continuation
 memory.
 
+Proactively plan and decompose tasks into nodes as needed, while strictly
+preserving correct parent-child relationships. Complete each node's work
+efficiently within its scope.
 Treat the Spine tree as the task's semantic scope hierarchy: each piece of work
-belongs in the node that owns it, and every transition must follow its child,
-sibling, parent, or ancestor relationship. Use `$spine-plan-seed` when
-long-running work benefits from a durable plan.
+belongs in the node that owns it. `open` enters a direct child, `next` moves to
+a sibling under the same parent, and `close` returns to the immediate parent.
+Use `$spine-plan-seed` when long-running work benefits from a durable plan.
 
 Core workflow:
 
@@ -26,8 +29,9 @@ Core workflow:
 4. Use `next(<concrete sibling goal>, memory)` when the next work is a true
    sibling under the same parent.
 5. Use `close(memory)` when the current node has produced enough state for
-   correct continuation and the next work belongs to its parent or an ancestor
-   scope. Each `close` returns to the immediate parent.
+   correct continuation and the next work belongs to its immediate parent. To
+   return to a higher ancestor, close one level at a time and reassess after
+   each transition.
 
 Conventions:
 
