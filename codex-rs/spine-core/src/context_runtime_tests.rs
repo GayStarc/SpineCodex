@@ -297,6 +297,63 @@ fn label_reset_after_structural_splice_uses_original_source_index() {
 }
 
 #[test]
+fn structurally_reinserted_cell_is_retagged_from_raw_source() {
+    let first = ParseCell::new(CellId::new(0), message(1, MessageRole::User, "first"));
+    let removed = ParseCell::new(CellId::new(1), message(2, MessageRole::User, "removed"));
+    let reinserted = ParseCell::new(CellId::new(2), message(3, MessageRole::User, "reinserted"))
+        .with_labels(vec![ContextLabel::UserAnchor(2)]);
+    let synthetic = ParseCell::new(
+        CellId::new(4),
+        SpineChar::Synthetic {
+            boundary: RawBoundary(5),
+            item: ContextItem::SyntheticNode {
+                node_id: crate::NodeId::root_epoch(1),
+                summary: "synthetic".to_string(),
+                status: crate::NodeStatus::Live,
+            },
+        },
+    );
+    let trailing = ParseCell::new(CellId::new(3), message(4, MessageRole::User, "trailing"));
+    let before = ParseStack::from_cells(vec![
+        first.clone(),
+        removed,
+        reinserted.clone(),
+        trailing.clone(),
+    ]);
+    let after = ParseStack::from_cells(vec![first, reinserted, synthetic, trailing]);
+
+    let events = context_events_between::<TestError>(&before, &after).unwrap();
+
+    assert_eq!(
+        events,
+        vec![
+            ContextEvent::Splice {
+                start: 1,
+                delete: 2,
+                insert: vec![
+                    ContextInsert::Existing {
+                        cell_id: CellId::new(2),
+                        source_index: 2,
+                    },
+                    ContextInsert::Synthetic {
+                        cell_id: CellId::new(4),
+                        item: ContextItem::SyntheticNode {
+                            node_id: crate::NodeId::root_epoch(1),
+                            summary: "synthetic".to_string(),
+                            status: crate::NodeStatus::Live,
+                        },
+                    }
+                ],
+            },
+            ContextEvent::Tag {
+                index: 1,
+                label: ContextLabel::UserAnchor(2),
+            },
+        ]
+    );
+}
+
+#[test]
 fn compact_live_archives_the_old_root_and_compiles_the_installed_context() {
     let mut history = TestHistory { cells: vec![0] };
     let mut runtime =

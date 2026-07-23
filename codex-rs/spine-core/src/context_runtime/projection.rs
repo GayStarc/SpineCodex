@@ -317,13 +317,16 @@ where
     }
 
     for (index, target) in after.cells().iter().enumerate() {
+        let preserved = index < common_prefix || index >= after_middle_end;
         let source_index = before
             .cells()
             .iter()
             .position(|source| source.id() == target.id());
-        let current_labels = source_index.map_or(&[][..], |source_index| {
-            before.cells()[source_index].labels()
-        });
+        let current_labels = source_index
+            .filter(|_| preserved)
+            .map_or(&[][..], |source_index| {
+                before.cells()[source_index].labels()
+            });
         if current_labels == target.labels() {
             continue;
         }
