@@ -2766,29 +2766,6 @@ fn resolve_terminal_resize_reflow_config(config_toml: &ConfigToml) -> TerminalRe
     }
 }
 
-fn load_spine_config(
-    path: Option<&codex_utils_absolute_path::AbsolutePathBuf>,
-) -> std::io::Result<SpineConfig> {
-    let source = match path {
-        Some(path) => std::fs::read_to_string(path).map_err(|error| {
-            std::io::Error::new(
-                error.kind(),
-                format!(
-                    "failed to read spine_config_file {}: {error}",
-                    path.display()
-                ),
-            )
-        })?,
-        None => spine_core::DEFAULT_CONFIG_TOML.to_string(),
-    };
-    SpineConfig::parse_toml(&source).map_err(|error| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!("invalid Spine SDK configuration: {error}"),
-        )
-    })
-}
-
 fn resolve_optional_prompt_text(
     configured: Option<&Option<String>>,
     default: Option<String>,
@@ -3136,21 +3113,8 @@ impl Config {
             feature_requirements,
             &mut startup_warnings,
         )?;
-        let mut spine_features = Vec::new();
-        if features.enabled(Feature::SpineJit) {
-            spine_features.push(spine_core::Feature::Jit);
-        }
-        if features.enabled(Feature::SpineTrim) {
-            spine_features.push(spine_core::Feature::Trim);
-        }
-        if features.enabled(Feature::SpineSpawn) {
-            spine_features.push(spine_core::Feature::Spawn);
-        }
-        let spine_config = load_spine_config(cfg.spine_config_file.as_ref())?
-            .with_features(spine_features)
-            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
-        let spine_tools = ToolCatalog::new(&spine_config)
-            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
+        let (spine_config, spine_tools) =
+            crate::spine::config::load(cfg.spine_config_file.as_ref(), &features)?;
         let respect_system_proxy = features.enabled(Feature::RespectSystemProxy);
         let enable_network_proxy = features.enabled(Feature::NetworkProxy);
         let configured_windows_sandbox_mode = resolve_windows_sandbox_mode(&cfg);

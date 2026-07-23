@@ -36,11 +36,15 @@ use spine_core::TrimEdit;
 use spine_core::TrimProjection;
 use spine_core::TrimRequest;
 
+pub(crate) mod config;
 pub(crate) mod host;
 pub(crate) mod memory_projection;
 pub(crate) mod observer;
 pub(crate) mod pressure;
 pub(crate) mod rollout_debug;
+pub(crate) mod session_config;
+pub(crate) mod session_observer;
+pub(crate) mod session_runtime;
 pub(crate) mod spawn;
 pub(crate) mod spawn_salvage;
 pub(crate) mod status;

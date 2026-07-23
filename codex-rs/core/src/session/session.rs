@@ -96,7 +96,7 @@ pub(crate) struct SessionConfiguration {
     pub(super) thread_name: Option<String>,
 
     // TODO(pakrym): Remove config from here
-    pub(super) original_config_do_not_use: Arc<Config>,
+    pub(crate) original_config_do_not_use: Arc<Config>,
     /// Optional service name tag for session metrics.
     pub(super) metrics_service_name: Option<String>,
     pub(super) app_server_client_name: Option<String>,
@@ -118,88 +118,9 @@ pub(crate) struct SessionConfiguration {
 }
 
 impl SessionConfiguration {
-    #[cfg(test)]
-    pub(crate) fn enable_spine_jit_for_test(&mut self) {
-        let config = Arc::make_mut(&mut self.original_config_do_not_use);
-        let _ = config.features.enable(Feature::SpineJit);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn disable_spine_jit_for_test(&mut self) {
-        let config = Arc::make_mut(&mut self.original_config_do_not_use);
-        let _ = config.features.disable(Feature::SpineJit);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn enable_spine_trim_for_test(&mut self) {
-        let config = Arc::make_mut(&mut self.original_config_do_not_use);
-        let _ = config.features.enable(Feature::SpineTrim);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn disable_spine_trim_for_test(&mut self) {
-        let config = Arc::make_mut(&mut self.original_config_do_not_use);
-        let _ = config.features.disable(Feature::SpineTrim);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn enable_spine_spawn_for_test(&mut self) {
-        let config = Arc::make_mut(&mut self.original_config_do_not_use);
-        let _ = config.features.enable(Feature::SpineSpawn);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn disable_spine_status_for_test(&mut self) {
-        let config = Arc::make_mut(&mut self.original_config_do_not_use);
-        let _ = config.features.disable(Feature::SpineStatus);
-    }
-
-    pub(crate) fn spine_jit_enabled(&self) -> bool {
-        self.original_config_do_not_use
-            .features
-            .enabled(Feature::SpineJit)
-    }
-
-    pub(crate) fn spine_trim_enabled(&self) -> bool {
-        self.original_config_do_not_use
-            .features
-            .enabled(Feature::SpineTrim)
-    }
-
-    pub(crate) fn spine_spawn_enabled(&self) -> bool {
-        self.original_config_do_not_use
-            .features
-            .enabled(Feature::SpineSpawn)
-    }
-
     pub(crate) fn base_instructions(&self) -> &str {
         &self.base_instructions
     }
-
-    pub(crate) fn spinetree_memory_projection_enabled(&self) -> bool {
-        self.original_config_do_not_use
-            .features
-            .enabled(Feature::SpinetreeMemoryProjection)
-    }
-
-    pub(crate) fn spine_sdk_config(&self) -> spine_core::SpineConfig {
-        let mut features = Vec::new();
-        if self.spine_jit_enabled() {
-            features.push(spine_core::Feature::Jit);
-        }
-        if self.spine_trim_enabled() {
-            features.push(spine_core::Feature::Trim);
-        }
-        if self.spine_spawn_enabled() {
-            features.push(spine_core::Feature::Spawn);
-        }
-        self.original_config_do_not_use
-            .spine_config
-            .clone()
-            .with_features(features)
-            .expect("validated session Spine features must remain valid")
-    }
-
     pub(super) fn cwd(&self) -> &AbsolutePathBuf {
         &self.environments.legacy_fallback_cwd
     }
@@ -644,7 +565,6 @@ impl Session {
             config
                 .effective_agent_max_threads(MultiAgentVersion::V2)
                 .unwrap_or(usize::MAX),
-            config.effective_spine_spawn_max_threads(),
         );
         let time_provider = crate::current_time::resolve_time_provider(
             config.current_time_reminder.as_ref(),
