@@ -40,7 +40,7 @@ use std::os::unix::fs::PermissionsExt;
 use tempfile::TempDir;
 
 #[tokio::test]
-async fn spine_tree_delivery_follows_durable_user_input() -> Result<()> {
+async fn spine_tree_delivery_precedes_corresponding_protocol_events() -> Result<()> {
     let server = start_mock_server().await;
     mount_sse_once(
         &server,
@@ -65,6 +65,10 @@ async fn spine_tree_delivery_follows_durable_user_input() -> Result<()> {
         .await?;
 
     wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::SpineTreeUpdate(_))
+    })
+    .await;
+    wait_for_event(&test.codex, |event| {
         matches!(
             event,
             EventMsg::RawResponseItem(raw)
@@ -76,10 +80,6 @@ async fn spine_tree_delivery_follows_durable_user_input() -> Result<()> {
                         })
                 )
         )
-    })
-    .await;
-    wait_for_event(&test.codex, |event| {
-        matches!(event, EventMsg::SpineTreeUpdate(_))
     })
     .await;
     let rollout = fs::read_to_string(test.codex.rollout_path().context("rollout path")?)?;
@@ -100,15 +100,15 @@ async fn spine_tree_delivery_follows_durable_user_input() -> Result<()> {
     });
     assert!(
         persisted,
-        "tree delivery preceded durable user input; rollout:\n{rollout}"
+        "user input should eventually be persisted; rollout:\n{rollout}"
     );
 
     wait_for_event(&test.codex, |event| {
-        matches!(event, EventMsg::TokenCount(_))
+        matches!(event, EventMsg::SpineTreeUpdate(_))
     })
     .await;
     wait_for_event(&test.codex, |event| {
-        matches!(event, EventMsg::SpineTreeUpdate(_))
+        matches!(event, EventMsg::TokenCount(_))
     })
     .await;
     let rollout = fs::read_to_string(test.codex.rollout_path().context("rollout path")?)?;
@@ -118,7 +118,7 @@ async fn spine_tree_delivery_follows_durable_user_input() -> Result<()> {
     });
     assert!(
         token_count_persisted,
-        "tree delivery preceded durable token count; rollout:\n{rollout}"
+        "token count should eventually be persisted; rollout:\n{rollout}"
     );
 
     wait_for_event(&test.codex, |event| {

@@ -2977,9 +2977,9 @@ impl Session {
             }
             state.take_spine_observer_effect()
         };
+        crate::spine::session_observer::dispatch(self, &turn_context.sub_id, observer_effect).await;
         self.persist_rollout_response_items(items).await;
         self.send_raw_response_items(turn_context, items).await;
-        crate::spine::session_observer::dispatch(self, &turn_context.sub_id, observer_effect).await;
     }
 
     pub(crate) async fn record_step_world_state_if_changed(
@@ -3085,6 +3085,7 @@ impl Session {
             );
             state.take_spine_observer_effect()
         };
+        crate::spine::session_observer::dispatch(self, &turn_context.sub_id, observer_effect).await;
         self.persist_rollout_items(&[
             RolloutItem::InterAgentCommunicationMetadata {
                 trigger_turn: communication.trigger_turn,
@@ -3093,7 +3094,6 @@ impl Session {
         ])
         .await;
         self.send_raw_response_items(turn_context, items).await;
-        crate::spine::session_observer::dispatch(self, &turn_context.sub_id, observer_effect).await;
     }
 
     async fn maybe_warn_on_server_model_mismatch(
@@ -3273,6 +3273,7 @@ impl Session {
         world_state_item: Option<WorldStateItem>,
         observer_effect: Option<crate::spine::observer::CodexSpineObserverEffect>,
     ) {
+        crate::spine::session_observer::dispatch(self, &turn_context.sub_id, observer_effect).await;
         // Persist ancillary snapshots after the replacement history that established them.
         if let Some(world_state_item) = world_state_item {
             self.persist_rollout_items(&[RolloutItem::WorldState(world_state_item)])
@@ -3282,7 +3283,6 @@ impl Session {
             self.persist_rollout_items(&[RolloutItem::TurnContext(turn_context_item)])
                 .await;
         }
-        crate::spine::session_observer::dispatch(self, &turn_context.sub_id, observer_effect).await;
         {
             let mut state = self.state.lock().await;
             state.queue_pending_session_start_source(codex_hooks::SessionStartSource::Compact);
@@ -4099,8 +4099,8 @@ impl Session {
             state.observe_token_count(token_count);
             state.take_spine_observer_effect()
         };
-        self.send_event(turn_context, event).await;
         crate::spine::session_observer::dispatch(self, &turn_context.sub_id, observer_effect).await;
+        self.send_event(turn_context, event).await;
     }
 
     pub(crate) async fn set_total_tokens_full(&self, turn_context: &TurnContext) {

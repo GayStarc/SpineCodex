@@ -2185,12 +2185,12 @@ async fn spine_observer_failure_preserves_context_and_tree_delivery_order() -> a
         .record_conversation_items(turn_context.as_ref(), std::slice::from_ref(&message))
         .await;
 
-    let raw_item = rx.recv().await.expect("raw response item event");
     let tree_update = rx.recv().await.expect("Spine tree update event");
-    assert!(matches!(raw_item.msg, EventMsg::RawResponseItem(_)));
+    let raw_item = rx.recv().await.expect("raw response item event");
     assert!(matches!(tree_update.msg, EventMsg::SpineTreeUpdate(_)));
-    assert_eq!(raw_item.id, turn_context.sub_id);
+    assert!(matches!(raw_item.msg, EventMsg::RawResponseItem(_)));
     assert_eq!(tree_update.id, turn_context.sub_id);
+    assert_eq!(raw_item.id, turn_context.sub_id);
     assert_eq!(
         session.state.lock().await.history.raw_items(),
         &[expected_seed.clone(), expected_message.clone()]
@@ -2220,22 +2220,22 @@ async fn spine_observer_delivery_follows_each_session_transition() {
         .record_conversation_items(turn_context.as_ref(), std::slice::from_ref(&message))
         .await;
     assert!(matches!(
-        rx.recv().await.expect("raw response item event").msg,
-        EventMsg::RawResponseItem(_)
-    ));
-    assert!(matches!(
         rx.recv().await.expect("conversation tree event").msg,
         EventMsg::SpineTreeUpdate(_)
+    ));
+    assert!(matches!(
+        rx.recv().await.expect("raw response item event").msg,
+        EventMsg::RawResponseItem(_)
     ));
 
     session.send_token_count_event(turn_context.as_ref()).await;
     assert!(matches!(
-        rx.recv().await.expect("token count event").msg,
-        EventMsg::TokenCount(_)
-    ));
-    assert!(matches!(
         rx.recv().await.expect("token tree event").msg,
         EventMsg::SpineTreeUpdate(_)
+    ));
+    assert!(matches!(
+        rx.recv().await.expect("token count event").msg,
+        EventMsg::TokenCount(_)
     ));
 
     let communication = InterAgentCommunication::new(
@@ -2249,12 +2249,12 @@ async fn spine_observer_delivery_follows_each_session_transition() {
         .record_inter_agent_communication(turn_context.as_ref(), communication)
         .await;
     assert!(matches!(
-        rx.recv().await.expect("inter-agent item event").msg,
-        EventMsg::RawResponseItem(_)
-    ));
-    assert!(matches!(
         rx.recv().await.expect("inter-agent tree event").msg,
         EventMsg::SpineTreeUpdate(_)
+    ));
+    assert!(matches!(
+        rx.recv().await.expect("inter-agent item event").msg,
+        EventMsg::RawResponseItem(_)
     ));
 
     let compacted_history = vec![assistant_message("compacted context")];
@@ -10394,11 +10394,10 @@ async fn turn_aborted_flushes_terminal_event_after_delivery() {
     abort_task.await.expect("abort task should finish");
     // Expected flushes:
     // 1. Task-runner flush after the task body observes cancellation.
-    // 2. Spine observer flush before publishing the marker's derived tree update.
-    // 3. Interrupted-marker flush before TurnAborted so abort observers can reread it.
-    // 4. Terminal-event flush after TurnAborted is appended.
-    let calls = wait_for_flush_count(&store, /*expected_flushes*/ 4).await;
-    assert_eq!(4, calls.flush_thread);
+    // 2. Interrupted-marker flush before TurnAborted so abort observers can reread it.
+    // 3. Terminal-event flush after TurnAborted is appended.
+    let calls = wait_for_flush_count(&store, /*expected_flushes*/ 3).await;
+    assert_eq!(3, calls.flush_thread);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

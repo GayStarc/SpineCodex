@@ -15,12 +15,6 @@ pub(crate) async fn dispatch(
     let Some(effect) = effect else {
         return;
     };
-    if let Some(live_thread) = session.live_thread()
-        && let Err(err) = live_thread.flush().await
-    {
-        warn!("failed to flush rollout before Spine observer delivery: {err:#}");
-        return;
-    }
     if let Some(snapshot) = effect.tree_update {
         session
             .deliver_event_raw(Event {
