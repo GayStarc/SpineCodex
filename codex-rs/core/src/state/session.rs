@@ -23,22 +23,13 @@ use crate::session::PreviousTurnSettings;
 use crate::session::session::SessionConfiguration;
 use crate::session::time_reminder::CurrentTimeReminderState;
 use crate::session_startup_prewarm::SessionStartupPrewarmHandle;
+use crate::spine::session_runtime::SessionSpineRuntime;
 use codex_protocol::protocol::RateLimitSnapshot;
 use codex_protocol::protocol::TokenCountEvent;
 use codex_protocol::protocol::TokenUsage;
 use codex_protocol::protocol::TokenUsageInfo;
 use codex_protocol::protocol::TurnContextItem;
 use codex_utils_output_truncation::TruncationPolicy;
-use spine_core::SpineRuntime;
-
-use crate::spine::host::CodexSpineEventHandlers;
-use crate::spine::host::CodexSpineHost;
-use crate::spine::host::CodexSpineInput;
-
-struct SessionSpineRuntime {
-    runtime: SpineRuntime<CodexSpineHost, CodexSpineEventHandlers>,
-    next_ordinal: usize,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ProjectedUsageBasis {
@@ -93,25 +84,7 @@ impl SessionState {
         auto_compact_window_ids: AutoCompactWindowIds,
     ) -> Self {
         let history = ContextManager::new();
-        let spine_enabled =
-            session_configuration.spine_jit_enabled() || session_configuration.spine_trim_enabled();
-        let spine_runtime = spine_enabled.then(|| {
-            let host = CodexSpineHost {
-                jit_enabled: session_configuration.spine_jit_enabled(),
-                spawn_enabled: session_configuration.spine_spawn_enabled(),
-            };
-            let handlers = CodexSpineEventHandlers::new(
-                host,
-                session_configuration.spinetree_memory_projection_enabled(),
-            );
-            let runtime =
-                SpineRuntime::new(session_configuration.spine_sdk_config(), host, handlers)
-                    .expect("validated session Spine configuration must initialize");
-            SessionSpineRuntime {
-                runtime,
-                next_ordinal: 0,
-            }
-        });
+        let spine_runtime = SessionSpineRuntime::new(&session_configuration);
         Self {
             session_configuration,
             history,
@@ -156,20 +129,10 @@ impl SessionState {
         rollout_items: &[RolloutItem],
     ) {
         self.replace_history(items, reference_context_item);
-        if self.spine_runtime.is_none() {
-            return;
-        }
-
-        let (inputs, next_ordinal) =
-            crate::spine::host::replay_inputs(rollout_items, &self.history);
         let Some(spine) = &mut self.spine_runtime else {
             return;
         };
-        spine
-            .runtime
-            .replay(inputs.iter(), &mut self.history)
-            .expect("native rollout history must replay deterministically");
-        spine.next_ordinal = next_ordinal;
+        spine.replay(rollout_items, &mut self.history);
     }
 
     pub(crate) fn replace_history(
@@ -258,95 +221,46 @@ impl SessionState {
             return false;
         }
         if let Some(spine) = &mut self.spine_runtime {
-            spine
-                .runtime
-                .handlers_mut()
-                .replace_last_turn_images(placeholder, self.history.history_version());
+            spine.replace_last_turn_images(placeholder, self.history.history_version());
         }
         true
     }
 
     #[cfg(test)]
     fn spine_tree_update(&self) -> Option<codex_protocol::protocol::SpineTreeUpdateEvent> {
-        self.session_configuration
-            .spine_jit_enabled()
-            .then_some(self.spine_runtime.as_ref())
-            .flatten()
-            .map(|spine| crate::spine::observer::tree_update(spine.runtime.runtime_projection()))
+        self.spine_runtime.as_ref()?.tree_update()
     }
 
     pub(crate) fn spine_status_prompt_overlay(
         &self,
         auto_compact_token_limit: Option<i64>,
     ) -> Option<ResponseItem> {
-        if !self.session_configuration.spine_status_enabled() {
-            return None;
-        }
         let context_left_tokens = auto_compact_token_limit.map(|limit| {
             limit
                 .saturating_sub(self.get_total_token_usage(self.server_reasoning_included()))
                 .max(0)
         });
         let spine = self.spine_runtime.as_ref()?;
-        let projection = spine.runtime.runtime_projection();
-        crate::spine::status::prompt_overlay(
-            projection.spine(),
-            projection.usage_samples(),
-            context_left_tokens,
-        )
+        spine.status_prompt_overlay(context_left_tokens)
     }
 
     pub(crate) fn take_spine_observer_effect(
         &mut self,
     ) -> Option<crate::spine::observer::CodexSpineObserverEffect> {
-        self.spine_runtime
-            .as_mut()?
-            .runtime
-            .handlers_mut()
-            .take_observer_effect()
+        self.spine_runtime.as_mut()?.take_observer_effect()
     }
 
     pub(crate) fn append_spine_inputs(&mut self, items: &[RolloutItem]) {
-        let Some(spine) = &mut self.spine_runtime else {
-            return;
-        };
-        for item in items {
-            let input = CodexSpineInput {
-                ordinal: spine.next_ordinal,
-                item: item.clone(),
-            };
-            spine
-                .runtime
-                .eat(&input, &mut self.history)
-                .expect("native rollout append must produce a valid Spine projection");
-            if crate::spine::is_spine_source_item(item) {
-                spine.next_ordinal = spine.next_ordinal.saturating_add(1);
-            }
+        if let Some(spine) = &mut self.spine_runtime {
+            spine.append(items, &mut self.history);
         }
     }
 
     pub(crate) fn validate_spine_control(&self, tool: spine_core::SpineTool) -> Result<(), String> {
-        if self.spine_runtime.is_none() {
-            return Err("Spine is not enabled for this session".to_string());
-        }
-        if matches!(
-            tool,
-            spine_core::SpineTool::Close | spine_core::SpineTool::Next
-        ) {
-            let Some(runtime) = self.spine_runtime.as_ref() else {
-                return Err("Spine is not enabled for this session".to_string());
-            };
-            let projection = runtime.runtime.projection();
-            let cursor = projection
-                .nodes
-                .iter()
-                .find(|node| node.id == projection.cursor)
-                .ok_or_else(|| "Spine cursor is missing from the derived tree".to_string())?;
-            if cursor.kind == spine_core::NodeKind::RootEpoch {
-                return Err("no open Spine node is available to close".to_string());
-            }
-        }
-        Ok(())
+        self.spine_runtime
+            .as_ref()
+            .ok_or_else(|| "Spine is not enabled for this session".to_string())?
+            .validate_control(tool)
     }
 
     pub(crate) fn validate_spine_trim(
@@ -354,21 +268,11 @@ impl SessionState {
         current_call_id: &str,
         request: &spine_core::TrimRequest,
     ) -> Result<(), String> {
-        if !self.session_configuration.spine_trim_enabled() {
-            return Err("Spine trim is not enabled for this session".to_string());
-        }
         let spine = self
             .spine_runtime
             .as_ref()
             .ok_or_else(|| "Spine trim runtime is unavailable".to_string())?;
-        let frontier = spine
-            .runtime
-            .frontier()
-            .ok_or_else(|| "Spine trim frontier is unavailable".to_string())?;
-        spine
-            .runtime
-            .host()
-            .validate_trim_request(frontier, current_call_id, request)
+        spine.validate_trim(current_call_id, request)
     }
 
     pub(crate) fn replace_last_turn_images(&mut self, placeholder: &str) -> bool {
