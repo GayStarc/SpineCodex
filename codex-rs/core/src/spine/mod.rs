@@ -1,3 +1,8 @@
+use crate::context::ContextualUserFragment;
+use crate::context::SpineMemoryFragment;
+use crate::context::SpineNodeFragment;
+use crate::context::SpineSpawnEvidenceFragment;
+use crate::context::SpineUserAnchor;
 use crate::context_manager::ContextManager;
 use crate::context_manager::is_user_turn_boundary;
 use crate::event_mapping::is_contextual_dev_message_content;
@@ -14,6 +19,7 @@ use spine_core::MemorySlot;
 use spine_core::Message;
 use spine_core::MessageRole;
 use spine_core::NativeItemRef;
+#[cfg(test)]
 use spine_core::NodeStatus;
 use spine_core::RawBoundary;
 use spine_core::RolloutEvent;
@@ -32,6 +38,7 @@ use spine_core::TrimRequest;
 
 pub(crate) mod host;
 pub(crate) mod memory_projection;
+pub(crate) mod observer;
 pub(crate) mod pressure;
 pub(crate) mod rollout_debug;
 pub(crate) mod spawn;
@@ -121,7 +128,7 @@ fn projection_from_effective_rollout(
 ) -> CodexSpineProjection {
     let events = lex_rollout(effective, spawn_enabled);
     let trim = trim_enabled.then(|| TrimProjection::derive(&events));
-    let spine = derive_spine_projection(jit_enabled.then_some(events.as_slice()).unwrap_or(&[]));
+    let spine = derive_spine_projection(if jit_enabled { events.as_slice() } else { &[] });
     let context = if jit_enabled {
         materialize_context(
             &spine.visible_context,
@@ -656,7 +663,7 @@ fn materialize_context(
                         )
                     })?;
                 if let Some(anchor) = user_anchor {
-                    tag_user_message(&mut item, *anchor);
+                    SpineUserAnchor::new(*anchor).apply(&mut item);
                 }
                 materialized.push(item);
             }
@@ -679,14 +686,9 @@ fn materialize_context(
                 node_id,
                 summary,
                 status,
-            } => materialized.push(text_message(
-                MessageRole::Developer,
-                format!(
-                    "<spine_node id=\"{node_id}\" summary=\"{}\" status=\"{}\" />",
-                    escape_attribute(summary),
-                    status_name(*status),
-                ),
-            )),
+            } => materialized.push(ContextualUserFragment::into(SpineNodeFragment::new(
+                node_id, summary, *status,
+            )?)),
             ContextItem::MemorySlot(slot) => match slot {
                 MemorySlot::User {
                     message, anchor, ..
@@ -705,15 +707,14 @@ fn materialize_context(
                             message.boundary.0
                         ));
                     }
-                    tag_user_message(&mut item, *anchor);
+                    SpineUserAnchor::new(*anchor).apply(&mut item);
                     materialized.push(item);
                 }
                 MemorySlot::Summary {
                     owner_node, body, ..
-                } => materialized.push(text_message(
-                    MessageRole::ContextualUser,
-                    format!("<spine_memory node_id=\"{owner_node}\">\n{body}\n</spine_memory>"),
-                )),
+                } => materialized.push(ContextualUserFragment::into(SpineMemoryFragment::new(
+                    owner_node, body,
+                )?)),
                 MemorySlot::SpawnEvidence {
                     owner_node,
                     task,
@@ -721,15 +722,14 @@ fn materialize_context(
                     diagnostic,
                     execution_ref,
                     ..
-                } => materialized.push(text_message(
-                    MessageRole::ContextualUser,
-                    render_spawn_evidence(
+                } => materialized.push(ContextualUserFragment::into(
+                    SpineSpawnEvidenceFragment::new(
                         owner_node,
                         task,
                         *outcome,
                         diagnostic.as_deref(),
                         execution_ref.as_deref(),
-                    ),
+                    )?,
                 )),
             },
             ContextItem::Native { source: native_ref } => match native_ref {
@@ -766,33 +766,31 @@ fn project_toolcall_item(
     trim: Option<&TrimProjection>,
     spawn_enabled: bool,
 ) -> ResponseItem {
-    if spawn_enabled && group.is_complete() {
-        if let ResponseItem::FunctionCallOutput {
+    if spawn_enabled
+        && group.is_complete()
+        && let ResponseItem::FunctionCallOutput {
             call_id, output, ..
         } = &mut item
-        {
-            if let Some(call) = group
-                .calls
-                .iter()
-                .find(|call| call.call_id == *call_id && call.name == "spine.spawn")
-            {
-                let conflicting = group.calls.iter().any(|call| {
-                    matches!(
-                        call.name.as_str(),
-                        "spine.open" | "spine.close" | "spine.next"
-                    )
-                });
-                let status = if !conflicting && call.outcome == Some(ToolOutcome::Succeeded) {
-                    "success"
-                } else {
-                    "failure"
-                };
-                output.body =
-                    FunctionCallOutputBody::Text(serde_json::json!({"status": status}).to_string());
-                output.success = Some(status == "success");
-                return item;
-            }
-        }
+        && let Some(call) = group
+            .calls
+            .iter()
+            .find(|call| call.call_id == *call_id && call.name == "spine.spawn")
+    {
+        let conflicting = group.calls.iter().any(|call| {
+            matches!(
+                call.name.as_str(),
+                "spine.open" | "spine.close" | "spine.next"
+            )
+        });
+        let status = if !conflicting && call.outcome == Some(ToolOutcome::Succeeded) {
+            "success"
+        } else {
+            "failure"
+        };
+        output.body =
+            FunctionCallOutputBody::Text(serde_json::json!({"status": status}).to_string());
+        output.success = Some(status == "success");
+        return item;
     }
     project_trim_item(item, raw_ordinal, trim)
 }
@@ -836,19 +834,16 @@ fn materialize_trim_only_context(
         }
     }
     if context.is_empty() && !effective.is_empty() {
-        context.extend(
-            effective
-                .iter()
-                .filter_map(|(_, item)| match item {
-                    RolloutItem::ResponseItem(item) => Some(
-                        host_history
-                            .map(|history| history.canonical_projected_item(item))
-                            .unwrap_or_else(|| item.clone()),
-                    ),
-                    _ => None,
-                })
-                .collect::<Vec<_>>(),
-        );
+        context.extend(effective.iter().filter_map(|(_, item)| {
+            match item {
+                RolloutItem::ResponseItem(item) => Some(
+                    host_history
+                        .map(|history| history.canonical_projected_item(item))
+                        .unwrap_or_else(|| item.clone()),
+                ),
+                _ => None,
+            }
+        }));
     }
     Ok(context)
 }
@@ -929,24 +924,6 @@ fn compact_replacement_at(
         .cloned()
 }
 
-fn tag_user_message(item: &mut ResponseItem, anchor: u64) {
-    let ResponseItem::Message { role, content, .. } = item else {
-        return;
-    };
-    if role != "user" {
-        return;
-    }
-    let prefix = format!("[U{anchor}]\n");
-    if let Some(ContentItem::InputText { text }) = content
-        .iter_mut()
-        .find(|item| matches!(item, ContentItem::InputText { .. }))
-    {
-        text.insert_str(0, &prefix);
-    } else {
-        content.insert(0, ContentItem::InputText { text: prefix });
-    }
-}
-
 fn text_message(role: MessageRole, text: String) -> ResponseItem {
     ResponseItem::Message {
         id: None,
@@ -962,52 +939,6 @@ fn text_message(role: MessageRole, text: String) -> ResponseItem {
         phase: None,
         internal_chat_message_metadata_passthrough: None,
     }
-}
-
-fn render_spawn_evidence(
-    owner_node: &spine_core::NodeId,
-    task: &spine_core::SpawnTask,
-    outcome: spine_core::SpawnOutcome,
-    diagnostic: Option<&str>,
-    execution_ref: Option<&str>,
-) -> String {
-    format!(
-        "<spine_spawn_evidence node_id=\"{owner_node}\">\n{}\n</spine_spawn_evidence>",
-        render_spawn_evidence_body(task, outcome, diagnostic, execution_ref)
-    )
-}
-
-fn render_spawn_evidence_body(
-    task: &spine_core::SpawnTask,
-    outcome: spine_core::SpawnOutcome,
-    diagnostic: Option<&str>,
-    execution_ref: Option<&str>,
-) -> String {
-    serde_json::to_string_pretty(&serde_json::json!({
-        "summary": task.summary,
-        "prompt": task.prompt,
-        "outcome": outcome,
-        "diagnostic": diagnostic,
-        "execution_ref": execution_ref,
-    }))
-    .expect("spawn evidence fields serialize")
-}
-
-fn status_name(status: NodeStatus) -> &'static str {
-    match status {
-        NodeStatus::Live => "live",
-        NodeStatus::Opened => "opened",
-        NodeStatus::Closed => "closed",
-        NodeStatus::Compacted => "compacted",
-    }
-}
-
-fn escape_attribute(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
 }
 
 #[cfg(test)]

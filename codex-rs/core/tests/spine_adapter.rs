@@ -15,6 +15,12 @@ use anyhow::Context;
 use anyhow::Result;
 use codex_features::Feature;
 use codex_login::CodexAuth;
+use codex_protocol::models::ContentItem;
+use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::Op;
+use codex_protocol::protocol::RolloutItem;
+use codex_protocol::protocol::RolloutLine;
+use codex_protocol::user_input::UserInput;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_completed_with_tokens;
 use core_test_support::responses::ev_function_call;
@@ -25,12 +31,102 @@ use core_test_support::responses::mount_sse_sequence;
 use core_test_support::responses::sse;
 use core_test_support::responses::start_mock_server;
 use core_test_support::test_codex::spine_test_codex;
+use core_test_support::wait_for_event;
 use serde_json::Value;
 use serde_json::json;
 use std::fs;
 #[cfg(not(target_os = "windows"))]
 use std::os::unix::fs::PermissionsExt;
 use tempfile::TempDir;
+
+#[tokio::test]
+async fn spine_tree_delivery_follows_durable_user_input() -> Result<()> {
+    let server = start_mock_server().await;
+    mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("spine-durable-order"),
+            ev_completed_with_tokens("spine-durable-order", 100),
+        ]),
+    )
+    .await;
+    let test = spine_test_codex().build(&server).await?;
+    test.codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "durable before tree".to_string(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await?;
+
+    wait_for_event(&test.codex, |event| {
+        matches!(
+            event,
+            EventMsg::RawResponseItem(raw)
+                if matches!(
+                    &raw.item,
+                    codex_protocol::models::ResponseItem::Message { content, .. }
+                        if content.iter().any(|item| {
+                            matches!(item, ContentItem::InputText { text } if text == "durable before tree")
+                        })
+                )
+        )
+    })
+    .await;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::SpineTreeUpdate(_))
+    })
+    .await;
+    let rollout = fs::read_to_string(test.codex.rollout_path().context("rollout path")?)?;
+    let persisted = rollout.lines().any(|line| {
+        let Ok(line) = serde_json::from_str::<RolloutLine>(line) else {
+            return false;
+        };
+        matches!(
+            line.item,
+            RolloutItem::ResponseItem(codex_protocol::models::ResponseItem::Message {
+                role,
+                content,
+                ..
+            }) if role == "user" && content.iter().any(|item| {
+                matches!(item, ContentItem::InputText { text } if text == "durable before tree")
+            })
+        )
+    });
+    assert!(
+        persisted,
+        "tree delivery preceded durable user input; rollout:\n{rollout}"
+    );
+
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TokenCount(_))
+    })
+    .await;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::SpineTreeUpdate(_))
+    })
+    .await;
+    let rollout = fs::read_to_string(test.codex.rollout_path().context("rollout path")?)?;
+    let token_count_persisted = rollout.lines().any(|line| {
+        serde_json::from_str::<RolloutLine>(line)
+            .is_ok_and(|line| matches!(line.item, RolloutItem::EventMsg(EventMsg::TokenCount(_))))
+    });
+    assert!(
+        token_count_persisted,
+        "tree delivery preceded durable token count; rollout:\n{rollout}"
+    );
+
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    Ok(())
+}
 
 #[tokio::test]
 async fn spine_adapter_profile_projects_anchored_input_and_status() -> Result<()> {
@@ -294,7 +390,7 @@ async fn spine_adapter_reprojects_trimmed_tool_output_for_next_request() -> Resu
 
 #[cfg(not(target_os = "windows"))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn spine_adapter_legacy_notify_uses_native_user_evidence() -> Result<()> {
+async fn spine_adapter_legacy_notify_uses_sampling_user_input() -> Result<()> {
     let server = start_mock_server().await;
     let response_mock = mount_sse_once(
         &server,
@@ -330,8 +426,11 @@ printf '%s\n' "${@: -1}" >> "${payload_path}""#,
     .await
     .context("timed out waiting for legacy notify payload")?;
     let payload: Value = serde_json::from_str(&fs::read_to_string(notify_file)?)?;
-    assert_eq!(payload["input-messages"], json!(["native notify probe"]));
-    assert_eq!(response_mock.requests().len(), 1);
+    let request_input = response_mock.single_request().input();
+    let projected_user_input =
+        message_text(&request_input, "user").context("missing projected user input")?;
+    assert_anchored_user_text(projected_user_input, "native notify probe")?;
+    assert_eq!(payload["input-messages"], json!([projected_user_input]));
 
     Ok(())
 }

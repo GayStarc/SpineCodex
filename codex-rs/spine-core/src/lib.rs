@@ -2,6 +2,7 @@ mod artifact;
 mod bootstrap;
 mod compiler;
 mod config;
+mod event;
 mod host;
 mod model;
 mod prompt;
@@ -10,12 +11,22 @@ mod status;
 mod tools;
 
 pub use bootstrap::InitError;
+pub use compiler::MAX_RAW_EVENT_BYTES;
+pub use compiler::MAX_SYNTHETIC_CONTEXT_BYTES;
+pub use compiler::MAX_TREE_NODES;
+pub use compiler::MAX_VISIBLE_CONTEXT_ITEMS;
 pub use compiler::SpineCompiler;
 pub use compiler::SpineError;
 pub use config::ConfigError;
 pub use config::DEFAULT_CONFIG_TOML;
 pub use config::Feature;
 pub use config::SpineConfig;
+pub use event::ContextTransition;
+pub use event::HandlerCardinality;
+pub use event::SpineEventHandlers;
+pub use event::SpineObserverCause;
+pub use event::SpineObserverEvent;
+pub use event::SpineTransitionEvent;
 pub use host::HostStep;
 pub use host::RuntimeError;
 pub use host::RuntimeProjection;
@@ -23,10 +34,11 @@ pub use host::SpineHost;
 pub use host::SpineOutput;
 pub use host::SpineRuntime;
 
-pub use artifact::{
-    MemoryArtifact, TRIM_SNIPPED_BODY, UserMessageArtifact, closed_memory_artifacts,
-    render_memory_artifact,
-};
+pub use artifact::MemoryArtifact;
+pub use artifact::TRIM_SNIPPED_BODY;
+pub use artifact::UserMessageArtifact;
+pub use artifact::closed_memory_artifacts;
+pub use artifact::render_memory_artifact;
 pub use model::ContextEdit;
 pub use model::ContextItem;
 pub use model::MemorySlot;
@@ -57,10 +69,20 @@ pub use model::TrimProjection;
 pub use model::TrimRequest;
 pub use model::TrimSlice;
 pub use reducer::TOOL_RESPONSE_TRIM_THRESHOLD_BYTES;
-pub use status::{
-    ContextPressure, ContextPressureProblem, StatusSignal, TokenUsageSample, TreeNode,
-    TreeSnapshot, context_pressures, status_signal, tree_snapshot,
-};
+pub use status::ContextPressure;
+pub use status::ContextPressureProblem;
+pub use status::StatusSignal;
+pub use status::TokenUsageSample;
+pub use status::TreeNode;
+pub use status::TreeSnapshot;
+pub use status::context_pressures;
+pub use status::status_signal;
+pub use status::tree_snapshot;
+pub use tools::MAX_MEMORY_BYTES;
+pub use tools::MAX_SPAWN_BATCH_BYTES;
+pub use tools::MAX_SPAWN_PROMPT_BYTES;
+pub use tools::MAX_SPAWN_TASKS;
+pub use tools::MAX_SUMMARY_BYTES;
 pub use tools::SPINE_NAMESPACE;
 pub use tools::SPINE_NAMESPACE_DESCRIPTION;
 pub use tools::SpineTool;

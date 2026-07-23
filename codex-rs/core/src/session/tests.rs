@@ -2134,6 +2134,174 @@ async fn spinetree_memory_projection_rebuilds_user_messages_after_rollout_recons
 }
 
 #[tokio::test]
+async fn spine_observer_failure_preserves_context_and_tree_delivery_order() -> anyhow::Result<()> {
+    let workspace = tempfile::tempdir()?;
+    let workspace_path = workspace.path().to_path_buf();
+    let (mut session, turn_context, rx) = make_session_and_context_with_auth_and_config_and_rx(
+        CodexAuth::from_api_key("Test API Key"),
+        Vec::new(),
+        move |config| {
+            config.cwd = workspace_path
+                .try_into()
+                .expect("workspace path should be absolute");
+            let _ = config.features.enable(Feature::SpineJit);
+            let _ = config.features.enable(Feature::SpinetreeMemoryProjection);
+        },
+    )
+    .await;
+    Arc::get_mut(&mut session)
+        .expect("test session should be uniquely owned")
+        .spinetree_memory_projection =
+        crate::spine::memory_projection::SpinetreeMemoryProjection::from_config(
+            workspace.path(),
+            "observer-failure-test",
+            true,
+            true,
+        )?;
+    let seed = user_message("seed projection directory");
+    session
+        .record_conversation_items(turn_context.as_ref(), std::slice::from_ref(&seed))
+        .await;
+    let _ = rx.recv().await.expect("seed raw response item event");
+    let _ = rx.recv().await.expect("seed Spine tree update event");
+    let projection_dir = session
+        .spinetree_memory_projection
+        .as_ref()
+        .expect("memory projection should be enabled")
+        .root_dir()
+        .to_path_buf();
+    let projection_root = projection_dir
+        .parent()
+        .expect("projection directory should have a parent");
+    std::fs::rename(&projection_dir, projection_root.join("moved"))?;
+    std::fs::write(&projection_dir, b"block projection directory recreation")?;
+    let message = user_message("observer failure must not roll back history");
+    let mut expected_seed = seed.clone();
+    expected_seed.set_turn_id_if_missing(&turn_context.sub_id);
+    let mut expected_message = message.clone();
+    expected_message.set_turn_id_if_missing(&turn_context.sub_id);
+
+    session
+        .record_conversation_items(turn_context.as_ref(), std::slice::from_ref(&message))
+        .await;
+
+    let raw_item = rx.recv().await.expect("raw response item event");
+    let tree_update = rx.recv().await.expect("Spine tree update event");
+    assert!(matches!(raw_item.msg, EventMsg::RawResponseItem(_)));
+    assert!(matches!(tree_update.msg, EventMsg::SpineTreeUpdate(_)));
+    assert_eq!(raw_item.id, turn_context.sub_id);
+    assert_eq!(tree_update.id, turn_context.sub_id);
+    assert_eq!(
+        session.state.lock().await.history.raw_items(),
+        &[expected_seed.clone(), expected_message.clone()]
+    );
+    let projected = session.clone_history().await;
+    let mut projected_seed = user_message("[U1]\nseed projection directory");
+    projected_seed.set_turn_id_if_missing(&turn_context.sub_id);
+    let mut projected_message = user_message("[U2]\nobserver failure must not roll back history");
+    projected_message.set_turn_id_if_missing(&turn_context.sub_id);
+    assert_eq!(projected.raw_items(), &[projected_seed, projected_message]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn spine_observer_delivery_follows_each_session_transition() {
+    let (session, turn_context, rx) = make_session_and_context_with_auth_and_config_and_rx(
+        CodexAuth::from_api_key("Test API Key"),
+        Vec::new(),
+        |config| {
+            let _ = config.features.enable(Feature::SpineJit);
+        },
+    )
+    .await;
+
+    let message = user_message("conversation transition");
+    session
+        .record_conversation_items(turn_context.as_ref(), std::slice::from_ref(&message))
+        .await;
+    assert!(matches!(
+        rx.recv().await.expect("raw response item event").msg,
+        EventMsg::RawResponseItem(_)
+    ));
+    assert!(matches!(
+        rx.recv().await.expect("conversation tree event").msg,
+        EventMsg::SpineTreeUpdate(_)
+    ));
+
+    session.send_token_count_event(turn_context.as_ref()).await;
+    assert!(matches!(
+        rx.recv().await.expect("token count event").msg,
+        EventMsg::TokenCount(_)
+    ));
+    assert!(matches!(
+        rx.recv().await.expect("token tree event").msg,
+        EventMsg::SpineTreeUpdate(_)
+    ));
+
+    let communication = InterAgentCommunication::new(
+        AgentPath::root().join("worker").expect("worker path"),
+        AgentPath::root(),
+        Vec::new(),
+        "child done".to_string(),
+        /*trigger_turn*/ false,
+    );
+    session
+        .record_inter_agent_communication(turn_context.as_ref(), communication)
+        .await;
+    assert!(matches!(
+        rx.recv().await.expect("inter-agent item event").msg,
+        EventMsg::RawResponseItem(_)
+    ));
+    assert!(matches!(
+        rx.recv().await.expect("inter-agent tree event").msg,
+        EventMsg::SpineTreeUpdate(_)
+    ));
+
+    let compacted_history = vec![assistant_message("compacted context")];
+    session
+        .replace_compacted_history(
+            turn_context.as_ref(),
+            compacted_history.clone(),
+            /*reference_context_item*/ None,
+            /*world_state_baseline*/ None,
+            CompactedItem {
+                message: "compacted context".to_string(),
+                replacement_history: None,
+                window_number: None,
+                first_window_id: None,
+                previous_window_id: None,
+                window_id: None,
+            },
+        )
+        .await;
+    assert_eq!(
+        session.state.lock().await.history.raw_items(),
+        compacted_history
+    );
+    assert!(matches!(
+        rx.recv().await.expect("compact tree event").msg,
+        EventMsg::SpineTreeUpdate(_)
+    ));
+
+    let resumed_message = user_message("reconstructed context");
+    session
+        .apply_rollout_reconstruction(
+            turn_context.as_ref(),
+            &[RolloutItem::ResponseItem(resumed_message.clone())],
+        )
+        .await;
+    assert_eq!(
+        session.state.lock().await.history.raw_items(),
+        std::slice::from_ref(&resumed_message)
+    );
+    assert!(matches!(
+        rx.recv().await.expect("reconstruction tree event").msg,
+        EventMsg::SpineTreeUpdate(_)
+    ));
+    assert!(rx.try_recv().is_err(), "no extra observer events expected");
+}
+
+#[tokio::test]
 async fn prepares_image_failures_before_history_insertion() {
     let (session, turn_context, _rx) = make_session_and_context_with_auth_and_config_and_rx(
         CodexAuth::from_api_key("Test API Key"),
@@ -10226,10 +10394,11 @@ async fn turn_aborted_flushes_terminal_event_after_delivery() {
     abort_task.await.expect("abort task should finish");
     // Expected flushes:
     // 1. Task-runner flush after the task body observes cancellation.
-    // 2. Interrupted-marker flush before TurnAborted so abort observers can reread it.
-    // 3. Terminal-event flush after TurnAborted is appended.
-    let calls = wait_for_flush_count(&store, /*expected_flushes*/ 3).await;
-    assert_eq!(3, calls.flush_thread);
+    // 2. Spine observer flush before publishing the marker's derived tree update.
+    // 3. Interrupted-marker flush before TurnAborted so abort observers can reread it.
+    // 4. Terminal-event flush after TurnAborted is appended.
+    let calls = wait_for_flush_count(&store, /*expected_flushes*/ 4).await;
+    assert_eq!(4, calls.flush_thread);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

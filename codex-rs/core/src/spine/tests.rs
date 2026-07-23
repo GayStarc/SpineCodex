@@ -187,7 +187,8 @@ fn spine_status_matches_spine_dev_fields_and_context_accounting() {
     ];
     let projection = derive_from_rollout(&rollout).spine;
     let samples = pressure::token_usage_samples(&rollout);
-    let overlay = status::prompt_overlay(&projection, &samples, Some(100_000));
+    let overlay = status::prompt_overlay(&projection, &samples, Some(100_000))
+        .expect("bounded status fragment");
 
     assert_eq!(
         text(&overlay),
@@ -813,7 +814,7 @@ fn closed_tool_group_boundaries(rollout: &[RolloutItem]) -> Vec<(RawBoundary, Ra
 
 #[test]
 fn append_prefixes_reconstruct_closed_group_frontier_without_retraction() {
-    let rollout = vec![
+    let rollout = [
         message("assistant", "inspect first"),
         call("shell", "shell", r#"{"cmd":"pwd"}"#),
         call("open", "spine.open", r#"{"summary":"task"}"#),
@@ -1424,7 +1425,7 @@ fn closed_memory_user_slot_preserves_the_complete_native_message() {
         internal_chat_message_metadata_passthrough: None,
     };
     let mut expected = item.clone();
-    tag_user_message(&mut expected, 1);
+    SpineUserAnchor::new(1).apply(&mut expected);
     let rollout = vec![
         call("open", "spine.open", r#"{"summary":"image task"}"#),
         output("open", Some(true), "ok"),

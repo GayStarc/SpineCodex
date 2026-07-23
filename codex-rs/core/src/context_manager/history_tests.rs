@@ -811,6 +811,7 @@ fn replace_last_turn_images_replaces_tool_output_images() {
         },
     ];
     let mut history = create_history_with_items(items);
+    history.set_projected_items(history.raw_items().to_vec());
 
     assert!(history.replace_last_turn_images("Invalid image"));
 
@@ -833,6 +834,23 @@ fn replace_last_turn_images_replaces_tool_output_images() {
             },
         ]
     );
+    assert_eq!(
+        history.projected_items.as_deref(),
+        Some(history.raw_items())
+    );
+}
+
+#[test]
+fn projected_history_version_changes_only_for_non_append_rewrites() {
+    let first = user_input_text_msg("first");
+    let second = user_input_text_msg("second");
+    let mut history = create_history_with_items(vec![first.clone()]);
+    history.set_projected_items(vec![first.clone()]);
+    let version = history.history_version();
+    history.set_projected_items(vec![first, second]);
+    assert_eq!(history.history_version(), version);
+    history.set_projected_items(vec![user_input_text_msg("replacement")]);
+    assert!(history.history_version() > version);
 }
 
 #[test]

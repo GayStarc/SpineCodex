@@ -6,6 +6,12 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::fmt;
 
+pub const MAX_SUMMARY_BYTES: usize = 4 * 1024;
+pub const MAX_MEMORY_BYTES: usize = 32 * 1024;
+pub const MAX_SPAWN_TASKS: usize = 16;
+pub const MAX_SPAWN_PROMPT_BYTES: usize = 32 * 1024;
+pub const MAX_SPAWN_BATCH_BYTES: usize = 64 * 1024;
+
 pub const SPINE_NAMESPACE: &str = "spine";
 pub const SPINE_NAMESPACE_DESCRIPTION: &str = "Use Spine to shape the work.";
 
@@ -114,6 +120,10 @@ pub enum ToolValidationError {
     InvalidJson(String),
     UnknownTool(String),
     EmptyField(&'static str),
+    FieldTooLarge {
+        field: &'static str,
+        max_bytes: usize,
+    },
     InvalidTrim(String),
     InvalidSpawn(String),
 }
@@ -124,6 +134,12 @@ impl fmt::Display for ToolValidationError {
             Self::InvalidJson(error) => write!(formatter, "invalid Spine tool arguments: {error}"),
             Self::UnknownTool(name) => write!(formatter, "unknown Spine tool {name}"),
             Self::EmptyField(name) => write!(formatter, "Spine tool field {name} is empty"),
+            Self::FieldTooLarge { field, max_bytes } => {
+                write!(
+                    formatter,
+                    "Spine tool field {field} exceeds {max_bytes} bytes"
+                )
+            }
             Self::InvalidTrim(error) => write!(formatter, "invalid spine.trim arguments: {error}"),
             Self::InvalidSpawn(error) => {
                 write!(formatter, "invalid spine.spawn arguments: {error}")
@@ -142,20 +158,20 @@ pub fn validate_tool(
         SpineTool::Open => {
             let args: OpenArgs = parse_control(arguments)?;
             Ok(ToolValidation::Transition(ValidatedTransition::Open {
-                summary: non_empty(args.summary, "summary")?,
+                summary: bounded_non_empty(args.summary, "summary", MAX_SUMMARY_BYTES)?,
             }))
         }
         SpineTool::Close => {
             let args: CloseArgs = parse_control(arguments)?;
             Ok(ToolValidation::Transition(ValidatedTransition::Close {
-                memory: non_empty(args.memory, "memory")?,
+                memory: bounded_non_empty(args.memory, "memory", MAX_MEMORY_BYTES)?,
             }))
         }
         SpineTool::Next => {
             let args: NextArgs = parse_control(arguments)?;
             Ok(ToolValidation::Transition(ValidatedTransition::Next {
-                summary: non_empty(args.summary, "summary")?,
-                memory: non_empty(args.memory, "memory")?,
+                summary: bounded_non_empty(args.summary, "summary", MAX_SUMMARY_BYTES)?,
+                memory: bounded_non_empty(args.memory, "memory", MAX_MEMORY_BYTES)?,
             }))
         }
         SpineTool::Trim => TrimRequest::parse(arguments)
@@ -169,13 +185,24 @@ pub fn validate_tool(
                     "spine.spawn requires at least two tasks".to_string(),
                 ));
             }
+            if args.tasks.len() > MAX_SPAWN_TASKS {
+                return Err(ToolValidationError::InvalidSpawn(format!(
+                    "spine.spawn accepts at most {MAX_SPAWN_TASKS} tasks"
+                )));
+            }
+            let aggregate_bytes = args.tasks.iter().fold(0usize, |total, task| {
+                total
+                    .saturating_add(task.summary.len())
+                    .saturating_add(task.prompt.len())
+            });
+            if aggregate_bytes > MAX_SPAWN_BATCH_BYTES {
+                return Err(ToolValidationError::InvalidSpawn(format!(
+                    "spine.spawn task payload exceeds {MAX_SPAWN_BATCH_BYTES} bytes"
+                )));
+            }
             for task in &args.tasks {
-                if task.summary.trim().is_empty() {
-                    return Err(ToolValidationError::EmptyField("summary"));
-                }
-                if task.prompt.trim().is_empty() {
-                    return Err(ToolValidationError::EmptyField("prompt"));
-                }
+                bounded_non_empty(task.summary.clone(), "summary", MAX_SUMMARY_BYTES)?;
+                bounded_non_empty(task.prompt.clone(), "prompt", MAX_SPAWN_PROMPT_BYTES)?;
             }
             Ok(ToolValidation::Transition(ValidatedTransition::Spawn {
                 tasks: args.tasks,
@@ -224,24 +251,32 @@ fn parse_control<T: for<'de> Deserialize<'de>>(arguments: &str) -> Result<T, Too
         .map_err(|error| ToolValidationError::InvalidJson(error.to_string()))
 }
 
-fn non_empty(value: String, field: &'static str) -> Result<String, ToolValidationError> {
+fn bounded_non_empty(
+    value: String,
+    field: &'static str,
+    max_bytes: usize,
+) -> Result<String, ToolValidationError> {
     let value = value.trim().to_string();
-    (!value.is_empty())
-        .then_some(value)
-        .ok_or(ToolValidationError::EmptyField(field))
+    if value.is_empty() {
+        return Err(ToolValidationError::EmptyField(field));
+    }
+    if value.len() > max_bytes {
+        return Err(ToolValidationError::FieldTooLarge { field, max_bytes });
+    }
+    Ok(value)
 }
 
 fn parameters_for(tool: SpineTool) -> Value {
     match tool {
         SpineTool::Open => serde_json::json!({
             "type": "object",
-            "properties": { "summary": { "type": "string", "description": "Concise, actionable, completable goal for the child node being opened. The transition call carrying this goal is retained in the child node's context." } },
+            "properties": { "summary": { "type": "string", "maxLength": MAX_SUMMARY_BYTES, "description": "Concise, actionable, completable goal for the child node being opened. The transition call carrying this goal is retained in the child node's context." } },
             "required": ["summary"],
             "additionalProperties": false
         }),
         SpineTool::Close => serde_json::json!({
             "type": "object",
-            "properties": { "memory": { "type": "string", "description": "Compiled continuation state for the node being finalized. This memory replaces the node's local working content for future continuation. Preserve only continuation-relevant state: completed or confirmed progress, key decisions and constraints, confirmed findings, validation results, unresolved factual gaps or risks, remaining work, and the logic linking evidence and findings to decisions and next steps. Use compact supporting evidence or precise, recoverable references wherever they clarify that logic. For source code, cite the precise path and line or line range; for commands or outputs, cite the exact command and decisive output or result, so later work can continue without replaying completed investigation or reloading the same context. Treat inherited ancestor context as already available. Runtime preserves user messages and child memories; use this memory for the additional state required for continuation. Preserve the continuation-relevant evolution of user intent by using [U#] anchors to resolve approvals, corrections, rejections, clarifications, and elliptical replies to their concrete referents, and record the resulting semantic deltas in task scope, decisions, constraints, progress, and remaining obligations." } },
+            "properties": { "memory": { "type": "string", "maxLength": MAX_MEMORY_BYTES, "description": "Compiled continuation state for the node being finalized. This memory replaces the node's local working content for future continuation. Preserve only continuation-relevant state: completed or confirmed progress, key decisions and constraints, confirmed findings, validation results, unresolved factual gaps or risks, remaining work, and the logic linking evidence and findings to decisions and next steps. Use compact supporting evidence or precise, recoverable references wherever they clarify that logic. For source code, cite the precise path and line or line range; for commands or outputs, cite the exact command and decisive output or result, so later work can continue without replaying completed investigation or reloading the same context. Treat inherited ancestor context as already available. Runtime preserves user messages and child memories; use this memory for the additional state required for continuation. Preserve the continuation-relevant evolution of user intent by using [U#] anchors to resolve approvals, corrections, rejections, clarifications, and elliptical replies to their concrete referents, and record the resulting semantic deltas in task scope, decisions, constraints, progress, and remaining obligations." } },
             "required": ["memory"],
             "additionalProperties": false
         }),
@@ -275,11 +310,12 @@ fn parameters_for(tool: SpineTool) -> Value {
                     "type": "array",
                     "description": "Ordered self-contained child tasks.",
                     "minItems": 2,
+                    "maxItems": MAX_SPAWN_TASKS,
                     "items": {
                         "type": "object",
                         "properties": {
-                            "summary": { "type": "string", "description": "Concise label for one self-contained child task." },
-                            "prompt": { "type": "string", "description": "Complete task instruction solvable from inherited context without parent follow-up." }
+                            "summary": { "type": "string", "maxLength": MAX_SUMMARY_BYTES, "description": "Concise label for one self-contained child task." },
+                            "prompt": { "type": "string", "maxLength": MAX_SPAWN_PROMPT_BYTES, "description": "Complete task instruction solvable from inherited context without parent follow-up." }
                         },
                         "required": ["summary", "prompt"],
                         "additionalProperties": false
@@ -316,5 +352,76 @@ mod tests {
         assert!(validate_tool(SpineTool::Close, r#"{"memory":" "}"#).is_err());
         assert!(validate_tool(SpineTool::Open, r#"{"summary":"x","extra":1}"#).is_err());
         assert!(validate_tool(SpineTool::Spawn, r#"{"tasks":[]}"#).is_err());
+    }
+
+    #[test]
+    fn validators_reject_unbounded_context_fields() {
+        let oversized_summary = serde_json::json!({
+            "summary": "x".repeat(MAX_SUMMARY_BYTES + 1)
+        });
+        assert!(matches!(
+            validate_tool(SpineTool::Open, &oversized_summary.to_string()),
+            Err(ToolValidationError::FieldTooLarge { .. })
+        ));
+        let oversized_memory = serde_json::json!({
+            "memory": "x".repeat(MAX_MEMORY_BYTES + 1)
+        });
+        assert!(matches!(
+            validate_tool(SpineTool::Close, &oversized_memory.to_string()),
+            Err(ToolValidationError::FieldTooLarge { .. })
+        ));
+        let oversized_unicode = serde_json::json!({
+            "summary": "界".repeat(MAX_SUMMARY_BYTES / 2 + 1)
+        });
+        assert!(matches!(
+            validate_tool(SpineTool::Open, &oversized_unicode.to_string()),
+            Err(ToolValidationError::FieldTooLarge { .. })
+        ));
+    }
+
+    #[test]
+    fn validators_accept_exact_limits_and_reject_the_next_spawn_task() {
+        let next = serde_json::json!({
+            "summary": "s".repeat(MAX_SUMMARY_BYTES),
+            "memory": "m".repeat(MAX_MEMORY_BYTES),
+        });
+        assert!(validate_tool(SpineTool::Next, &next.to_string()).is_ok());
+
+        let mut tasks = (0..MAX_SPAWN_TASKS)
+            .map(|_| serde_json::json!({"summary": "s", "prompt": "p"}))
+            .collect::<Vec<_>>();
+        tasks[0] = serde_json::json!({
+            "summary": "s".repeat(MAX_SUMMARY_BYTES),
+            "prompt": "p".repeat(MAX_SPAWN_PROMPT_BYTES),
+        });
+        let arguments = serde_json::json!({"tasks": tasks}).to_string();
+        assert!(validate_tool(SpineTool::Spawn, &arguments).is_ok());
+
+        let oversized = (0..=MAX_SPAWN_TASKS)
+            .map(|_| serde_json::json!({"summary": "s", "prompt": "p"}))
+            .collect::<Vec<_>>();
+        let arguments = serde_json::json!({"tasks": oversized}).to_string();
+        assert!(matches!(
+            validate_tool(SpineTool::Spawn, &arguments),
+            Err(ToolValidationError::InvalidSpawn(_))
+        ));
+    }
+
+    #[test]
+    fn validators_reject_aggregate_spawn_payloads() {
+        let tasks = (0..2)
+            .map(|_| {
+                serde_json::json!({
+                    "summary": "s",
+                    "prompt": "p".repeat(MAX_SPAWN_BATCH_BYTES / 2)
+                })
+            })
+            .collect::<Vec<_>>();
+        let arguments = serde_json::json!({"tasks": tasks}).to_string();
+
+        assert!(matches!(
+            validate_tool(SpineTool::Spawn, &arguments),
+            Err(ToolValidationError::InvalidSpawn(_))
+        ));
     }
 }

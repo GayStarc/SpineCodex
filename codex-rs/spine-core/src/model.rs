@@ -108,21 +108,74 @@ pub struct SpawnReceipt {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SpawnValidationError {
     TooFewTasks,
-    EmptyTaskSummary { ordinal: usize },
-    EmptyTaskPrompt { ordinal: usize },
-    InvalidSchema { schema: String },
-    ResultCount { expected: usize, actual: usize },
-    ResultOrdinal { expected: u32, actual: u32 },
-    EmptyMemory { ordinal: u32 },
-    MissingDiagnostic { ordinal: u32 },
-    EmptyDiagnostic { ordinal: u32 },
-    EmptyExecutionRef { ordinal: u32 },
+    TooManyTasks {
+        max: usize,
+        actual: usize,
+    },
+    AggregateTooLarge {
+        phase: &'static str,
+        max_bytes: usize,
+        actual_bytes: usize,
+    },
+    FieldTooLarge {
+        ordinal: usize,
+        field: &'static str,
+        max_bytes: usize,
+    },
+    EmptyTaskSummary {
+        ordinal: usize,
+    },
+    EmptyTaskPrompt {
+        ordinal: usize,
+    },
+    InvalidSchema {
+        schema: String,
+    },
+    ResultCount {
+        expected: usize,
+        actual: usize,
+    },
+    ResultOrdinal {
+        expected: u32,
+        actual: u32,
+    },
+    EmptyMemory {
+        ordinal: u32,
+    },
+    MissingDiagnostic {
+        ordinal: u32,
+    },
+    EmptyDiagnostic {
+        ordinal: u32,
+    },
+    EmptyExecutionRef {
+        ordinal: u32,
+    },
 }
 
 impl std::fmt::Display for SpawnValidationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::TooFewTasks => f.write_str("spine.spawn requires at least two tasks"),
+            Self::TooManyTasks { max, actual } => {
+                write!(f, "spine.spawn has {actual} tasks; maximum is {max}")
+            }
+            Self::AggregateTooLarge {
+                phase,
+                max_bytes,
+                actual_bytes,
+            } => write!(
+                f,
+                "spine.spawn {phase} payload is {actual_bytes} bytes; maximum is {max_bytes}"
+            ),
+            Self::FieldTooLarge {
+                ordinal,
+                field,
+                max_bytes,
+            } => write!(
+                f,
+                "spine.spawn item {ordinal} field {field} exceeds {max_bytes} bytes"
+            ),
             Self::EmptyTaskSummary { ordinal } => {
                 write!(f, "spine.spawn task {ordinal} requires a non-empty summary")
             }
@@ -172,6 +225,12 @@ impl SpawnReceipt {
         if tasks.len() < 2 {
             return Err(SpawnValidationError::TooFewTasks);
         }
+        if tasks.len() > crate::MAX_SPAWN_TASKS {
+            return Err(SpawnValidationError::TooManyTasks {
+                max: crate::MAX_SPAWN_TASKS,
+                actual: tasks.len(),
+            });
+        }
         for (ordinal, task) in tasks.iter().enumerate() {
             if task.summary.trim().is_empty() {
                 return Err(SpawnValidationError::EmptyTaskSummary { ordinal });
@@ -179,7 +238,18 @@ impl SpawnReceipt {
             if task.prompt.trim().is_empty() {
                 return Err(SpawnValidationError::EmptyTaskPrompt { ordinal });
             }
+            validate_spawn_field(ordinal, "summary", &task.summary, crate::MAX_SUMMARY_BYTES)?;
+            validate_spawn_field(
+                ordinal,
+                "prompt",
+                &task.prompt,
+                crate::MAX_SPAWN_PROMPT_BYTES,
+            )?;
         }
+        validate_spawn_aggregate(
+            "task",
+            tasks.iter().flat_map(|task| [&task.summary, &task.prompt]),
+        )?;
         if self.schema != SPINE_SPAWN_RESULT_SCHEMA {
             return Err(SpawnValidationError::InvalidSchema {
                 schema: self.schema.clone(),
@@ -204,6 +274,12 @@ impl SpawnReceipt {
                     ordinal: result.ordinal,
                 });
             }
+            validate_spawn_field(
+                usize::try_from(expected).unwrap_or(usize::MAX),
+                "memory_body",
+                &result.memory_body,
+                crate::MAX_MEMORY_BYTES,
+            )?;
             match result.diagnostic.as_deref() {
                 None if result.outcome != SpawnOutcome::Completed => {
                     return Err(SpawnValidationError::MissingDiagnostic {
@@ -215,7 +291,13 @@ impl SpawnReceipt {
                         ordinal: result.ordinal,
                     });
                 }
-                None | Some(_) => {}
+                Some(diagnostic) => validate_spawn_field(
+                    usize::try_from(expected).unwrap_or(usize::MAX),
+                    "diagnostic",
+                    diagnostic,
+                    crate::MAX_SUMMARY_BYTES,
+                )?,
+                None => {}
             }
             if result
                 .execution_ref
@@ -226,9 +308,62 @@ impl SpawnReceipt {
                     ordinal: result.ordinal,
                 });
             }
+            if let Some(execution_ref) = result.execution_ref.as_deref() {
+                validate_spawn_field(
+                    usize::try_from(expected).unwrap_or(usize::MAX),
+                    "execution_ref",
+                    execution_ref,
+                    crate::MAX_SUMMARY_BYTES,
+                )?;
+            }
         }
+        validate_spawn_aggregate(
+            "result",
+            self.results.iter().flat_map(|result| {
+                [
+                    Some(&result.memory_body),
+                    result.diagnostic.as_ref(),
+                    result.execution_ref.as_ref(),
+                ]
+                .into_iter()
+                .flatten()
+            }),
+        )?;
         Ok(())
     }
+}
+
+fn validate_spawn_aggregate<'a>(
+    phase: &'static str,
+    fields: impl IntoIterator<Item = &'a String>,
+) -> Result<(), SpawnValidationError> {
+    let actual_bytes = fields
+        .into_iter()
+        .fold(0usize, |total, value| total.saturating_add(value.len()));
+    if actual_bytes > crate::MAX_SPAWN_BATCH_BYTES {
+        return Err(SpawnValidationError::AggregateTooLarge {
+            phase,
+            max_bytes: crate::MAX_SPAWN_BATCH_BYTES,
+            actual_bytes,
+        });
+    }
+    Ok(())
+}
+
+fn validate_spawn_field(
+    ordinal: usize,
+    field: &'static str,
+    value: &str,
+    max_bytes: usize,
+) -> Result<(), SpawnValidationError> {
+    if value.len() > max_bytes {
+        return Err(SpawnValidationError::FieldTooLarge {
+            ordinal,
+            field,
+            max_bytes,
+        });
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -464,6 +599,31 @@ impl RolloutEvent {
             Self::Compact { boundary, .. } => *boundary,
         }
     }
+
+    pub(crate) fn retained_bytes(&self) -> usize {
+        match self {
+            Self::Message(message) => message.content.len(),
+            Self::ToolCall(group) => group
+                .leading_assistant_messages
+                .iter()
+                .map(|message| message.content.len())
+                .chain(group.calls.iter().map(|call| {
+                    call.call_id
+                        .len()
+                        .saturating_add(call.name.len())
+                        .saturating_add(call.arguments.len())
+                        .saturating_add(call.output.as_ref().map_or(0, String::len))
+                }))
+                .fold(0usize, usize::saturating_add),
+            Self::Compact {
+                replacement_history,
+                ..
+            } => replacement_history
+                .iter()
+                .map(ContextItem::retained_synthetic_bytes)
+                .fold(0usize, usize::saturating_add),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -529,6 +689,33 @@ pub enum ContextItem {
     Native {
         source: NativeItemRef,
     },
+}
+
+impl ContextItem {
+    pub(crate) fn retained_synthetic_bytes(&self) -> usize {
+        match self {
+            Self::Message { message, .. } if message.role == MessageRole::ContextualUser => {
+                message.content.len()
+            }
+            Self::SyntheticNode { summary, .. } => summary.len(),
+            Self::MemorySlot(MemorySlot::Summary { body, .. }) => body.len(),
+            Self::MemorySlot(MemorySlot::SpawnEvidence {
+                task,
+                diagnostic,
+                execution_ref,
+                ..
+            }) => task
+                .summary
+                .len()
+                .saturating_add(task.prompt.len())
+                .saturating_add(diagnostic.as_ref().map_or(0, String::len))
+                .saturating_add(execution_ref.as_ref().map_or(0, String::len)),
+            Self::Message { .. }
+            | Self::ToolCall(_)
+            | Self::MemorySlot(MemorySlot::User { .. })
+            | Self::Native { .. } => 0,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

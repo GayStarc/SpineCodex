@@ -1557,8 +1557,12 @@ impl Session {
     }
 
     async fn publish_rollout_reconstruction(&self, turn_context: &TurnContext) {
-        self.emit_spine_tree_update(turn_context).await;
-        self.publish_spinetree_memory_projection().await;
+        let observer_effect = {
+            let mut state = self.state.lock().await;
+            state.take_spine_observer_effect()
+        };
+        self.dispatch_spine_observer_effect(&turn_context.sub_id, observer_effect)
+            .await;
     }
 
     async fn set_auto_compact_window_estimated_prefill_for_scope(
@@ -2067,19 +2071,42 @@ impl Session {
             .await;
     }
 
-    async fn emit_spine_tree_update(&self, turn_context: &TurnContext) {
-        let snapshot = {
-            let state = self.state.lock().await;
-            state.spine_tree_update()
-        };
-        let Some(snapshot) = snapshot else {
+    async fn dispatch_spine_observer_effect(
+        &self,
+        turn_id: &str,
+        effect: Option<crate::spine::observer::CodexSpineObserverEffect>,
+    ) {
+        let Some(effect) = effect else {
             return;
         };
-        self.deliver_event_raw(Event {
-            id: turn_context.sub_id.clone(),
-            msg: EventMsg::SpineTreeUpdate(snapshot),
+        if let Some(live_thread) = self.live_thread()
+            && let Err(err) = live_thread.flush().await
+        {
+            warn!("failed to flush rollout before Spine observer delivery: {err:#}");
+            return;
+        }
+        if let Some(snapshot) = effect.tree_update {
+            self.deliver_event_raw(Event {
+                id: turn_id.to_string(),
+                msg: EventMsg::SpineTreeUpdate(snapshot),
+            })
+            .await;
+        }
+        let (Some(projection), Some(memory)) = (
+            self.spinetree_memory_projection.clone(),
+            effect.memory_projection,
+        ) else {
+            return;
+        };
+        match tokio::task::spawn_blocking(move || {
+            projection.persist(&memory.entries, &memory.user_messages)
         })
-        .await;
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => warn!("failed to publish Spine memory projection: {err:#}"),
+            Err(err) => warn!("Spine memory projection task failed: {err}"),
+        }
     }
 
     /// Delivers experimental spawn progress to live clients without appending it
@@ -2095,26 +2122,6 @@ impl Session {
             msg: EventMsg::SpineSpawnProgress(progress),
         })
         .await;
-    }
-
-    async fn publish_spinetree_memory_projection(&self) {
-        let Some(projection) = self.spinetree_memory_projection.clone() else {
-            return;
-        };
-        let (entries, user_messages) = {
-            let state = self.state.lock().await;
-            (
-                state.spine_memory_projection_entries(),
-                state.spine_user_message_projection_entries(),
-            )
-        };
-        match tokio::task::spawn_blocking(move || projection.persist(&entries, &user_messages))
-            .await
-        {
-            Ok(Ok(())) => {}
-            Ok(Err(err)) => warn!("failed to publish Spine memory projection: {err:#}"),
-            Err(err) => warn!("Spine memory projection task failed: {err}"),
-        }
     }
 
     /// Delivers an event without creating a local rollout for a thread that has not materialized.
@@ -3002,7 +3009,7 @@ impl Session {
     ) {
         let items = self.prepare_conversation_items_for_history(turn_context, items);
         let items = items.as_ref();
-        {
+        let observer_effect = {
             let mut state = self.state.lock().await;
             state.current_time_reminder.note_recorded_items(items);
             state.record_items(
@@ -3016,11 +3023,12 @@ impl Session {
             {
                 state.mark_projected_usage_stale();
             }
-        }
+            state.take_spine_observer_effect()
+        };
         self.persist_rollout_response_items(items).await;
         self.send_raw_response_items(turn_context, items).await;
-        self.emit_spine_tree_update(turn_context).await;
-        self.publish_spinetree_memory_projection().await;
+        self.dispatch_spine_observer_effect(&turn_context.sub_id, observer_effect)
+            .await;
     }
 
     pub(crate) async fn record_step_world_state_if_changed(
@@ -3117,14 +3125,15 @@ impl Session {
         );
         let items = items.as_ref();
         let response_item = items[0].clone();
-        {
+        let observer_effect = {
             let mut state = self.state.lock().await;
             state.current_time_reminder.note_recorded_items(items);
             state.record_items(
                 items.iter(),
                 turn_context.model_info.truncation_policy.into(),
             );
-        }
+            state.take_spine_observer_effect()
+        };
         self.persist_rollout_items(&[
             RolloutItem::InterAgentCommunicationMetadata {
                 trigger_turn: communication.trigger_turn,
@@ -3133,7 +3142,8 @@ impl Session {
         ])
         .await;
         self.send_raw_response_items(turn_context, items).await;
-        self.emit_spine_tree_update(turn_context).await;
+        self.dispatch_spine_observer_effect(&turn_context.sub_id, observer_effect)
+            .await;
     }
 
     async fn maybe_warn_on_server_model_mismatch(
@@ -3226,7 +3236,7 @@ impl Session {
         };
         let compacted_rollout_item = RolloutItem::Compacted(compacted_item);
         if !self.enabled(Feature::SpineJit) && !self.enabled(Feature::SpineTrim) {
-            let world_state_item = self
+            let (world_state_item, observer_effect) = self
                 .install_compacted_history_state(
                     items,
                     reference_context_item.clone(),
@@ -3241,6 +3251,7 @@ impl Session {
                 turn_context.as_ref(),
                 reference_context_item,
                 world_state_item,
+                observer_effect,
             )
             .await;
             return Ok(());
@@ -3258,7 +3269,7 @@ impl Session {
 
         // The durable compact record is the commit point. Publish its replacement history,
         // window identity, parser projection, and WorldState baseline together afterward.
-        let world_state_item = self
+        let (world_state_item, observer_effect) = self
             .install_compacted_history_state(
                 items,
                 reference_context_item.clone(),
@@ -3271,6 +3282,7 @@ impl Session {
             turn_context.as_ref(),
             reference_context_item,
             world_state_item,
+            observer_effect,
         )
         .await;
         Ok(())
@@ -3283,7 +3295,10 @@ impl Session {
         world_state_baseline: Option<Arc<WorldState>>,
         auto_compact_window: (u64, AutoCompactWindowIds),
         compacted_rollout_item: &RolloutItem,
-    ) -> Option<WorldStateItem> {
+    ) -> (
+        Option<WorldStateItem>,
+        Option<crate::spine::observer::CodexSpineObserverEffect>,
+    ) {
         let mut world_state_item = None;
         let mut state = self.state.lock().await;
         let RolloutItem::Compacted(compacted_item) = compacted_rollout_item else {
@@ -3297,7 +3312,8 @@ impl Session {
             world_state_item = Some(WorldStateItem::full(snapshot.clone().into_value()));
             state.history.set_world_state_baseline(snapshot);
         }
-        world_state_item
+        let observer_effect = state.take_spine_observer_effect();
+        (world_state_item, observer_effect)
     }
 
     async fn finish_compacted_history(
@@ -3305,6 +3321,7 @@ impl Session {
         turn_context: &TurnContext,
         reference_context_item: Option<TurnContextItem>,
         world_state_item: Option<WorldStateItem>,
+        observer_effect: Option<crate::spine::observer::CodexSpineObserverEffect>,
     ) {
         // Persist ancillary snapshots after the replacement history that established them.
         if let Some(world_state_item) = world_state_item {
@@ -3315,9 +3332,12 @@ impl Session {
             self.persist_rollout_items(&[RolloutItem::TurnContext(turn_context_item)])
                 .await;
         }
-        self.emit_spine_tree_update(turn_context).await;
-        let mut state = self.state.lock().await;
-        state.queue_pending_session_start_source(codex_hooks::SessionStartSource::Compact);
+        self.dispatch_spine_observer_effect(&turn_context.sub_id, observer_effect)
+            .await;
+        {
+            let mut state = self.state.lock().await;
+            state.queue_pending_session_start_source(codex_hooks::SessionStartSource::Compact);
+        }
     }
 
     async fn persist_rollout_response_items(&self, items: &[ResponseItem]) {
@@ -3763,9 +3783,8 @@ impl Session {
         state.clone_history()
     }
 
-    /// Return the host-native history for runtime side channels. Model input
-    /// uses the Spine projection, but hooks and notifications must consume
-    /// the unprojected host evidence.
+    /// Return host-native history for runtime side channels. Model sampling uses the
+    /// Spine projection, while legacy hooks consume unprojected host evidence.
     pub(crate) async fn clone_native_history(&self) -> ContextManager {
         let state = self.state.lock().await;
         state.history.clone()
@@ -4126,12 +4145,14 @@ impl Session {
         };
         let token_count = TokenCountEvent { info, rate_limits };
         let event = EventMsg::TokenCount(token_count.clone());
-        {
+        let observer_effect = {
             let mut state = self.state.lock().await;
             state.observe_token_count(token_count);
-        }
+            state.take_spine_observer_effect()
+        };
         self.send_event(turn_context, event).await;
-        self.emit_spine_tree_update(turn_context).await;
+        self.dispatch_spine_observer_effect(&turn_context.sub_id, observer_effect)
+            .await;
     }
 
     pub(crate) async fn set_total_tokens_full(&self, turn_context: &TurnContext) {

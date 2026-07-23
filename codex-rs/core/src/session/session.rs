@@ -176,6 +176,12 @@ impl SessionConfiguration {
         &self.base_instructions
     }
 
+    pub(crate) fn spinetree_memory_projection_enabled(&self) -> bool {
+        self.original_config_do_not_use
+            .features
+            .enabled(Feature::SpinetreeMemoryProjection)
+    }
+
     pub(crate) fn spine_sdk_config(&self) -> spine_core::SpineConfig {
         let mut features = Vec::new();
         if self.spine_jit_enabled() {

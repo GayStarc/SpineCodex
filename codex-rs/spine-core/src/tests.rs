@@ -6,6 +6,140 @@ fn boundary(value: u64) -> RawBoundary {
     RawBoundary(value)
 }
 
+#[test]
+fn spawn_receipts_reject_unbounded_context_fields() {
+    let tasks = vec![
+        SpawnTask {
+            summary: "a".to_string(),
+            prompt: "p".to_string(),
+        },
+        SpawnTask {
+            summary: "b".to_string(),
+            prompt: "p".to_string(),
+        },
+    ];
+    let receipt = SpawnReceipt {
+        schema: SPINE_SPAWN_RESULT_SCHEMA.to_string(),
+        results: vec![
+            SpawnResult {
+                ordinal: 0,
+                outcome: SpawnOutcome::Completed,
+                memory_body: "x".repeat(MAX_MEMORY_BYTES + 1),
+                diagnostic: None,
+                execution_ref: None,
+            },
+            SpawnResult {
+                ordinal: 1,
+                outcome: SpawnOutcome::Completed,
+                memory_body: "ok".to_string(),
+                diagnostic: None,
+                execution_ref: None,
+            },
+        ],
+    };
+    assert!(matches!(
+        receipt.validate_for(&tasks),
+        Err(SpawnValidationError::FieldTooLarge {
+            field: "memory_body",
+            ..
+        })
+    ));
+}
+
+#[test]
+fn spawn_receipts_reject_aggregate_context_fields() {
+    let tasks = vec![
+        SpawnTask {
+            summary: "a".to_string(),
+            prompt: "p".to_string(),
+        },
+        SpawnTask {
+            summary: "b".to_string(),
+            prompt: "p".to_string(),
+        },
+    ];
+    let receipt = SpawnReceipt {
+        schema: SPINE_SPAWN_RESULT_SCHEMA.to_string(),
+        results: vec![
+            SpawnResult {
+                ordinal: 0,
+                outcome: SpawnOutcome::Errored,
+                memory_body: "x".repeat(MAX_MEMORY_BYTES),
+                diagnostic: Some("d".to_string()),
+                execution_ref: None,
+            },
+            SpawnResult {
+                ordinal: 1,
+                outcome: SpawnOutcome::Completed,
+                memory_body: "x".repeat(MAX_MEMORY_BYTES),
+                diagnostic: None,
+                execution_ref: None,
+            },
+        ],
+    };
+
+    assert!(matches!(
+        receipt.validate_for(&tasks),
+        Err(SpawnValidationError::AggregateTooLarge {
+            phase: "result",
+            ..
+        })
+    ));
+}
+
+#[test]
+fn spawn_receipts_enforce_each_optional_field_and_accept_exact_limits() {
+    let tasks = vec![
+        SpawnTask {
+            summary: "s".repeat(MAX_SUMMARY_BYTES),
+            prompt: "p".repeat(MAX_SPAWN_PROMPT_BYTES),
+        },
+        SpawnTask {
+            summary: "b".to_string(),
+            prompt: "p".to_string(),
+        },
+    ];
+    let mut receipt = SpawnReceipt {
+        schema: SPINE_SPAWN_RESULT_SCHEMA.to_string(),
+        results: vec![
+            SpawnResult {
+                ordinal: 0,
+                outcome: SpawnOutcome::Errored,
+                memory_body: "m".repeat(MAX_MEMORY_BYTES),
+                diagnostic: Some("d".to_string()),
+                execution_ref: Some("r".repeat(MAX_SUMMARY_BYTES)),
+            },
+            SpawnResult {
+                ordinal: 1,
+                outcome: SpawnOutcome::Completed,
+                memory_body: "ok".to_string(),
+                diagnostic: None,
+                execution_ref: None,
+            },
+        ],
+    };
+    assert_eq!(receipt.validate_for(&tasks), Ok(()));
+
+    receipt.results[0].diagnostic = Some("d".repeat(MAX_SUMMARY_BYTES + 1));
+    assert!(matches!(
+        receipt.validate_for(&tasks),
+        Err(SpawnValidationError::FieldTooLarge {
+            field: "diagnostic",
+            ..
+        })
+    ));
+
+    receipt.results[0].diagnostic = Some("d".to_string());
+    receipt.results[0].execution_ref = Some("r".repeat(MAX_SUMMARY_BYTES + 1));
+    assert!(matches!(
+        receipt.validate_for(&tasks),
+        Err(SpawnValidationError::FieldTooLarge {
+            field: "execution_ref",
+            ..
+        })
+    ));
+}
+
 fn message(value: u64, role: MessageRole, content: &str) -> RolloutEvent {
     RolloutEvent::Message(Message {
         boundary: boundary(value),
@@ -1135,6 +1269,36 @@ fn bounded_event_space_preserves_prefix_replay_equivalence() {
             );
         }
     }
+}
+
+#[test]
+fn compiler_rejects_unbounded_accumulated_synthetic_context() {
+    let config = SpineConfig::v1().with_feature(Feature::Jit).unwrap();
+    let mut compiler = SpineCompiler::new(config).unwrap();
+    let owner = NodeId::root_epoch(1);
+    let replacement_history = (0..33)
+        .map(|index| {
+            ContextItem::MemorySlot(MemorySlot::Summary {
+                owner_node: owner.clone(),
+                source: RawSpan {
+                    start: boundary(index),
+                    end: boundary(index),
+                },
+                body: "x".repeat(MAX_MEMORY_BYTES),
+            })
+        })
+        .collect();
+
+    assert!(matches!(
+        compiler.eat(RolloutEvent::Compact {
+            boundary: boundary(1),
+            replacement_history,
+        }),
+        Err(SpineError::ContextLimit {
+            kind: "synthetic context bytes",
+            ..
+        })
+    ));
 }
 
 #[test]

@@ -31,13 +31,12 @@ use codex_protocol::protocol::TurnContextItem;
 use codex_utils_output_truncation::TruncationPolicy;
 use spine_core::SpineRuntime;
 
+use crate::spine::host::CodexSpineEventHandlers;
 use crate::spine::host::CodexSpineHost;
 use crate::spine::host::CodexSpineInput;
-use crate::spine::host::CodexSpineMaterialization;
 
 struct SessionSpineRuntime {
-    runtime: SpineRuntime<CodexSpineHost>,
-    materialization: CodexSpineMaterialization,
+    runtime: SpineRuntime<CodexSpineHost, CodexSpineEventHandlers>,
     next_ordinal: usize,
 }
 
@@ -101,21 +100,15 @@ impl SessionState {
                 jit_enabled: session_configuration.spine_jit_enabled(),
                 spawn_enabled: session_configuration.spine_spawn_enabled(),
             };
-            let runtime = SpineRuntime::new(session_configuration.spine_sdk_config(), host)
-                .expect("validated session Spine configuration must initialize");
-            let materialization = runtime
-                .host()
-                .rebuild_materialization(
-                    runtime
-                        .frontier()
-                        .expect("active Spine runtime must expose its frontier"),
-                    &history,
-                    runtime.runtime_projection(),
-                )
-                .expect("an empty Spine runtime must materialize deterministically");
+            let handlers = CodexSpineEventHandlers::new(
+                host,
+                session_configuration.spinetree_memory_projection_enabled(),
+            );
+            let runtime =
+                SpineRuntime::new(session_configuration.spine_sdk_config(), host, handlers)
+                    .expect("validated session Spine configuration must initialize");
             SessionSpineRuntime {
                 runtime,
-                materialization,
                 next_ordinal: 0,
             }
         });
@@ -172,22 +165,10 @@ impl SessionState {
         let Some(spine) = &mut self.spine_runtime else {
             return;
         };
-        let output = spine
+        spine
             .runtime
-            .replay(inputs.iter())
+            .replay(inputs.iter(), &mut self.history)
             .expect("native rollout history must replay deterministically");
-        spine.materialization = spine
-            .runtime
-            .host()
-            .rebuild_materialization(
-                spine
-                    .runtime
-                    .frontier()
-                    .expect("active Spine runtime must expose its frontier"),
-                &self.history,
-                output.runtime_projection(),
-            )
-            .expect("native rollout history must project deterministically");
         spine.next_ordinal = next_ordinal;
     }
 
@@ -269,99 +250,19 @@ impl SessionState {
     }
 
     pub(crate) fn clone_history(&self) -> ContextManager {
-        if let Some(runtime) = &self.spine_runtime {
-            return self
-                .history
-                .clone()
-                .with_projected_items(runtime.materialization.projected_items());
+        if self.spine_runtime.is_some() {
+            return self.history.clone().into_projected_history();
         }
         self.history.clone()
     }
 
-    pub(crate) fn spine_tree_update(
-        &self,
-    ) -> Option<codex_protocol::protocol::SpineTreeUpdateEvent> {
-        if !self.session_configuration.spine_jit_enabled() {
-            return None;
-        }
-        let spine = self.spine_runtime.as_ref()?;
-        let projection = spine.runtime.projection();
-        let settled_spawn_call_ids = projection.settled_spawn_call_ids.clone();
-        let snapshot = spine_core::tree_snapshot(
-            projection,
-            spine.runtime.runtime_projection().usage_samples(),
-        );
-        let snapshot_seq = snapshot.last_boundary.map_or(0, |boundary| boundary.0);
-        let active_node_id = snapshot.cursor.to_string();
-        let nodes = snapshot
-            .nodes
-            .into_iter()
-            .map(|node| codex_protocol::protocol::SpineTreeNodeSnapshot {
-                node_id: node.id.to_string(),
-                parent_id: node.parent.map(|id| id.to_string()),
-                kind: match node.kind {
-                    spine_core::NodeKind::RootEpoch => {
-                        codex_protocol::spine_tree::SpineTreeNodeKind::RootEpoch
-                    }
-                    spine_core::NodeKind::Task => {
-                        codex_protocol::spine_tree::SpineTreeNodeKind::Task
-                    }
-                },
-                status: match node.status {
-                    spine_core::NodeStatus::Live => {
-                        codex_protocol::spine_tree::SpineTreeNodeStatus::Live
-                    }
-                    spine_core::NodeStatus::Opened => {
-                        codex_protocol::spine_tree::SpineTreeNodeStatus::Opened
-                    }
-                    spine_core::NodeStatus::Closed => {
-                        codex_protocol::spine_tree::SpineTreeNodeStatus::Closed
-                    }
-                    spine_core::NodeStatus::Compacted => {
-                        codex_protocol::spine_tree::SpineTreeNodeStatus::Compacted
-                    }
-                },
-                summary: node.summary,
-                memory_summary: node.memory_summary,
-                spawn_outcome: node.spawn_outcome.map(|outcome| match outcome {
-                    spine_core::SpawnOutcome::Completed => {
-                        codex_protocol::spine_tree::SpineSpawnOutcome::Completed
-                    }
-                    spine_core::SpawnOutcome::Errored => {
-                        codex_protocol::spine_tree::SpineSpawnOutcome::Errored
-                    }
-                    spine_core::SpawnOutcome::Aborted => {
-                        codex_protocol::spine_tree::SpineSpawnOutcome::Aborted
-                    }
-                }),
-                start: node.start.0,
-                end: node.end.map(|boundary| boundary.0),
-                context_pressure: node.pressure.map(|pressure| {
-                    codex_protocol::spine_tree::SpineNodeContextPressureSnapshot {
-                        open_input_tokens: pressure.open_input_tokens,
-                        current_input_tokens: pressure.current_input_tokens,
-                        context_tokens: pressure.context_tokens,
-                        problem: pressure.problem.map(|problem| match problem {
-                            spine_core::ContextPressureProblem::MissingCurrentUsage => {
-                                codex_protocol::spine_tree::SpineNodeContextPressureProblem::MissingCurrentUsage
-                            }
-                            spine_core::ContextPressureProblem::MissingOpenContextBaseline => {
-                                codex_protocol::spine_tree::SpineNodeContextPressureProblem::MissingOpenContextBaseline
-                            }
-                            spine_core::ContextPressureProblem::CoordinateMismatch => {
-                                codex_protocol::spine_tree::SpineNodeContextPressureProblem::CoordinateMismatch
-                            }
-                        }),
-                    }
-                }),
-            })
-            .collect();
-        Some(codex_protocol::protocol::SpineTreeUpdateEvent {
-            snapshot_seq,
-            active_node_id,
-            nodes,
-            settled_spawn_call_ids,
-        })
+    #[cfg(test)]
+    fn spine_tree_update(&self) -> Option<codex_protocol::protocol::SpineTreeUpdateEvent> {
+        self.session_configuration
+            .spine_jit_enabled()
+            .then_some(self.spine_runtime.as_ref())
+            .flatten()
+            .map(|spine| crate::spine::observer::tree_update(spine.runtime.runtime_projection()))
     }
 
     pub(crate) fn spine_status_prompt_overlay(
@@ -377,41 +278,22 @@ impl SessionState {
                 .max(0)
         });
         let spine = self.spine_runtime.as_ref()?;
-        Some(crate::spine::status::prompt_overlay(
-            spine.runtime.projection(),
-            spine.runtime.runtime_projection().usage_samples(),
+        let projection = spine.runtime.runtime_projection();
+        crate::spine::status::prompt_overlay(
+            projection.spine(),
+            projection.usage_samples(),
             context_left_tokens,
-        ))
+        )
     }
 
-    pub(crate) fn spine_memory_projection_entries(
-        &self,
-    ) -> Vec<crate::spine::memory_projection::SpinetreeMemoryProjectionEntry> {
-        if !self.session_configuration.spine_jit_enabled() {
-            return Vec::new();
-        }
+    pub(crate) fn take_spine_observer_effect(
+        &mut self,
+    ) -> Option<crate::spine::observer::CodexSpineObserverEffect> {
         self.spine_runtime
-            .as_ref()
-            .map(|spine| crate::spine::closed_memory_projection_entries(spine.runtime.projection()))
-            .unwrap_or_default()
-    }
-
-    pub(crate) fn spine_user_message_projection_entries(
-        &self,
-    ) -> Vec<crate::spine::memory_projection::SpinetreeUserMessageProjectionEntry> {
-        if !self.session_configuration.spine_jit_enabled() {
-            return Vec::new();
-        }
-        let Some(spine) = self.spine_runtime.as_ref() else {
-            return Vec::new();
-        };
-        let Some(frontier) = spine.runtime.frontier() else {
-            return Vec::new();
-        };
-        spine
+            .as_mut()?
             .runtime
-            .host()
-            .user_message_projection_entries(frontier)
+            .handlers_mut()
+            .take_observer_effect()
     }
 
     pub(crate) fn append_spine_inputs(&mut self, items: &[RolloutItem]) {
@@ -423,26 +305,13 @@ impl SessionState {
                 ordinal: spine.next_ordinal,
                 item: item.clone(),
             };
+            spine
+                .runtime
+                .eat(&input, &mut self.history)
+                .expect("native rollout append must produce a valid Spine projection");
             if crate::spine::is_spine_source_item(item) {
                 spine.next_ordinal = spine.next_ordinal.saturating_add(1);
             }
-            let output = spine
-                .runtime
-                .eat(&input)
-                .expect("native rollout append must produce a valid Spine projection");
-            spine
-                .runtime
-                .host()
-                .update_materialization(
-                    &mut spine.materialization,
-                    spine
-                        .runtime
-                        .frontier()
-                        .expect("active Spine runtime must expose its frontier"),
-                    &self.history,
-                    &output,
-                )
-                .expect("native rollout append must materialize deterministically");
         }
     }
 

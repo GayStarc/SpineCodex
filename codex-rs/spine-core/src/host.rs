@@ -1,12 +1,16 @@
 use crate::ContextEdit;
+use crate::ContextTransition;
 use crate::NativeItemRef;
-use crate::ProjectionDelta;
 use crate::RawBoundary;
 use crate::RolloutEvent;
 use crate::SpineCompiler;
 use crate::SpineConfig;
 use crate::SpineError;
+use crate::SpineEventHandlers;
+use crate::SpineObserverCause;
+use crate::SpineObserverEvent;
 use crate::SpineProjection;
+use crate::SpineTransitionEvent;
 use crate::TokenUsageSample;
 use crate::ToolCatalog;
 use crate::TrimProjection;
@@ -17,8 +21,9 @@ use std::fmt;
 ///
 /// Since `spine-core` 0.2, implementations own only incremental ingestion and
 /// their frontier. Native rollout persistence and rendered model context stay
-/// with the host, which applies [`ContextEdit`] from [`SpineOutput`] at its
-/// context transition boundary.
+/// with the host. [`SpineRuntime`] publishes typed transitions to registered
+/// handlers, which update the short-lived mutable history supplied to `eat`
+/// or `replay` before the runtime commits.
 pub trait SpineHost {
     type Input;
     type Frontier;
@@ -106,13 +111,13 @@ impl RuntimeProjection {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SpineOutput {
-    delta: ProjectionDelta,
+    context_edit: ContextEdit,
     runtime_projection: RuntimeProjection,
 }
 
 impl SpineOutput {
-    pub fn delta(&self) -> &ProjectionDelta {
-        &self.delta
+    pub fn context_edit(&self) -> &ContextEdit {
+        &self.context_edit
     }
 
     pub fn runtime_projection(&self) -> &RuntimeProjection {
@@ -120,19 +125,35 @@ impl SpineOutput {
     }
 }
 
-pub struct SpineRuntime<H: SpineHost> {
+pub struct SpineRuntime<H, D>
+where
+    H: SpineHost,
+    D: SpineEventHandlers<H::Frontier, Error = H::Error>,
+{
     host: H,
+    handlers: D,
     frontier: Option<H::Frontier>,
     compiler: SpineCompiler,
     runtime_projection: RuntimeProjection,
     tools: ToolCatalog,
 }
 
-impl<H: SpineHost> SpineRuntime<H> {
-    pub fn new(config: SpineConfig, host: H) -> Result<Self, InitError> {
+impl<H, D> SpineRuntime<H, D>
+where
+    H: SpineHost,
+    D: SpineEventHandlers<H::Frontier, Error = H::Error>,
+{
+    pub fn new(config: SpineConfig, host: H, handlers: D) -> Result<Self, InitError> {
         let tools = ToolCatalog::new(&config)?;
         let compiler = SpineCompiler::new(config)?;
         let active = !compiler.config_is_feature_off();
+        let cardinality = handlers.cardinality();
+        if active && !cardinality.is_valid() {
+            return Err(InitError::InvalidHandlerCardinality {
+                context_owners: cardinality.context_owners,
+                observers: cardinality.observers,
+            });
+        }
         let frontier = active.then(|| host.initial_frontier());
         let runtime_projection = RuntimeProjection {
             spine: compiler.projection().clone(),
@@ -144,6 +165,7 @@ impl<H: SpineHost> SpineRuntime<H> {
         };
         Ok(Self {
             host,
+            handlers,
             frontier,
             compiler,
             runtime_projection,
@@ -151,18 +173,17 @@ impl<H: SpineHost> SpineRuntime<H> {
         })
     }
 
-    pub fn eat(&mut self, input: &H::Input) -> Result<SpineOutput, RuntimeError<H::Error>> {
+    pub fn eat(
+        &mut self,
+        input: &H::Input,
+        history: &mut D::History,
+    ) -> Result<SpineOutput, RuntimeError<H::Error>> {
         if self.compiler.config_is_feature_off() {
             let projection = self.compiler.projection().clone();
-            let delta = ProjectionDelta {
-                context_edit: ContextEdit::between(
-                    &projection.visible_context,
-                    &projection.visible_context,
-                ),
-                projection,
-            };
+            let context_edit =
+                ContextEdit::between(&projection.visible_context, &projection.visible_context);
             return Ok(SpineOutput {
-                delta,
+                context_edit,
                 runtime_projection: self.runtime_projection.clone(),
             });
         }
@@ -196,10 +217,7 @@ impl<H: SpineHost> SpineRuntime<H> {
             (Some(previous), None) => TrimProjection::default().changed_boundaries_since(previous),
             (None, None) => Vec::new(),
         };
-        let delta = ProjectionDelta {
-            context_edit: ContextEdit::between(&before, &projection.visible_context),
-            projection: projection.clone(),
-        };
+        let context_edit = ContextEdit::between(&before, &projection.visible_context);
         let runtime_projection = RuntimeProjection {
             spine: projection,
             pending: step.pending,
@@ -209,27 +227,52 @@ impl<H: SpineHost> SpineRuntime<H> {
             trim_changed_boundaries,
         };
 
+        let transition = if context_edit.start == before.len() && context_edit.delete == 0 {
+            ContextTransition::Append(&context_edit.insert)
+        } else {
+            ContextTransition::ContextEpochReset(&runtime_projection.spine.visible_context)
+        };
+        let event = SpineTransitionEvent {
+            transition,
+            frontier: &step.frontier,
+            runtime_projection: &runtime_projection,
+        };
+        let prepared = self
+            .handlers
+            .prepare_context(history, event)
+            .map_err(RuntimeError::Host)?;
         self.frontier = Some(step.frontier);
         self.compiler = candidate;
         self.runtime_projection = runtime_projection.clone();
+        self.handlers.commit_context(history, prepared);
+        let frontier = self
+            .frontier
+            .as_ref()
+            .expect("active committed Spine runtime must have a host frontier");
+        self.handlers.notify_observers(SpineObserverEvent {
+            cause: SpineObserverCause::Live,
+            frontier,
+            runtime_projection: &self.runtime_projection,
+        });
         Ok(SpineOutput {
-            delta,
+            context_edit,
             runtime_projection,
         })
     }
 
-    pub fn reset(&mut self) {
-        self.compiler.reset();
-        self.frontier =
-            (!self.compiler.config_is_feature_off()).then(|| self.host.initial_frontier());
-        self.runtime_projection = RuntimeProjection {
-            spine: self.compiler.projection().clone(),
+    fn empty_runtime_state(&self) -> (Option<H::Frontier>, SpineCompiler, RuntimeProjection) {
+        let mut compiler = self.compiler.clone();
+        compiler.reset();
+        let frontier = (!compiler.config_is_feature_off()).then(|| self.host.initial_frontier());
+        let runtime_projection = RuntimeProjection {
+            spine: compiler.projection().clone(),
             pending: Vec::new(),
             observed_boundary: None,
             usage_samples: Vec::new(),
-            trim_projection: self.compiler.trim_projection().cloned(),
+            trim_projection: compiler.trim_projection().cloned(),
             trim_changed_boundaries: Vec::new(),
         };
+        (frontier, compiler, runtime_projection)
     }
 
     pub fn projection(&self) -> &SpineProjection {
@@ -240,38 +283,102 @@ impl<H: SpineHost> SpineRuntime<H> {
         &self.runtime_projection
     }
 
-    pub fn replay<'a, I>(&mut self, inputs: I) -> Result<SpineOutput, RuntimeError<H::Error>>
+    pub fn replay<'a, I>(
+        &mut self,
+        inputs: I,
+        history: &mut D::History,
+    ) -> Result<SpineOutput, RuntimeError<H::Error>>
     where
         I: IntoIterator<Item = &'a H::Input>,
         H::Input: 'a,
     {
         let before = self.compiler.projection().visible_context.clone();
         let previous_trim = self.runtime_projection.trim_projection.clone();
-        let previous_frontier = self.frontier.take();
-        let previous_compiler = self.compiler.clone();
-        let previous_runtime_projection = self.runtime_projection.clone();
-        self.reset();
+        let (mut frontier, mut compiler, mut runtime_projection) = self.empty_runtime_state();
         for input in inputs {
-            if let Err(error) = self.eat(input) {
-                self.frontier = previous_frontier;
-                self.compiler = previous_compiler;
-                self.runtime_projection = previous_runtime_projection;
-                return Err(error);
+            let Some(current_frontier) = frontier.as_ref() else {
+                continue;
+            };
+            let step = self
+                .host
+                .ingest(current_frontier, input)
+                .map_err(RuntimeError::Host)?;
+            let usage_sample = step.usage_sample();
+            let previous_step_trim = runtime_projection.trim_projection.clone();
+            let mut candidate = compiler.clone();
+            for event in step.events {
+                candidate.eat(event).map_err(RuntimeError::Spine)?;
             }
+            let projection = candidate.projection().clone();
+            let mut usage_samples = runtime_projection.usage_samples;
+            if let Some(sample) = usage_sample.filter(|sample| sample.input_tokens > 0) {
+                usage_samples.push(sample);
+            }
+            retain_relevant_usage_samples(&projection, &mut usage_samples);
+            let trim_projection = candidate.trim_projection().cloned();
+            let trim_changed_boundaries =
+                changed_trim_boundaries(previous_step_trim.as_ref(), trim_projection.as_ref());
+            frontier = Some(step.frontier);
+            compiler = candidate;
+            runtime_projection = RuntimeProjection {
+                spine: projection,
+                pending: step.pending,
+                observed_boundary: step.observed_boundary,
+                usage_samples,
+                trim_projection,
+                trim_changed_boundaries,
+            };
         }
-        let mut output = self.output();
-        output.delta.context_edit =
-            ContextEdit::between(&before, &output.runtime_projection.spine.visible_context);
-        output.runtime_projection.trim_changed_boundaries = changed_trim_boundaries(
+        let context_edit = ContextEdit::between(&before, &runtime_projection.spine.visible_context);
+        runtime_projection.trim_changed_boundaries = changed_trim_boundaries(
             previous_trim.as_ref(),
-            output.runtime_projection.trim_projection.as_ref(),
+            runtime_projection.trim_projection.as_ref(),
         );
-        self.runtime_projection = output.runtime_projection.clone();
-        Ok(output)
+        let prepared = if let Some(final_frontier) = frontier.as_ref() {
+            let event = SpineTransitionEvent {
+                transition: ContextTransition::ContextEpochReset(
+                    &runtime_projection.spine.visible_context,
+                ),
+                frontier: final_frontier,
+                runtime_projection: &runtime_projection,
+            };
+            Some(
+                self.handlers
+                    .prepare_context(history, event)
+                    .map_err(RuntimeError::Host)?,
+            )
+        } else {
+            None
+        };
+        self.frontier = frontier;
+        self.compiler = compiler;
+        self.runtime_projection = runtime_projection.clone();
+        if let Some(prepared) = prepared.into_iter().next() {
+            self.handlers.commit_context(history, prepared);
+        }
+        if let Some(frontier) = self.frontier.as_ref() {
+            self.handlers.notify_observers(SpineObserverEvent {
+                cause: SpineObserverCause::Replay,
+                frontier,
+                runtime_projection: &self.runtime_projection,
+            });
+        }
+        Ok(SpineOutput {
+            context_edit,
+            runtime_projection,
+        })
     }
 
     pub fn host(&self) -> &H {
         &self.host
+    }
+
+    pub fn handlers(&self) -> &D {
+        &self.handlers
+    }
+
+    pub fn handlers_mut(&mut self) -> &mut D {
+        &mut self.handlers
     }
 
     pub fn frontier(&self) -> Option<&H::Frontier> {
@@ -284,20 +391,6 @@ impl<H: SpineHost> SpineRuntime<H> {
 
     pub fn extend_system_prompt(&self, base: &str) -> String {
         self.compiler.extend_system_prompt(base)
-    }
-
-    fn output(&self) -> SpineOutput {
-        let projection = self.compiler.projection().clone();
-        SpineOutput {
-            delta: ProjectionDelta {
-                context_edit: ContextEdit::between(
-                    &projection.visible_context,
-                    &projection.visible_context,
-                ),
-                projection,
-            },
-            runtime_projection: self.runtime_projection.clone(),
-        }
     }
 }
 

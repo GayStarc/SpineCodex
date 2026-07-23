@@ -9,13 +9,17 @@ use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::RolloutItem;
 use spine_core::ContextItem;
+use spine_core::ContextTransition;
+use spine_core::HandlerCardinality;
 use spine_core::HostStep;
 use spine_core::MemorySlot;
 use spine_core::NativeItemRef;
 use spine_core::RawBoundary;
 use spine_core::RuntimeProjection;
+use spine_core::SpineEventHandlers;
 use spine_core::SpineHost;
-use spine_core::SpineOutput;
+use spine_core::SpineObserverEvent;
+use spine_core::SpineTransitionEvent;
 use spine_core::TokenUsageSample;
 use std::fmt;
 
@@ -25,20 +29,33 @@ pub(crate) struct CodexSpineFrontier {
     emitted_events: usize,
 }
 
+impl CodexSpineFrontier {
+    pub(super) fn last_item(&self) -> Option<&RolloutItem> {
+        self.source.last().map(|input| &input.item)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct CodexSpineInput {
     pub(crate) ordinal: usize,
     pub(crate) item: RolloutItem,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct CodexSpineMaterialization {
     ledger: MaterializationLedger,
     source_len: usize,
     history_version: u64,
+    stats: MaterializationStats,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct MaterializationStats {
+    pub(crate) full_rebuilds: usize,
+    pub(crate) incremental_renders: usize,
+}
+
+#[derive(Clone, Debug)]
 enum MaterializationLedger {
     Jit {
         entries: Vec<SemanticMaterialization>,
@@ -49,19 +66,38 @@ enum MaterializationLedger {
     },
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct SemanticMaterialization {
     item: ContextItem,
     rendered: Vec<ResponseItem>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct NativeMaterialization {
     input: CodexSpineInput,
     rendered: Vec<ResponseItem>,
 }
 
 impl CodexSpineMaterialization {
+    fn empty(host: CodexSpineHost) -> Self {
+        let ledger = if host.jit_enabled {
+            MaterializationLedger::Jit {
+                entries: Vec::new(),
+                pending: Vec::new(),
+            }
+        } else {
+            MaterializationLedger::TrimOnly {
+                entries: Vec::new(),
+            }
+        };
+        Self {
+            ledger,
+            source_len: 0,
+            history_version: 0,
+            stats: MaterializationStats::default(),
+        }
+    }
+
     pub(crate) fn projected_items(&self) -> Vec<ResponseItem> {
         match &self.ledger {
             MaterializationLedger::Jit { entries, pending } => entries
@@ -74,6 +110,17 @@ impl CodexSpineMaterialization {
                 .flat_map(|entry| entry.rendered.iter().cloned())
                 .collect(),
         }
+    }
+
+    fn inherit_stats(&mut self, previous: &Self) {
+        self.stats.full_rebuilds = self
+            .stats
+            .full_rebuilds
+            .saturating_add(previous.stats.full_rebuilds);
+        self.stats.incremental_renders = self
+            .stats
+            .incremental_renders
+            .saturating_add(previous.stats.incremental_renders);
     }
 }
 
@@ -103,24 +150,15 @@ pub(crate) fn replay_inputs(
         .filter(|item| super::is_spine_source_item(item))
         .count();
     let live_effective = effective_rollout(live_rollout);
-    let live_source_count = live_effective
-        .iter()
-        .filter(|(_, item)| super::is_spine_source_item(item))
-        .count();
     let history_prefix_len = inputs
         .iter()
         .rev()
         .find_map(|input| match &input.item {
-            RolloutItem::Compacted(compacted) => Some(
-                compacted
-                    .replacement_history
-                    .as_ref()
-                    .map_or_else(
-                        || history.raw_items().len().saturating_sub(live_source_count),
-                        Vec::len,
-                    )
-                    .min(history.raw_items().len()),
-            ),
+            RolloutItem::Compacted(compacted) => compacted
+                .replacement_history
+                .as_ref()
+                .filter(|replacement| history.raw_items().starts_with(replacement))
+                .map(Vec::len),
             _ => None,
         })
         .unwrap_or(0);
@@ -131,8 +169,6 @@ pub(crate) fn replay_inputs(
         .iter_mut()
         .rfind(|input| matches!(input.item, RolloutItem::Compacted(_)))
     {
-        // Keep reconstructed replacement history opaque; it already contains
-        // the model-visible projection from the compacted epoch.
         compacted.replacement_history = Some(history.raw_items()[..history_prefix_len].to_vec());
     }
     let live_history = &history.raw_items()[history_prefix_len..];
@@ -150,7 +186,8 @@ pub(crate) fn replay_inputs(
         })
         .collect::<Vec<_>>();
     let mut source_cursor = 0;
-    let mapped_ordinals = live_history.iter()
+    let mapped_ordinals = live_history
+        .iter()
         .map(|history_item| {
             let offset = live_sources[source_cursor..]
                 .iter()
@@ -164,10 +201,7 @@ pub(crate) fn replay_inputs(
         .filter(|item| super::is_spine_source_item(item))
         .count();
     if let Some(mapped_ordinals) = mapped_ordinals {
-        let mut mapped_history = mapped_ordinals
-            .into_iter()
-            .zip(live_history)
-            .peekable();
+        let mut mapped_history = mapped_ordinals.into_iter().zip(live_history).peekable();
         for (ordinal, item) in live_effective {
             let ordinal = archived_source_count.saturating_add(ordinal);
             match item {
@@ -193,11 +227,18 @@ pub(crate) fn replay_inputs(
         return (inputs, canonical_next_ordinal);
     }
 
+    let live_source_count = live_effective
+        .iter()
+        .filter(|(_, item)| super::is_spine_source_item(item))
+        .count();
+    let fallback_prefix_len = live_history.len().saturating_sub(live_source_count);
     let mut usage = live_effective
         .into_iter()
         .filter_map(|(ordinal, item)| match item {
             RolloutItem::EventMsg(EventMsg::TokenCount(_)) => Some((
-                ordinal.min(live_history.len()),
+                fallback_prefix_len
+                    .saturating_add(ordinal)
+                    .min(live_history.len()),
                 item.clone(),
             )),
             _ => None,
@@ -277,6 +318,116 @@ impl fmt::Display for CodexSpineHostError {
 
 impl std::error::Error for CodexSpineHostError {}
 
+#[derive(Debug)]
+pub(crate) struct CodexSpineEventHandlers {
+    host: CodexSpineHost,
+    memory_projection_enabled: bool,
+    materialization: CodexSpineMaterialization,
+    pending_observer_effect: Option<super::observer::CodexSpineObserverEffect>,
+}
+
+impl CodexSpineEventHandlers {
+    pub(crate) fn new(host: CodexSpineHost, memory_projection_enabled: bool) -> Self {
+        Self {
+            host,
+            memory_projection_enabled,
+            materialization: CodexSpineMaterialization::empty(host),
+            pending_observer_effect: None,
+        }
+    }
+
+    pub(crate) fn take_observer_effect(
+        &mut self,
+    ) -> Option<super::observer::CodexSpineObserverEffect> {
+        self.pending_observer_effect.take()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn materialization_stats(&self) -> MaterializationStats {
+        self.materialization.stats.clone()
+    }
+}
+
+impl SpineEventHandlers<CodexSpineFrontier> for CodexSpineEventHandlers {
+    type History = ContextManager;
+    type PreparedContext = CodexSpineMaterialization;
+    type Error = CodexSpineHostError;
+
+    fn cardinality(&self) -> HandlerCardinality {
+        HandlerCardinality {
+            context_owners: 1,
+            observers: 1,
+        }
+    }
+
+    fn prepare_context(
+        &self,
+        history: &Self::History,
+        event: SpineTransitionEvent<'_, CodexSpineFrontier>,
+    ) -> Result<Self::PreparedContext, Self::Error> {
+        match event.transition {
+            ContextTransition::Append(items) => {
+                let visible = &event.runtime_projection.spine().visible_context;
+                let start = visible.len().checked_sub(items.len()).ok_or_else(|| {
+                    CodexSpineHostError("context append exceeds runtime projection".to_string())
+                })?;
+                let mut materialization = self.materialization.clone();
+                self.host.update_materialization(
+                    &mut materialization,
+                    event.frontier,
+                    history,
+                    &spine_core::ContextEdit {
+                        start,
+                        delete: 0,
+                        insert: items.to_vec(),
+                    },
+                    event.runtime_projection,
+                )?;
+                Ok(materialization)
+            }
+            ContextTransition::ContextEpochReset(context) => {
+                if context != event.runtime_projection.spine().visible_context {
+                    return Err(CodexSpineHostError(
+                        "context epoch reset does not match the runtime projection".to_string(),
+                    ));
+                }
+                let mut materialization = self.host.rebuild_materialization(
+                    event.frontier,
+                    history,
+                    event.runtime_projection,
+                )?;
+                materialization.inherit_stats(&self.materialization);
+                Ok(materialization)
+            }
+        }
+    }
+
+    fn commit_context(
+        &mut self,
+        history: &mut Self::History,
+        mut materialization: Self::PreparedContext,
+    ) {
+        history.set_projected_items(materialization.projected_items());
+        materialization.history_version = history.history_version();
+        self.materialization = materialization;
+    }
+
+    fn notify_observers(&mut self, event: SpineObserverEvent<'_, CodexSpineFrontier>) {
+        let effect = super::observer::CodexSpineObserverEffect::from_event(
+            self.host,
+            self.memory_projection_enabled,
+            event,
+        );
+        if effect.is_empty() {
+            return;
+        }
+        match &mut self.pending_observer_effect {
+            Some(pending) => pending.merge(effect),
+            None => self.pending_observer_effect = Some(effect),
+        }
+    }
+}
+
 impl SpineHost for CodexSpineHost {
     type Input = CodexSpineInput;
     type Frontier = CodexSpineFrontier;
@@ -345,13 +496,17 @@ impl CodexSpineHost {
             .map(|input| (input.ordinal, &input.item))
             .collect::<Vec<_>>();
         let trim = update.trim_projection();
+        let mut stats = MaterializationStats {
+            full_rebuilds: 1,
+            incremental_renders: 0,
+        };
         let ledger = if self.jit_enabled {
             let entries = update
                 .spine()
                 .visible_context
                 .iter()
                 .map(|item| {
-                    self.render_semantic_item(item, &effective, base, update)
+                    self.render_semantic_item(item, &effective, base, update, &mut stats)
                         .map(|rendered| SemanticMaterialization {
                             item: item.clone(),
                             rendered,
@@ -360,7 +515,7 @@ impl CodexSpineHost {
                 .collect::<Result<Vec<_>, _>>()?;
             MaterializationLedger::Jit {
                 entries,
-                pending: Self::render_pending(&effective, base, update)?,
+                pending: Self::render_pending(&effective, base, update, &mut stats)?,
             }
         } else {
             let start = frontier
@@ -371,7 +526,7 @@ impl CodexSpineHost {
             let entries = frontier.source[start..]
                 .iter()
                 .map(|input| {
-                    Self::render_native_input(input, base, trim).map(|rendered| {
+                    Self::render_native_input(input, base, trim, &mut stats).map(|rendered| {
                         NativeMaterialization {
                             input: input.clone(),
                             rendered,
@@ -386,6 +541,7 @@ impl CodexSpineHost {
             ledger,
             source_len: frontier.source.len(),
             history_version: base.history_version(),
+            stats,
         })
     }
 
@@ -394,11 +550,13 @@ impl CodexSpineHost {
         materialization: &mut CodexSpineMaterialization,
         frontier: &CodexSpineFrontier,
         base: &ContextManager,
-        output: &SpineOutput,
+        edit: &spine_core::ContextEdit,
+        update: &RuntimeProjection,
     ) -> Result<(), CodexSpineHostError> {
         if materialization.history_version != base.history_version() {
-            *materialization =
-                self.rebuild_materialization(frontier, base, output.runtime_projection())?;
+            let mut rebuilt = self.rebuild_materialization(frontier, base, update)?;
+            rebuilt.inherit_stats(materialization);
+            *materialization = rebuilt;
             return Ok(());
         }
 
@@ -409,7 +567,6 @@ impl CodexSpineHost {
             .collect::<Vec<_>>();
         match &mut materialization.ledger {
             MaterializationLedger::Jit { entries, pending } => {
-                let edit = &output.delta().context_edit;
                 let end = edit.start.saturating_add(edit.delete);
                 if end > entries.len() {
                     return Err(CodexSpineHostError(format!(
@@ -426,7 +583,8 @@ impl CodexSpineHost {
                             item,
                             &effective,
                             base,
-                            output.runtime_projection(),
+                            update,
+                            &mut materialization.stats,
                         )
                         .map(|rendered| SemanticMaterialization {
                             item: item.clone(),
@@ -436,7 +594,7 @@ impl CodexSpineHost {
                     .collect::<Result<Vec<_>, _>>()?;
                 entries.splice(edit.start..end, inserts);
 
-                let expected = &output.runtime_projection().spine().visible_context;
+                let expected = &update.spine().visible_context;
                 if !entries.iter().map(|entry| &entry.item).eq(expected.iter()) {
                     return Err(CodexSpineHostError(
                         "context edit did not reproduce the runtime projection".to_string(),
@@ -444,8 +602,7 @@ impl CodexSpineHost {
                 }
 
                 for entry in entries.iter_mut().filter(|entry| {
-                    output
-                        .runtime_projection()
+                    update
                         .trim_changed_boundaries()
                         .iter()
                         .any(|boundary| item_references_boundary(&entry.item, *boundary))
@@ -454,15 +611,16 @@ impl CodexSpineHost {
                         &entry.item,
                         &effective,
                         base,
-                        output.runtime_projection(),
+                        update,
+                        &mut materialization.stats,
                     )?;
                 }
-                *pending = Self::render_pending(&effective, base, output.runtime_projection())?;
+                *pending =
+                    Self::render_pending(&effective, base, update, &mut materialization.stats)?;
             }
             MaterializationLedger::TrimOnly { entries } => {
                 if materialization.source_len > frontier.source.len() {
-                    *materialization =
-                        self.rebuild_materialization(frontier, base, output.runtime_projection())?;
+                    *materialization = self.rebuild_materialization(frontier, base, update)?;
                     return Ok(());
                 }
                 for input in &frontier.source[materialization.source_len..] {
@@ -474,13 +632,13 @@ impl CodexSpineHost {
                         rendered: Self::render_native_input(
                             input,
                             base,
-                            output.runtime_projection().trim_projection(),
+                            update.trim_projection(),
+                            &mut materialization.stats,
                         )?,
                     });
                 }
                 for entry in entries.iter_mut().filter(|entry| {
-                    output
-                        .runtime_projection()
+                    update
                         .trim_changed_boundaries()
                         .iter()
                         .any(|boundary| entry.input.ordinal as u64 == boundary.0)
@@ -488,7 +646,8 @@ impl CodexSpineHost {
                     entry.rendered = Self::render_native_input(
                         &entry.input,
                         base,
-                        output.runtime_projection().trim_projection(),
+                        update.trim_projection(),
+                        &mut materialization.stats,
                     )?;
                 }
             }
@@ -504,7 +663,9 @@ impl CodexSpineHost {
         effective: &[(usize, &RolloutItem)],
         base: &ContextManager,
         update: &RuntimeProjection,
+        stats: &mut MaterializationStats,
     ) -> Result<Vec<ResponseItem>, CodexSpineHostError> {
+        stats.incremental_renders = stats.incremental_renders.saturating_add(1);
         materialize_context(
             std::slice::from_ref(item),
             effective,
@@ -519,6 +680,7 @@ impl CodexSpineHost {
         effective: &[(usize, &RolloutItem)],
         base: &ContextManager,
         update: &RuntimeProjection,
+        stats: &mut MaterializationStats,
     ) -> Result<Vec<ResponseItem>, CodexSpineHostError> {
         let mut pending = Vec::new();
         for source in update.pending() {
@@ -528,6 +690,7 @@ impl CodexSpineHost {
             let raw = response_item_at(effective, *ordinal, Some(base)).ok_or_else(|| {
                 CodexSpineHostError(format!("missing rollout source {}", ordinal.0))
             })?;
+            stats.incremental_renders = stats.incremental_renders.saturating_add(1);
             pending.push(project_trim_item(
                 raw,
                 usize::try_from(ordinal.0).unwrap_or(usize::MAX),
@@ -541,7 +704,9 @@ impl CodexSpineHost {
         input: &CodexSpineInput,
         base: &ContextManager,
         trim: Option<&spine_core::TrimProjection>,
+        stats: &mut MaterializationStats,
     ) -> Result<Vec<ResponseItem>, CodexSpineHostError> {
+        stats.incremental_renders = stats.incremental_renders.saturating_add(1);
         materialize_trim_only_context(&[(input.ordinal, &input.item)], trim, Some(base))
             .map_err(CodexSpineHostError)
     }
