@@ -232,6 +232,39 @@ fn rollout_history(items: &[RolloutItem]) -> Vec<ResponseItem> {
         .collect()
 }
 
+fn current_rollout_history(items: &[RolloutItem]) -> Vec<ResponseItem> {
+    let (replacement, suffix) = match items
+        .iter()
+        .rposition(|item| matches!(item, RolloutItem::Compacted(_)))
+    {
+        Some(index) => {
+            let RolloutItem::Compacted(compacted) = &items[index] else {
+                unreachable!("matched compacted rollout item")
+            };
+            (
+                compacted.replacement_history.clone().unwrap_or_default(),
+                &items[index + 1..],
+            )
+        }
+        None => (Vec::new(), items),
+    };
+    let mut history = ContextManager::new();
+    history.replace(replacement);
+    for item in suffix {
+        match item {
+            RolloutItem::ResponseItem(item) => {
+                history.record_items([item], TruncationPolicy::Tokens(10_000));
+            }
+            RolloutItem::InterAgentCommunication(communication) => {
+                let item = communication.to_model_input_item();
+                history.record_items([&item], TruncationPolicy::Tokens(10_000));
+            }
+            _ => {}
+        }
+    }
+    history.into_raw_items()
+}
+
 #[tokio::test]
 async fn spine_feature_off_clones_native_history_unchanged() {
     let mut session_configuration = make_session_configuration_for_tests().await;
@@ -1090,7 +1123,7 @@ fn assert_incremental_matches_rebuild(
     rollout: &[RolloutItem],
 ) {
     let mut rebuilt = SessionState::new(configuration.clone());
-    rebuilt.replace_history_from_rollout(live.history.raw_items().to_vec(), None, rollout);
+    rebuilt.replace_history_from_rollout(current_rollout_history(rollout), None, rollout);
     assert_eq!(
         live.clone_history().raw_items(),
         rebuilt.clone_history().raw_items()
@@ -1277,7 +1310,7 @@ async fn codex_context_handler_prepare_failure_preserves_committed_state() {
 }
 
 #[tokio::test]
-async fn spine_feature_on_projects_live_native_rollout_at_clone_boundary() {
+async fn spine_event_handler_commits_projected_context_to_history() {
     let mut session_configuration = make_session_configuration_for_tests().await;
     session_configuration.enable_spine_jit_for_test();
     let mut state = SessionState::new(session_configuration);
@@ -1300,12 +1333,9 @@ async fn spine_feature_on_projects_live_native_rollout_at_clone_boundary() {
     };
     state.record_items([&call, &output], TruncationPolicy::Tokens(10_000));
 
-    let native_items = state.history.raw_items().to_vec();
-    let projected = state.clone_history();
-    assert_eq!(projected.raw_items().len(), 3);
-    assert!(response_text(&projected.raw_items()[0]).starts_with("<spine_node"));
-    assert_eq!(state.history.raw_items(), native_items);
-    assert_ne!(projected.raw_items(), state.history.raw_items());
+    assert_eq!(state.clone_history().raw_items(), state.history.raw_items());
+    assert_eq!(state.history.raw_items().len(), 3);
+    assert!(response_text(&state.history.raw_items()[0]).starts_with("<spine_node"));
 }
 
 #[tokio::test]

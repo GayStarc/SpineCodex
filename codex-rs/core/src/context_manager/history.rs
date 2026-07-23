@@ -203,6 +203,10 @@ impl ContextManager {
         self.world_state_baseline = None;
     }
 
+    pub(crate) fn replace_items(&mut self, items: Vec<ResponseItem>) {
+        self.items = items;
+    }
+
     /// Replace image content in the last turn if it originated from a tool output.
     /// Returns true when a tool image was replaced, false otherwise.
     pub(crate) fn replace_last_turn_images(&mut self, placeholder: &str) -> bool {

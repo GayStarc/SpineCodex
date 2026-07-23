@@ -138,14 +138,14 @@ impl SessionState {
     where
         I: IntoIterator,
         I::Item: std::ops::Deref<Target = ResponseItem>,
-        I::IntoIter: Clone,
     {
-        let items = items.into_iter();
-        let rollout_items = items
-            .clone()
-            .map(|item| RolloutItem::ResponseItem((*item).clone()))
-            .collect::<Vec<_>>();
+        let start = self.history.raw_items().len();
         self.history.record_items(items, policy);
+        let rollout_items = self.history.raw_items()[start..]
+            .iter()
+            .cloned()
+            .map(RolloutItem::ResponseItem)
+            .collect::<Vec<_>>();
         self.append_spine_inputs(&rollout_items);
     }
 
@@ -250,11 +250,6 @@ impl SessionState {
     }
 
     pub(crate) fn clone_history(&self) -> ContextManager {
-        if let Some(spine) = &self.spine_runtime {
-            let mut history = self.history.clone();
-            history.replace(spine.runtime.handlers().projected_items());
-            return history;
-        }
         self.history.clone()
     }
 

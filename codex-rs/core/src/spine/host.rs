@@ -350,6 +350,7 @@ impl CodexSpineEventHandlers {
         self.materialization.stats.clone()
     }
 
+    #[cfg(test)]
     pub(crate) fn projected_items(&self) -> Vec<ResponseItem> {
         self.materialization.projected_items()
     }
@@ -439,6 +440,7 @@ impl SpineEventHandlers<CodexSpineFrontier> for CodexSpineEventHandlers {
         history: &mut Self::History,
         mut materialization: Self::PreparedContext,
     ) {
+        history.replace_items(materialization.projected_items());
         materialization.history_version = history.history_version();
         self.materialization = materialization;
     }
@@ -692,7 +694,7 @@ impl CodexSpineHost {
         self,
         item: &ContextItem,
         effective: &[(usize, &RolloutItem)],
-        base: &ContextManager,
+        _base: &ContextManager,
         update: &RuntimeProjection,
         stats: &mut MaterializationStats,
     ) -> Result<Vec<ResponseItem>, CodexSpineHostError> {
@@ -701,7 +703,7 @@ impl CodexSpineHost {
             std::slice::from_ref(item),
             effective,
             update.trim_projection(),
-            Some(base),
+            None,
             self.spawn_enabled,
         )
         .map_err(CodexSpineHostError)
@@ -709,7 +711,7 @@ impl CodexSpineHost {
 
     fn render_pending(
         effective: &[(usize, &RolloutItem)],
-        base: &ContextManager,
+        _base: &ContextManager,
         update: &RuntimeProjection,
         stats: &mut MaterializationStats,
     ) -> Result<Vec<ResponseItem>, CodexSpineHostError> {
@@ -718,7 +720,7 @@ impl CodexSpineHost {
             let NativeItemRef::Rollout { ordinal } = source else {
                 continue;
             };
-            let raw = response_item_at(effective, *ordinal, Some(base)).ok_or_else(|| {
+            let raw = response_item_at(effective, *ordinal, None).ok_or_else(|| {
                 CodexSpineHostError(format!("missing rollout source {}", ordinal.0))
             })?;
             stats.incremental_renders = stats.incremental_renders.saturating_add(1);
@@ -733,12 +735,12 @@ impl CodexSpineHost {
 
     fn render_native_input(
         input: &CodexSpineInput,
-        base: &ContextManager,
+        _base: &ContextManager,
         trim: Option<&spine_core::TrimProjection>,
         stats: &mut MaterializationStats,
     ) -> Result<Vec<ResponseItem>, CodexSpineHostError> {
         stats.incremental_renders = stats.incremental_renders.saturating_add(1);
-        materialize_trim_only_context(&[(input.ordinal, &input.item)], trim, Some(base))
+        materialize_trim_only_context(&[(input.ordinal, &input.item)], trim, None)
             .map_err(CodexSpineHostError)
     }
 }
