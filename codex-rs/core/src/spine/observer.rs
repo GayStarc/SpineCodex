@@ -1,9 +1,5 @@
-use super::host::CodexSpineFrontier;
-use super::host::CodexSpineHost;
 use super::memory_projection::SpinetreeMemoryProjectionEntry;
 use super::memory_projection::SpinetreeUserMessageProjectionEntry;
-use codex_protocol::protocol::EventMsg;
-use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SpineTreeNodeSnapshot;
 use codex_protocol::protocol::SpineTreeUpdateEvent;
 use codex_protocol::spine_tree::SpineNodeContextPressureProblem;
@@ -13,10 +9,7 @@ use codex_protocol::spine_tree::SpineTreeNodeStatus;
 use spine_core::ContextPressureProblem;
 use spine_core::NodeKind;
 use spine_core::NodeStatus;
-use spine_core::RuntimeProjection;
 use spine_core::SpineContextProjection;
-use spine_core::SpineObserverCause;
-use spine_core::SpineObserverEvent;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct CodexSpineMemoryProjection {
@@ -31,27 +24,6 @@ pub(crate) struct CodexSpineObserverEffect {
 }
 
 impl CodexSpineObserverEffect {
-    pub(super) fn from_event(
-        host: CodexSpineHost,
-        memory_projection_enabled: bool,
-        event: SpineObserverEvent<'_, CodexSpineFrontier>,
-    ) -> Self {
-        let tree_update = host
-            .jit_enabled
-            .then(|| tree_update(event.runtime_projection));
-        let memory_projection = (host.jit_enabled
-            && memory_projection_enabled
-            && should_publish_memory(event.cause, event.frontier))
-        .then(|| CodexSpineMemoryProjection {
-            entries: super::closed_memory_projection_entries(event.runtime_projection.spine()),
-            user_messages: host.user_message_projection_entries(event.frontier),
-        });
-        Self {
-            tree_update,
-            memory_projection,
-        }
-    }
-
     pub(super) fn merge(&mut self, newer: Self) {
         if newer.tree_update.is_some() {
             self.tree_update = newer.tree_update;
@@ -60,24 +32,6 @@ impl CodexSpineObserverEffect {
             self.memory_projection = newer.memory_projection;
         }
     }
-
-    pub(super) fn is_empty(&self) -> bool {
-        self.tree_update.is_none() && self.memory_projection.is_none()
-    }
-}
-
-fn should_publish_memory(cause: SpineObserverCause, frontier: &CodexSpineFrontier) -> bool {
-    match cause {
-        SpineObserverCause::Replay => true,
-        SpineObserverCause::Live => !matches!(
-            frontier.last_item(),
-            Some(RolloutItem::EventMsg(EventMsg::TokenCount(_)))
-        ),
-    }
-}
-
-pub(crate) fn tree_update(projection: &RuntimeProjection) -> SpineTreeUpdateEvent {
-    tree_update_from_parts(projection.spine(), projection.usage_samples())
 }
 
 pub(crate) fn context_tree_update(projection: &SpineContextProjection) -> SpineTreeUpdateEvent {

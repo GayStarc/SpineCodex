@@ -22,6 +22,7 @@ use spine_core::NativeItemRef;
 #[cfg(test)]
 use spine_core::NodeStatus;
 use spine_core::RawBoundary;
+#[cfg(test)]
 use spine_core::RolloutEvent;
 use spine_core::SpawnReceipt;
 #[cfg(test)]
@@ -34,11 +35,11 @@ use spine_core::ToolOutcome;
 use spine_core::ToolUse;
 use spine_core::TrimEdit;
 use spine_core::TrimProjection;
+#[cfg(test)]
 use spine_core::TrimRequest;
 
 pub(crate) mod config;
 pub(crate) mod context_handler;
-pub(crate) mod host;
 pub(crate) mod memory_projection;
 pub(crate) mod observer;
 pub(crate) mod pressure;
@@ -112,6 +113,7 @@ pub(crate) fn user_message_projection_entries(
     user_message_projection_entries_from_effective(&effective_rollout(rollout))
 }
 
+#[cfg(test)]
 pub(crate) fn user_message_projection_entries_from_effective(
     effective: &[(usize, &RolloutItem)],
 ) -> Vec<memory_projection::SpinetreeUserMessageProjectionEntry> {
@@ -201,6 +203,7 @@ pub(crate) fn validate_trim_request(
     validate_trim_request_from_effective(&effective_rollout(rollout), current_call_id, request)
 }
 
+#[cfg(test)]
 pub(crate) fn validate_trim_request_from_effective(
     effective: &[(usize, &RolloutItem)],
     current_call_id: &str,
@@ -326,6 +329,7 @@ pub(crate) fn is_spine_source_item(item: &RolloutItem) -> bool {
     )
 }
 
+#[cfg(test)]
 fn lex_rollout(effective: &[(usize, &RolloutItem)], spawn_enabled: bool) -> Vec<RolloutEvent> {
     let mut events = Vec::new();
     let mut index = 0;
@@ -393,108 +397,7 @@ fn lex_rollout(effective: &[(usize, &RolloutItem)], spawn_enabled: bool) -> Vec<
     events
 }
 
-struct StableLex {
-    events: Vec<RolloutEvent>,
-    pending: Vec<NativeItemRef>,
-}
-
-fn stable_lex_rollout(effective: &[(usize, &RolloutItem)], spawn_enabled: bool) -> StableLex {
-    let mut events = Vec::new();
-    let mut index = 0;
-    while index < effective.len() {
-        let (raw_index, item) = effective[index];
-        match item {
-            RolloutItem::ResponseItem(response_item) => {
-                if let Some((group, consumed)) =
-                    completed_tool_group(effective, index, spawn_enabled)
-                {
-                    if !group.is_complete() {
-                        let next = index + consumed;
-                        if next == effective.len() {
-                            break;
-                        }
-                        for (raw_index, item) in &effective[index..next] {
-                            if let RolloutItem::ResponseItem(item) = item {
-                                events.push(RolloutEvent::Message(message_from_response_item(
-                                    *raw_index, item,
-                                )));
-                            }
-                        }
-                        index = next;
-                        continue;
-                    }
-                    events.push(RolloutEvent::ToolCall(group));
-                    index += consumed;
-                    continue;
-                }
-                if is_leading_assistant_item(response_item)
-                    && effective[index..]
-                        .iter()
-                        .all(|(_, item)| matches!(item, RolloutItem::ResponseItem(item) if is_leading_assistant_item(item)))
-                {
-                    break;
-                }
-                events.push(RolloutEvent::Message(message_from_response_item(
-                    raw_index,
-                    response_item,
-                )));
-            }
-            RolloutItem::InterAgentCommunication(communication) => {
-                events.push(RolloutEvent::Message(message_from_response_item(
-                    raw_index,
-                    &communication.to_model_input_item(),
-                )));
-            }
-            RolloutItem::Compacted(compacted) => {
-                let replacement_history = compacted
-                    .replacement_history
-                    .as_ref()
-                    .map(|items| {
-                        items
-                            .iter()
-                            .enumerate()
-                            .map(|(replacement_index, _)| ContextItem::Native {
-                                source: NativeItemRef::CompactReplacement {
-                                    compact_boundary: RawBoundary(raw_index as u64),
-                                    index: u32::try_from(replacement_index).unwrap_or(u32::MAX),
-                                },
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_else(|| {
-                        vec![ContextItem::Message {
-                            message: Message {
-                                boundary: RawBoundary(raw_index as u64),
-                                role: MessageRole::Assistant,
-                                content: compacted.message.clone(),
-                            },
-                            user_anchor: None,
-                        }]
-                    });
-                events.push(RolloutEvent::Compact {
-                    boundary: RawBoundary(raw_index as u64),
-                    replacement_history,
-                });
-            }
-            RolloutItem::SessionMeta(_)
-            | RolloutItem::InterAgentCommunicationMetadata { .. }
-            | RolloutItem::TurnContext(_)
-            | RolloutItem::WorldState(_)
-            | RolloutItem::EventMsg(_) => {}
-        }
-        index += 1;
-    }
-    let pending = effective[index..]
-        .iter()
-        .filter_map(|(ordinal, item)| {
-            is_spine_source_item(item).then_some(NativeItemRef::Rollout {
-                ordinal: RawBoundary(*ordinal as u64),
-            })
-        })
-        .collect();
-    StableLex { events, pending }
-}
-
+#[cfg(test)]
 fn completed_tool_group(
     effective: &[(usize, &RolloutItem)],
     start: usize,
@@ -625,6 +528,7 @@ fn is_valid_spawn_success_carrier(call: &ToolUse, body: &FunctionCallOutputBody)
     receipt.validate_for(&tasks).is_ok()
 }
 
+#[cfg(test)]
 fn is_leading_assistant_item(item: &ResponseItem) -> bool {
     matches!(
         item,
@@ -830,6 +734,7 @@ fn project_toolcall_item(
     project_trim_item(item, raw_ordinal, trim)
 }
 
+#[cfg(test)]
 fn materialize_trim_only_context(
     effective: &[(usize, &RolloutItem)],
     trim: Option<&TrimProjection>,
