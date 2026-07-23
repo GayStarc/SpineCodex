@@ -74,11 +74,15 @@ pub struct ToolResponseChar {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ParseStack {
-    cells: Vec<SpineChar>,
+    cells: Vec<ParseCell>,
 }
 
 impl ParseStack {
-    pub fn cells(&self) -> &[SpineChar] {
+    pub fn from_cells(cells: Vec<ParseCell>) -> Self {
+        Self { cells }
+    }
+
+    pub fn cells(&self) -> &[ParseCell] {
         &self.cells
     }
 
@@ -91,12 +95,46 @@ impl ParseStack {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParseCell {
+    id: CellId,
+    character: SpineChar,
+}
+
+impl ParseCell {
+    pub fn new(id: CellId, character: SpineChar) -> Self {
+        Self { id, character }
+    }
+
+    pub fn id(&self) -> CellId {
+        self.id
+    }
+
+    pub fn character(&self) -> &SpineChar {
+        &self.character
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct CellId(u64);
+
+impl CellId {
+    pub fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    pub fn value(self) -> u64 {
+        self.0
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SpineCharParser {
     stack: ParseStack,
     trailing_assistant: Vec<Message>,
     pending_tool_group: Option<PendingToolGroup>,
     last_boundary: Option<RawBoundary>,
+    next_cell_id: u64,
 }
 
 impl SpineCharParser {
@@ -124,6 +162,17 @@ impl SpineCharParser {
         *self = Self::default();
     }
 
+    pub fn install_stack(&mut self, stack: ParseStack) {
+        self.last_boundary = stack.cells.last().map(|cell| cell.character.boundary());
+        self.next_cell_id = stack
+            .cells
+            .iter()
+            .map(|cell| cell.id.value())
+            .max()
+            .map_or(0, |id| id.saturating_add(1));
+        self.stack = stack;
+    }
+
     fn apply(&mut self, character: SpineChar) -> Result<CharParseStep, CharParseError> {
         let mut events = Vec::new();
         let mut usage_sample = None;
@@ -132,7 +181,7 @@ impl SpineCharParser {
         match character {
             SpineChar::Message(message) => {
                 self.require_no_pending_tool_group(message.boundary)?;
-                self.stack.cells.push(SpineChar::Message(message.clone()));
+                self.push_cell(SpineChar::Message(message.clone()));
                 if message.role == crate::MessageRole::Assistant {
                     self.trailing_assistant.push(message);
                 } else {
@@ -141,9 +190,7 @@ impl SpineCharParser {
                 }
             }
             SpineChar::ToolRequest(request) => {
-                self.stack
-                    .cells
-                    .push(SpineChar::ToolRequest(request.clone()));
+                self.push_cell(SpineChar::ToolRequest(request.clone()));
                 let group = self.pending_tool_group.get_or_insert_with(|| {
                     let leading_assistant_messages = std::mem::take(&mut self.trailing_assistant);
                     let start = leading_assistant_messages
@@ -167,9 +214,7 @@ impl SpineCharParser {
                 });
             }
             SpineChar::ToolResponse(response) => {
-                self.stack
-                    .cells
-                    .push(SpineChar::ToolResponse(response.clone()));
+                self.push_cell(SpineChar::ToolResponse(response.clone()));
                 let group = self.pending_tool_group.as_mut().ok_or_else(|| {
                     CharParseError::UnmatchedToolResponse {
                         call_id: response.call_id.clone(),
@@ -208,24 +253,23 @@ impl SpineCharParser {
             SpineChar::Opaque { boundary } => {
                 self.require_no_pending_tool_group(boundary)?;
                 self.flush_trailing_assistant(&mut events);
-                self.stack.cells.push(SpineChar::Opaque { boundary });
+                self.push_cell(SpineChar::Opaque { boundary });
             }
             SpineChar::Synthetic { boundary, item } => {
                 self.require_no_pending_tool_group(boundary)?;
                 self.flush_trailing_assistant(&mut events);
-                self.stack
-                    .cells
-                    .push(SpineChar::Synthetic { boundary, item });
+                self.push_cell(SpineChar::Synthetic { boundary, item });
             }
             SpineChar::Compact {
                 boundary,
                 replacement_history,
             } => {
-                self.stack.cells = replacement_history
+                let cells = replacement_history
                     .iter()
                     .cloned()
-                    .map(|item| SpineChar::Synthetic { boundary, item })
+                    .map(|item| self.new_cell(SpineChar::Synthetic { boundary, item }))
                     .collect();
+                self.stack.cells = cells;
                 self.trailing_assistant.clear();
                 self.pending_tool_group = None;
                 events.push(RolloutEvent::Compact {
@@ -244,6 +288,17 @@ impl SpineCharParser {
             usage_sample,
             stack_size: self.stack.len(),
         })
+    }
+
+    fn push_cell(&mut self, character: SpineChar) {
+        let cell = self.new_cell(character);
+        self.stack.cells.push(cell);
+    }
+
+    fn new_cell(&mut self, character: SpineChar) -> ParseCell {
+        let id = CellId(self.next_cell_id);
+        self.next_cell_id = self.next_cell_id.saturating_add(1);
+        ParseCell::new(id, character)
     }
 
     fn require_no_pending_tool_group(&self, boundary: RawBoundary) -> Result<(), CharParseError> {

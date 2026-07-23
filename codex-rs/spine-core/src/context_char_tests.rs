@@ -139,11 +139,11 @@ fn usage_is_zero_width_and_compact_resets_the_live_stack() {
         .unwrap();
     assert_eq!(compact.stack_size(), 1);
     assert_eq!(
-        parser.stack().cells(),
-        &[SpineChar::Synthetic {
+        parser.stack().cells()[0].character(),
+        &SpineChar::Synthetic {
             boundary: RawBoundary(2),
             item: replacement.clone(),
-        }]
+        }
     );
     assert_eq!(
         compact.events(),
