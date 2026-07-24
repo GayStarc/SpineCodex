@@ -1,4 +1,4 @@
-<h1 align="center">SpineCodex: Just-in-Time Context Compilation for Cost-Efficient Long Horizon Tasks</h1>
+<h1 align="center">SpineCodex: Just-in-Time Context Tree Compilation for Cost-Efficient Long-Horizon Tasks</h1>
 
 <p align="center"><strong>Trees are beautiful. Life begins with division and differentiation.</strong></p>
 <p align="center">Maintained by <a href="https://ghabix.github.io">Jiahong Xiang</a> and Kunqiu Chen.</p>
