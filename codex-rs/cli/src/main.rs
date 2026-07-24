@@ -2841,8 +2841,19 @@ mod tests {
 
     #[test]
     fn cli_version_matches_codex_compatibility_baseline() {
+        let command = MultitoolCli::command();
         assert_eq!(
-            MultitoolCli::command().get_version(),
+            command.get_version(),
+            Some(codex_protocol::CODEX_COMPAT_VERSION)
+        );
+        assert_eq!(
+            command
+                .find_subcommand("exec")
+                .and_then(clap::Command::get_version),
+            Some(codex_protocol::CODEX_COMPAT_VERSION)
+        );
+        assert_eq!(
+            ExecCli::command().get_version(),
             Some(codex_protocol::CODEX_COMPAT_VERSION)
         );
     }

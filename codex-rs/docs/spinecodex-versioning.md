@@ -12,10 +12,11 @@ SpineCodex carries two intentionally separate version identities:
   `rust-v0.144.6`, commit
   `5d1fbf26c43abc65a203928b2e31561cb039e06d`.
 
-`codex --version` reports the Codex compatibility version so a SpineCodex
-binary identifies the Codex base it was built from. SpineCodex release
-artifacts retain the independent product version in package and release
-metadata.
+The public `--version` flags, including `codex --version` and
+`codex exec --version`, report the Codex compatibility version so a
+SpineCodex binary identifies the Codex base it was built from. SpineCodex
+release artifacts retain the independent product version in package and
+release metadata.
 
 The compatibility version is used for the server-visible Codex identity in:
 

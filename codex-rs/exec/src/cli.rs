@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
 #[command(
-    version,
+    version = codex_protocol::CODEX_COMPAT_VERSION,
     override_usage = "spine-codex exec [OPTIONS] [PROMPT]\n       spine-codex exec [OPTIONS] <COMMAND> [ARGS]"
 )]
 pub struct Cli {
