@@ -7,10 +7,6 @@ pub enum InitError {
     SpawnRequiresJit,
     MissingPrompt(Feature),
     MissingToolDescription(&'static str),
-    InvalidHandlerCardinality {
-        context_owners: usize,
-        observers: usize,
-    },
 }
 
 impl fmt::Display for InitError {
@@ -27,14 +23,6 @@ impl fmt::Display for InitError {
             Self::MissingToolDescription(name) => {
                 write!(formatter, "missing tool description for spine.{name}")
             }
-            Self::InvalidHandlerCardinality {
-                context_owners,
-                observers,
-            } => write!(
-                formatter,
-                "active Spine runtime requires exactly one context owner and at least one observer \
-                 (found {context_owners} context owners and {observers} observers)"
-            ),
         }
     }
 }

@@ -531,17 +531,6 @@ impl TrimProjection {
     pub fn derive_with_threshold(events: &[RolloutEvent], threshold_bytes: usize) -> Self {
         crate::reducer::derive_trim_projection(events, threshold_bytes)
     }
-
-    pub(crate) fn changed_boundaries_since(&self, previous: &Self) -> Vec<RawBoundary> {
-        self.edits
-            .keys()
-            .chain(previous.edits.keys())
-            .copied()
-            .collect::<std::collections::BTreeSet<_>>()
-            .into_iter()
-            .filter(|boundary| self.edits.get(boundary) != previous.edits.get(boundary))
-            .collect()
-    }
 }
 
 pub(crate) fn apply_trim_slice(text: &str, slice: &TrimSlice) -> Option<String> {

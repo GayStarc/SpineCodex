@@ -108,10 +108,6 @@ impl SpineCompiler {
     pub fn extend_system_prompt(&self, base: &str) -> String {
         crate::prompt::extend(base.to_owned(), &self.config)
     }
-
-    pub(crate) fn config_is_feature_off(&self) -> bool {
-        self.config.is_feature_off()
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
