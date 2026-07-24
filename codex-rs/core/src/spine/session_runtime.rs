@@ -93,8 +93,8 @@ impl SessionSpineRuntime {
                 boundary: RawBoundary(self.next_boundary),
                 input_tokens: usage.input_tokens,
             });
-            self.queue_observer(false);
         }
+        self.queue_observer(false);
     }
 
     fn compact_live(
@@ -189,7 +189,13 @@ impl SessionSpineRuntime {
                 RolloutItem::Compacted(compacted) => compacted
                     .replacement_history
                     .as_ref()
-                    .map(|items| items.len().min(history.raw_items().len()))
+                    .map(|items| {
+                        if history.raw_items().starts_with(items) {
+                            items.len()
+                        } else {
+                            Default::default()
+                        }
+                    })
                     .or_else(|| {
                         Some(
                             history

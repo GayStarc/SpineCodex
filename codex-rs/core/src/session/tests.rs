@@ -1772,7 +1772,7 @@ async fn reconstruct_history_uses_replacement_history_verbatim() {
 #[tokio::test]
 async fn record_initial_history_reconstructs_resumed_transcript() {
     let (session, turn_context) = make_session_and_context().await;
-    let (rollout_items, expected) = sample_rollout(&session, &turn_context).await;
+    let (rollout_items, mut expected) = sample_rollout(&session, &turn_context).await;
 
     session
         .record_initial_history(InitialHistory::Resumed(ResumedHistory {
@@ -1782,6 +1782,20 @@ async fn record_initial_history_reconstructs_resumed_transcript() {
         }))
         .await;
 
+    let third_user = expected
+        .iter_mut()
+        .find(|item| {
+            matches!(
+                item,
+                ResponseItem::Message { content, .. }
+                    if content.iter().any(|content| matches!(
+                        content,
+                        ContentItem::InputText { text } if text.contains("third user")
+                    ))
+            )
+        })
+        .expect("sample rollout should include third user");
+    crate::context::SpineUserAnchor::new(3).apply(third_user);
     let history = session.state.lock().await.clone_history();
     assert_eq!(expected, history.raw_items());
 }
@@ -1799,6 +1813,7 @@ async fn record_conversation_items_stamps_missing_turn_id_and_preserves_existing
 
     let mut expected_fresh_item = fresh_item;
     expected_fresh_item.set_turn_id_if_missing(&turn_context.sub_id);
+    crate::context::SpineUserAnchor::new(1).apply(&mut expected_fresh_item);
     let expected_items = vec![expected_fresh_item, existing_item];
     assert_eq!(
         session.clone_history().await.raw_items(),
@@ -2176,11 +2191,6 @@ async fn spine_observer_failure_preserves_context_and_tree_delivery_order() -> a
     std::fs::rename(&projection_dir, projection_root.join("moved"))?;
     std::fs::write(&projection_dir, b"block projection directory recreation")?;
     let message = user_message("observer failure must not roll back history");
-    let mut expected_seed = seed.clone();
-    expected_seed.set_turn_id_if_missing(&turn_context.sub_id);
-    let mut expected_message = message.clone();
-    expected_message.set_turn_id_if_missing(&turn_context.sub_id);
-
     session
         .record_conversation_items(turn_context.as_ref(), std::slice::from_ref(&message))
         .await;
@@ -2191,15 +2201,15 @@ async fn spine_observer_failure_preserves_context_and_tree_delivery_order() -> a
     assert!(matches!(raw_item.msg, EventMsg::RawResponseItem(_)));
     assert_eq!(tree_update.id, turn_context.sub_id);
     assert_eq!(raw_item.id, turn_context.sub_id);
-    assert_eq!(
-        session.state.lock().await.history.raw_items(),
-        &[expected_seed.clone(), expected_message.clone()]
-    );
-    let projected = session.clone_history().await;
     let mut projected_seed = user_message("[U1]\nseed projection directory");
     projected_seed.set_turn_id_if_missing(&turn_context.sub_id);
     let mut projected_message = user_message("[U2]\nobserver failure must not roll back history");
     projected_message.set_turn_id_if_missing(&turn_context.sub_id);
+    assert_eq!(
+        session.state.lock().await.history.raw_items(),
+        &[projected_seed.clone(), projected_message.clone()]
+    );
+    let projected = session.clone_history().await;
     assert_eq!(projected.raw_items(), &[projected_seed, projected_message]);
     Ok(())
 }
@@ -2290,6 +2300,7 @@ async fn spine_observer_delivery_follows_each_session_transition() {
             &[RolloutItem::ResponseItem(resumed_message.clone())],
         )
         .await;
+    let resumed_message = user_message("[U1]\nreconstructed context");
     assert_eq!(
         session.state.lock().await.history.raw_items(),
         std::slice::from_ref(&resumed_message)
@@ -9794,7 +9805,9 @@ async fn record_context_updates_and_set_reference_context_item_reinjects_full_co
         .await;
 
     let history = session.clone_history().await;
-    let mut expected_history = vec![compacted_summary];
+    let mut projected_summary = compacted_summary;
+    crate::context::SpineUserAnchor::new(1).apply(&mut projected_summary);
+    let mut expected_history = vec![projected_summary];
     let initial_context = build_initial_context(&session, &turn_context).await;
     expected_history.extend(initial_context);
     assert_eq!(history.raw_items().to_vec(), expected_history);

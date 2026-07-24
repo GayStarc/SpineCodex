@@ -1557,7 +1557,17 @@ async fn context_transitions_publish_compact_and_replay_before_return() {
             .iter()
             .any(|node| node.summary.as_deref() == Some("stale"))
     );
-    assert_eq!(state.history.raw_items(), fresh_items);
+    assert_eq!(
+        state.history.raw_items(),
+        &[
+            response_message(
+                "developer",
+                r#"<spine_node id="2.1" summary="fresh" status="live" />"#,
+            ),
+            fresh_items[0].clone(),
+            fresh_items[1].clone(),
+        ]
+    );
     assert_eq!(
         state
             .take_spine_observer_effect()
@@ -1855,16 +1865,16 @@ async fn spine_tree_snapshot_uses_the_closed_nodes_final_summary_slot() {
     let mut session_configuration = make_session_configuration_for_tests().await;
     session_configuration.enable_spine_jit_for_test();
     let mut state = SessionState::new(session_configuration);
-    state.append_spine_inputs(&[
-        RolloutItem::ResponseItem(ResponseItem::FunctionCall {
+    let items = [
+        ResponseItem::FunctionCall {
             id: None,
             name: "spine.open".to_string(),
             namespace: None,
             arguments: r#"{"summary":"task"}"#.to_string(),
             call_id: "open".to_string(),
             internal_chat_message_metadata_passthrough: None,
-        }),
-        RolloutItem::ResponseItem(ResponseItem::FunctionCallOutput {
+        },
+        ResponseItem::FunctionCallOutput {
             id: None,
             call_id: "open".to_string(),
             output: FunctionCallOutputPayload {
@@ -1872,17 +1882,17 @@ async fn spine_tree_snapshot_uses_the_closed_nodes_final_summary_slot() {
                 success: Some(true),
             },
             internal_chat_message_metadata_passthrough: None,
-        }),
-        RolloutItem::ResponseItem(response_message("user", "detail")),
-        RolloutItem::ResponseItem(ResponseItem::FunctionCall {
+        },
+        response_message("user", "detail"),
+        ResponseItem::FunctionCall {
             id: None,
             name: "spine.close".to_string(),
             namespace: None,
             arguments: r#"{"memory":"done"}"#.to_string(),
             call_id: "close".to_string(),
             internal_chat_message_metadata_passthrough: None,
-        }),
-        RolloutItem::ResponseItem(ResponseItem::FunctionCallOutput {
+        },
+        ResponseItem::FunctionCallOutput {
             id: None,
             call_id: "close".to_string(),
             output: FunctionCallOutputPayload {
@@ -1890,8 +1900,9 @@ async fn spine_tree_snapshot_uses_the_closed_nodes_final_summary_slot() {
                 success: Some(true),
             },
             internal_chat_message_metadata_passthrough: None,
-        }),
-    ]);
+        },
+    ];
+    state.record_items(items.iter(), TruncationPolicy::Tokens(10_000));
 
     let snapshot = state
         .spine_tree_update()
@@ -1936,16 +1947,16 @@ async fn spine_control_validation_uses_the_pre_group_rollout_projection() {
             .is_err()
     );
 
-    state.append_spine_inputs(&[
-        RolloutItem::ResponseItem(ResponseItem::FunctionCall {
+    let items = [
+        ResponseItem::FunctionCall {
             id: None,
             name: "spine.open".to_string(),
             namespace: None,
             arguments: r#"{"summary":"task"}"#.to_string(),
             call_id: "open".to_string(),
             internal_chat_message_metadata_passthrough: None,
-        }),
-        RolloutItem::ResponseItem(ResponseItem::FunctionCallOutput {
+        },
+        ResponseItem::FunctionCallOutput {
             id: None,
             call_id: "open".to_string(),
             output: FunctionCallOutputPayload {
@@ -1953,8 +1964,9 @@ async fn spine_control_validation_uses_the_pre_group_rollout_projection() {
                 success: Some(true),
             },
             internal_chat_message_metadata_passthrough: None,
-        }),
-    ]);
+        },
+    ];
+    state.record_items(items.iter(), TruncationPolicy::Tokens(10_000));
     assert!(
         state
             .validate_spine_control(spine_core::SpineTool::Close)
@@ -2033,22 +2045,23 @@ async fn spine_trim_validation_uses_only_the_previous_completed_toolcall() {
     let second_call = call("shell-2");
     let first_output = output("shell-1", "first");
     let second_output = output("shell-2", "second");
-    state.append_spine_inputs(&[
-        RolloutItem::ResponseItem(call("old-shell")),
-        RolloutItem::ResponseItem(output("old-shell", "old")),
-        RolloutItem::ResponseItem(first_call),
-        RolloutItem::ResponseItem(second_call),
-        RolloutItem::ResponseItem(first_output),
-        RolloutItem::ResponseItem(second_output),
-        RolloutItem::ResponseItem(ResponseItem::FunctionCall {
+    let items = [
+        call("old-shell"),
+        output("old-shell", "old"),
+        first_call,
+        second_call,
+        first_output,
+        second_output,
+        ResponseItem::FunctionCall {
             id: None,
             name: "trim".to_string(),
             namespace: Some("spine".to_string()),
             arguments: r#"{"TRIM_ID":"trim_5","op":"snip"}"#.to_string(),
             call_id: "trim".to_string(),
             internal_chat_message_metadata_passthrough: None,
-        }),
-    ]);
+        },
+    ];
+    state.record_items(items.iter(), TruncationPolicy::Tokens(10_000));
 
     let valid = spine_core::TrimRequest::parse(r#"{"TRIM_ID":"trim_5","op":"snip"}"#).unwrap();
     assert!(state.validate_spine_trim("trim", &valid).is_ok());
@@ -2060,8 +2073,8 @@ async fn spine_trim_validation_uses_only_the_previous_completed_toolcall() {
             .contains("previous completed toolcall does not contain TRIM_ID trim_1")
     );
 
-    state.append_spine_inputs(&[
-        RolloutItem::ResponseItem(ResponseItem::FunctionCallOutput {
+    let items = [
+        ResponseItem::FunctionCallOutput {
             id: None,
             call_id: "trim".to_string(),
             output: FunctionCallOutputPayload {
@@ -2069,21 +2082,35 @@ async fn spine_trim_validation_uses_only_the_previous_completed_toolcall() {
                 success: Some(false),
             },
             internal_chat_message_metadata_passthrough: None,
-        }),
-        RolloutItem::ResponseItem(ResponseItem::FunctionCall {
+        },
+        ResponseItem::FunctionCall {
             id: None,
             name: "trim".to_string(),
             namespace: Some("spine".to_string()),
             arguments: r#"{"TRIM_ID":"trim_5","op":"snip"}"#.to_string(),
             call_id: "trim-retry".to_string(),
             internal_chat_message_metadata_passthrough: None,
-        }),
-    ]);
+        },
+    ];
+    state.record_items(items.iter(), TruncationPolicy::Tokens(10_000));
     assert!(
         state
             .validate_spine_trim("trim-retry", &valid)
             .unwrap_err()
             .contains("previous completed toolcall does not contain TRIM_ID trim_5")
+    );
+    let retry_output = ResponseItem::FunctionCallOutput {
+        id: None,
+        call_id: "trim-retry".to_string(),
+        output: FunctionCallOutputPayload {
+            body: FunctionCallOutputBody::Text("trim failed again".to_string()),
+            success: Some(false),
+        },
+        internal_chat_message_metadata_passthrough: None,
+    };
+    state.record_items(
+        std::slice::from_ref(&retry_output),
+        TruncationPolicy::Tokens(10_000),
     );
 
     let replacement = response_message("user", "compacted context");
@@ -2097,14 +2124,18 @@ async fn spine_trim_validation_uses_only_the_previous_completed_toolcall() {
     };
     state.replace_history(vec![replacement], None);
     state.append_spine_inputs(&[RolloutItem::Compacted(compacted)]);
-    state.append_spine_inputs(&[RolloutItem::ResponseItem(ResponseItem::FunctionCall {
+    let trim_after_compact = ResponseItem::FunctionCall {
         id: None,
         name: "trim".to_string(),
         namespace: Some("spine".to_string()),
         arguments: r#"{"TRIM_ID":"trim_5","op":"snip"}"#.to_string(),
         call_id: "trim-after-compact".to_string(),
         internal_chat_message_metadata_passthrough: None,
-    })]);
+    };
+    state.record_items(
+        std::slice::from_ref(&trim_after_compact),
+        TruncationPolicy::Tokens(10_000),
+    );
     assert!(
         state
             .validate_spine_trim("trim-after-compact", &valid)

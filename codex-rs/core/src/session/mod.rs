@@ -3163,7 +3163,7 @@ impl Session {
         reference_context_item: Option<TurnContextItem>,
     ) {
         let mut state = self.state.lock().await;
-        state.replace_history(items, reference_context_item);
+        state.replace_history_from_rollout(items, reference_context_item, &[]);
     }
 
     pub(crate) async fn replace_compacted_history(

@@ -260,19 +260,14 @@ pub(crate) fn response_item_to_char(
         });
     }
     if let Some((call_id, output)) = normalized_tool_response(item) {
-        let call = pending_calls.remove(call_id).unwrap_or_else(|| ToolUse {
-            call_id: call_id.to_string(),
-            name: String::new(),
-            arguments: String::new(),
-            outcome: None,
-            output: None,
-            output_boundary: None,
-        });
+        let Some(call) = pending_calls.remove(call_id) else {
+            return SpineChar::Opaque { boundary };
+        };
         return SpineChar::ToolResponse(ToolResponseChar {
             boundary,
             call_id: call_id.to_string(),
             outcome: classify_tool_outcome(&call, output, spawn_enabled),
-            output: serde_json::to_string(&output.body).unwrap_or_default(),
+            output: output.body.to_text().unwrap_or_default(),
         });
     }
     match item {
