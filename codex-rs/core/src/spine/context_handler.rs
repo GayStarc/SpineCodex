@@ -80,6 +80,14 @@ impl CodexContextHandler {
         self.spawn_enabled
     }
 
+    pub(crate) fn latest_turn_id(&self) -> Option<&str> {
+        self.cell_order
+            .iter()
+            .rev()
+            .filter_map(|cell_id| self.raw_cells.get(cell_id))
+            .find_map(ResponseItem::turn_id)
+    }
+
     pub(crate) fn user_message_projection_entries(
         &self,
         stack: &ParseStack,

@@ -1564,14 +1564,6 @@ async fn context_transitions_publish_compact_and_replay_before_return() {
             fresh_items[1].clone(),
         ]
     );
-    assert_eq!(
-        state
-            .take_spine_observer_effect()
-            .and_then(|effect| effect.tree_update),
-        Some(restored)
-    );
-    assert_eq!(state.take_spine_observer_effect(), None);
-
     state.replace_history_from_rollout(opened_items.clone(), None, &opened_rollout);
     assert_eq!(
         state

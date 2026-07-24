@@ -7,6 +7,7 @@ use crate::CharParseError;
 use crate::ContextEvent;
 use crate::ContextEventError;
 use crate::Feature;
+use crate::NoopSpineObserver;
 use crate::ParseStack;
 use crate::RawBoundary;
 use crate::RolloutEvent;
@@ -16,6 +17,9 @@ use crate::SpineCompiler;
 use crate::SpineConfig;
 use crate::SpineContextEventHandler;
 use crate::SpineError;
+use crate::SpineObserverEffect;
+use crate::SpineObserverEffectHandler;
+use crate::SpineObserverEffectKind;
 use crate::SpineProjection;
 use crate::SpineRecoveryInput;
 use crate::SpineSignal;
@@ -73,11 +77,13 @@ impl SpineContextOutput {
 /// verifies the appended size, prepares all parsing and context mutations on
 /// cloned state, then synchronously commits through the registered context
 /// handler.
-pub struct SpineContextRuntime<D>
+pub struct SpineContextRuntime<D, O = NoopSpineObserver>
 where
     D: SpineContextEventHandler,
+    O: SpineObserverEffectHandler<D>,
 {
     handler: D,
+    observer: O,
     parser: SpineCharParser,
     compiler: SpineCompiler,
     projection: SpineContextProjection,
@@ -91,6 +97,20 @@ where
     D: SpineContextEventHandler,
 {
     pub fn new(config: SpineConfig, handler: D) -> Result<Self, InitError> {
+        Self::new_with_observer(config, handler, NoopSpineObserver)
+    }
+}
+
+impl<D, O> SpineContextRuntime<D, O>
+where
+    D: SpineContextEventHandler,
+    O: SpineObserverEffectHandler<D>,
+{
+    pub fn new_with_observer(
+        config: SpineConfig,
+        handler: D,
+        observer: O,
+    ) -> Result<Self, InitError> {
         let tools = ToolCatalog::new(&config)?;
         let jit_enabled = config.is_enabled(Feature::Jit);
         let spawn_enabled = config.is_enabled(Feature::Spawn);
@@ -104,6 +124,7 @@ where
         };
         Ok(Self {
             handler,
+            observer,
             parser,
             compiler,
             projection,
@@ -309,6 +330,10 @@ where
             self.parser.stack().len(),
             "committed host context diverged from the Spine parse stack"
         );
+        self.observer.handle(
+            SpineObserverEffect::new(SpineObserverEffectKind::ContextCommitted, &self.projection),
+            &self.handler,
+        );
         Ok(SpineContextOutput { events, projection })
     }
 
@@ -318,6 +343,10 @@ where
             retain_relevant_usage_samples(
                 &self.projection.spine,
                 &mut self.projection.usage_samples,
+            );
+            self.observer.handle(
+                SpineObserverEffect::new(SpineObserverEffectKind::UsageUpdated, &self.projection),
+                &self.handler,
             );
         }
         SpineContextOutput {

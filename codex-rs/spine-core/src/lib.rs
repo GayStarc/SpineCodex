@@ -6,6 +6,7 @@ mod context_char;
 mod context_event;
 mod context_runtime;
 mod model;
+mod observer;
 mod prompt;
 mod reducer;
 mod status;
@@ -43,6 +44,10 @@ pub use context_runtime::SpineContextOutput;
 pub use context_runtime::SpineContextProjection;
 pub use context_runtime::SpineContextRuntime;
 pub use context_runtime::SpineContextRuntimeError;
+pub use observer::NoopSpineObserver;
+pub use observer::SpineObserverEffect;
+pub use observer::SpineObserverEffectHandler;
+pub use observer::SpineObserverEffectKind;
 
 pub use artifact::MemoryArtifact;
 pub use artifact::TRIM_SNIPPED_BODY;

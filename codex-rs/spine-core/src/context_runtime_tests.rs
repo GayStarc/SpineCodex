@@ -18,7 +18,9 @@ use crate::ToolOutcome;
 use crate::ToolRequestChar;
 use crate::ToolResponseChar;
 use pretty_assertions::assert_eq;
+use std::cell::RefCell;
 use std::fmt;
+use std::rc::Rc;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct TestError;
@@ -39,6 +41,7 @@ struct TestHistory {
 #[derive(Clone, Debug, Default)]
 struct TestHandler {
     reject: bool,
+    commits: usize,
 }
 
 impl SpineContextEventHandler for TestHandler {
@@ -87,6 +90,22 @@ impl SpineContextEventHandler for TestHandler {
 
     fn commit_context(&mut self, history: &mut Self::History, prepared: Self::PreparedContext) {
         *history = prepared;
+        self.commits = self.commits.saturating_add(1);
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+struct RecordingObserver {
+    observed: Rc<RefCell<Vec<(SpineObserverEffectKind, usize, usize)>>>,
+}
+
+impl SpineObserverEffectHandler<TestHandler> for RecordingObserver {
+    fn handle(&mut self, effect: SpineObserverEffect<'_>, handler: &TestHandler) {
+        self.observed.borrow_mut().push((
+            effect.kind(),
+            handler.commits,
+            effect.projection().usage_samples().len(),
+        ));
     }
 }
 
@@ -262,6 +281,45 @@ fn handler_rejection_does_not_commit_runtime_state() {
     assert_eq!(runtime.projection(), &before_projection);
     assert_eq!(history, TestHistory { cells: vec![0, 99] });
     assert_ne!(history, before_history);
+}
+
+#[test]
+fn observer_runs_after_successful_commits_and_positive_usage_updates() {
+    let observer = RecordingObserver::default();
+    let observed = Rc::clone(&observer.observed);
+    let mut history = TestHistory { cells: vec![0] };
+    let mut runtime = SpineContextRuntime::new_with_observer(
+        config(&[Feature::Jit]),
+        TestHandler::default(),
+        observer,
+    )
+    .unwrap();
+
+    runtime
+        .append([message(1, MessageRole::User, "before")], &mut history)
+        .unwrap();
+    runtime.handler_mut().reject = true;
+    history.cells.push(1);
+    assert!(matches!(
+        runtime.append([message(2, MessageRole::User, "rejected")], &mut history),
+        Err(SpineContextRuntimeError::Handler(TestError))
+    ));
+    runtime.observe_usage(TokenUsageSample {
+        boundary: RawBoundary(2),
+        input_tokens: 0,
+    });
+    runtime.observe_usage(TokenUsageSample {
+        boundary: RawBoundary(2),
+        input_tokens: 42,
+    });
+
+    assert_eq!(
+        observed.borrow().as_slice(),
+        &[
+            (SpineObserverEffectKind::ContextCommitted, 1, 0),
+            (SpineObserverEffectKind::UsageUpdated, 1, 1),
+        ]
+    );
 }
 
 #[test]

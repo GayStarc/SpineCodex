@@ -1,6 +1,6 @@
 use super::context_handler::CodexContextHandler;
 use super::context_handler::response_item_to_char;
-use super::observer::CodexSpineObserverEffect;
+use super::observer::CodexSpineObserverHandler;
 use crate::context_manager::ContextManager;
 use crate::session::session::SessionConfiguration;
 use codex_protocol::models::ResponseItem;
@@ -15,30 +15,30 @@ use spine_core::ToolUse;
 use std::collections::HashMap;
 
 pub(crate) struct SessionSpineRuntime {
-    pub(crate) runtime: SpineContextRuntime<CodexContextHandler>,
+    pub(crate) runtime: SpineContextRuntime<CodexContextHandler, CodexSpineObserverHandler>,
     next_boundary: u64,
     pending_calls: HashMap<String, ToolUse>,
     trim_enabled: bool,
     jit_enabled: bool,
-    memory_projection_enabled: bool,
-    pending_observer_effect: Option<CodexSpineObserverEffect>,
 }
 
 impl SessionSpineRuntime {
-    pub(crate) fn new(configuration: &SessionConfiguration) -> Option<Self> {
+    pub(crate) fn new(
+        configuration: &SessionConfiguration,
+        observer: CodexSpineObserverHandler,
+    ) -> Option<Self> {
         let enabled = configuration.spine_jit_enabled() || configuration.spine_trim_enabled();
         enabled.then(|| Self {
-            runtime: SpineContextRuntime::new(
+            runtime: SpineContextRuntime::new_with_observer(
                 configuration.spine_sdk_config(),
                 CodexContextHandler::new(configuration.spine_spawn_enabled()),
+                observer,
             )
             .expect("validated session Spine configuration must initialize"),
             next_boundary: 0,
             pending_calls: HashMap::new(),
             trim_enabled: configuration.spine_trim_enabled(),
             jit_enabled: configuration.spine_jit_enabled(),
-            memory_projection_enabled: configuration.spinetree_memory_projection_enabled(),
-            pending_observer_effect: None,
         })
     }
 
@@ -66,7 +66,6 @@ impl SessionSpineRuntime {
         self.runtime
             .append(chars, history)
             .expect("native context append must produce a valid Spine projection");
-        self.queue_observer(true);
     }
 
     pub(crate) fn observe_token_count(&mut self, event: TokenCountEvent) {
@@ -76,7 +75,6 @@ impl SessionSpineRuntime {
                 input_tokens: usage.input_tokens,
             });
         }
-        self.queue_observer(false);
     }
 
     pub(crate) fn compact_live(&mut self, history: &mut ContextManager) {
@@ -99,7 +97,6 @@ impl SessionSpineRuntime {
         self.runtime
             .compact_live(compact_boundary, chars, history)
             .expect("compacted context must produce a valid Spine projection");
-        self.queue_observer(true);
     }
 
     pub(crate) fn replay(&mut self, rollout_items: &[RolloutItem], history: &mut ContextManager) {
@@ -211,7 +208,6 @@ impl SessionSpineRuntime {
         self.runtime
             .recover(archived, chars, history)
             .expect("native rollout history must recover deterministically");
-        self.queue_observer(true);
     }
 
     pub(crate) fn replace_last_turn_images(&mut self, placeholder: &str, _history_version: u64) {
@@ -237,35 +233,6 @@ impl SessionSpineRuntime {
                 context_left_tokens,
             )
         })?
-    }
-
-    pub(crate) fn take_observer_effect(&mut self) -> Option<CodexSpineObserverEffect> {
-        self.pending_observer_effect.take()
-    }
-
-    fn queue_observer(&mut self, memory: bool) {
-        if !self.jit_enabled {
-            return;
-        }
-        let projection = self.runtime.projection();
-        let mut effect = CodexSpineObserverEffect {
-            tree_update: Some(super::observer::context_tree_update(projection)),
-            memory_projection: None,
-        };
-        if memory && self.memory_projection_enabled {
-            effect.memory_projection = Some(super::observer::CodexSpineMemoryProjection {
-                entries: super::closed_memory_projection_entries(projection.spine()),
-                user_messages: self
-                    .runtime
-                    .handler()
-                    .user_message_projection_entries(projection.stack()),
-            });
-        }
-        if let Some(previous) = &mut self.pending_observer_effect {
-            previous.merge(effect);
-        } else {
-            self.pending_observer_effect = Some(effect);
-        }
     }
 
     pub(crate) fn validate_control(&self, tool: spine_core::SpineTool) -> Result<(), String> {

@@ -30,11 +30,6 @@ pub(crate) struct SpinetreeMemoryProjection {
 }
 
 impl SpinetreeMemoryProjection {
-    #[cfg(test)]
-    pub(crate) fn root_dir(&self) -> &Path {
-        &self.root_dir
-    }
-
     pub(crate) fn from_config(
         cwd: &Path,
         session_id: &str,

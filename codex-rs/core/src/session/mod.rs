@@ -1203,12 +1203,6 @@ impl Session {
         self.services.live_thread.as_ref()
     }
 
-    pub(crate) fn spinetree_memory_projection(
-        &self,
-    ) -> Option<crate::spine::memory_projection::SpinetreeMemoryProjection> {
-        self.spinetree_memory_projection.clone()
-    }
-
     /// Flush rollout writes and return the final durability-barrier result.
     #[instrument(name = "session.flush_rollout", level = "trace", skip_all)]
     pub(crate) async fn flush_rollout(&self) -> std::io::Result<()> {
@@ -2961,7 +2955,7 @@ impl Session {
     ) {
         let items = self.prepare_conversation_items_for_history(turn_context, items);
         let items = items.as_ref();
-        let observer_effect = {
+        {
             let mut state = self.state.lock().await;
             state.current_time_reminder.note_recorded_items(items);
             state.record_items(
@@ -2975,9 +2969,7 @@ impl Session {
             {
                 state.mark_projected_usage_stale();
             }
-            state.take_spine_observer_effect()
-        };
-        crate::spine::session_observer::dispatch(self, &turn_context.sub_id, observer_effect).await;
+        }
         self.persist_rollout_response_items(items).await;
         self.send_raw_response_items(turn_context, items).await;
     }
@@ -3076,16 +3068,14 @@ impl Session {
         );
         let items = items.as_ref();
         let response_item = items[0].clone();
-        let observer_effect = {
+        {
             let mut state = self.state.lock().await;
             state.current_time_reminder.note_recorded_items(items);
             state.record_items(
                 items.iter(),
                 turn_context.model_info.truncation_policy.into(),
             );
-            state.take_spine_observer_effect()
-        };
-        crate::spine::session_observer::dispatch(self, &turn_context.sub_id, observer_effect).await;
+        }
         self.persist_rollout_items(&[
             RolloutItem::InterAgentCommunicationMetadata {
                 trigger_turn: communication.trigger_turn,
@@ -3186,7 +3176,7 @@ impl Session {
         };
         let compacted_rollout_item = RolloutItem::Compacted(compacted_item);
         if !self.enabled(Feature::SpineJit) && !self.enabled(Feature::SpineTrim) {
-            let (world_state_item, observer_effect) = self
+            let world_state_item = self
                 .install_compacted_history_state(
                     items,
                     reference_context_item.clone(),
@@ -3197,10 +3187,8 @@ impl Session {
             self.persist_rollout_items(std::slice::from_ref(&compacted_rollout_item))
                 .await;
             self.finish_compacted_history(
-                turn_context.as_ref(),
                 reference_context_item,
                 world_state_item,
-                observer_effect,
             )
             .await;
             return Ok(());
@@ -3218,7 +3206,7 @@ impl Session {
 
         // The durable compact record is the commit point. Publish its replacement history,
         // window identity, parser projection, and WorldState baseline together afterward.
-        let (world_state_item, observer_effect) = self
+        let world_state_item = self
             .install_compacted_history_state(
                 items,
                 reference_context_item.clone(),
@@ -3227,10 +3215,8 @@ impl Session {
             )
             .await;
         self.finish_compacted_history(
-            turn_context.as_ref(),
             reference_context_item,
             world_state_item,
-            observer_effect,
         )
         .await;
         Ok(())
@@ -3242,10 +3228,7 @@ impl Session {
         reference_context_item: Option<TurnContextItem>,
         world_state_baseline: Option<Arc<WorldState>>,
         auto_compact_window: (u64, AutoCompactWindowIds),
-    ) -> (
-        Option<WorldStateItem>,
-        Option<crate::spine::observer::CodexSpineObserverEffect>,
-    ) {
+    ) -> Option<WorldStateItem> {
         let mut world_state_item = None;
         let mut state = self.state.lock().await;
         state.replace_history(items, reference_context_item);
@@ -3256,18 +3239,14 @@ impl Session {
             world_state_item = Some(WorldStateItem::full(snapshot.clone().into_value()));
             state.history.set_world_state_baseline(snapshot);
         }
-        let observer_effect = state.take_spine_observer_effect();
-        (world_state_item, observer_effect)
+        world_state_item
     }
 
     async fn finish_compacted_history(
         &self,
-        turn_context: &TurnContext,
         reference_context_item: Option<TurnContextItem>,
         world_state_item: Option<WorldStateItem>,
-        observer_effect: Option<crate::spine::observer::CodexSpineObserverEffect>,
     ) {
-        crate::spine::session_observer::dispatch(self, &turn_context.sub_id, observer_effect).await;
         // Persist ancillary snapshots after the replacement history that established them.
         if let Some(world_state_item) = world_state_item {
             self.persist_rollout_items(&[RolloutItem::WorldState(world_state_item)])
@@ -4088,12 +4067,10 @@ impl Session {
         };
         let token_count = TokenCountEvent { info, rate_limits };
         let event = EventMsg::TokenCount(token_count.clone());
-        let observer_effect = {
+        {
             let mut state = self.state.lock().await;
             state.observe_token_count(token_count);
-            state.take_spine_observer_effect()
-        };
-        crate::spine::session_observer::dispatch(self, &turn_context.sub_id, observer_effect).await;
+        }
         self.send_event(turn_context, event).await;
     }
 

@@ -41,8 +41,6 @@ pub(crate) struct Session {
     /// The set of enabled features should be invariant for the lifetime of the
     /// session.
     pub(super) features: ManagedFeatures,
-    pub(super) spinetree_memory_projection:
-        Option<crate::spine::memory_projection::SpinetreeMemoryProjection>,
     pub(super) multi_agent_version: OnceLock<MultiAgentVersion>,
     pub(super) pending_mcp_server_refresh_config: Mutex<Option<McpServerRefreshConfig>>,
     pub(crate) conversation: Arc<RealtimeConversationManager>,
@@ -955,20 +953,26 @@ impl Session {
             session_configuration.thread_name = thread_name.clone();
             validate_config_lock_if_configured(&session_configuration).await?;
             export_config_lock_if_configured(&session_configuration, thread_id).await?;
-            let state = SessionState::new_with_auto_compact_window_ids(
-                session_configuration.clone(),
-                initial_auto_compact_window_ids,
-            );
             let session_id_text = session_id.to_string();
+            let spine_jit_enabled = session_configuration.spine_jit_enabled();
             let spinetree_memory_projection =
                 crate::spine::memory_projection::SpinetreeMemoryProjection::from_config(
                     session_configuration.cwd().as_path(),
                     &session_id_text,
-                    config
-                        .features
-                        .enabled(Feature::SpinetreeMemoryProjection),
-                    config.features.enabled(Feature::SpineJit),
+                    session_configuration.spinetree_memory_projection_enabled(),
+                    spine_jit_enabled,
                 )?;
+            let spine_observer = crate::spine::observer::CodexSpineObserverHandler::new(
+                tx_event.clone(),
+                session_id_text,
+                spinetree_memory_projection,
+                spine_jit_enabled,
+            );
+            let state = SessionState::new_with_auto_compact_window_ids(
+                session_configuration.clone(),
+                initial_auto_compact_window_ids,
+                spine_observer,
+            );
             let managed_network_requirements_configured = config
                 .config_layer_stack
                 .requirements_toml()
@@ -1173,7 +1177,6 @@ impl Session {
                 spawn_failure_record: Mutex::new(None),
                 managed_network_proxy_refresh_lock: Semaphore::new(/*permits*/ 1),
                 features: config.features.clone(),
-                spinetree_memory_projection,
                 multi_agent_version,
                 pending_mcp_server_refresh_config: Mutex::new(None),
                 conversation: Arc::new(RealtimeConversationManager::new()),

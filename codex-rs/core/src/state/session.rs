@@ -22,6 +22,7 @@ use crate::session::PreviousTurnSettings;
 use crate::session::session::SessionConfiguration;
 use crate::session::time_reminder::CurrentTimeReminderState;
 use crate::session_startup_prewarm::SessionStartupPrewarmHandle;
+use crate::spine::observer::CodexSpineObserverHandler;
 use crate::spine::session_runtime::SessionSpineRuntime;
 use codex_protocol::protocol::RateLimitSnapshot;
 use codex_protocol::protocol::TokenCountEvent;
@@ -75,15 +76,17 @@ impl SessionState {
         Self::new_with_auto_compact_window_ids(
             session_configuration,
             AutoCompactWindowIds::new_initial(),
+            CodexSpineObserverHandler::default(),
         )
     }
 
     pub(crate) fn new_with_auto_compact_window_ids(
         session_configuration: SessionConfiguration,
         auto_compact_window_ids: AutoCompactWindowIds,
+        observer: CodexSpineObserverHandler,
     ) -> Self {
         let history = ContextManager::new();
-        let spine_runtime = SessionSpineRuntime::new(&session_configuration);
+        let spine_runtime = SessionSpineRuntime::new(&session_configuration, observer);
         Self {
             session_configuration,
             history,
@@ -247,12 +250,6 @@ impl SessionState {
         });
         let spine = self.spine_runtime.as_ref()?;
         spine.status_prompt_overlay(context_left_tokens)
-    }
-
-    pub(crate) fn take_spine_observer_effect(
-        &mut self,
-    ) -> Option<crate::spine::observer::CodexSpineObserverEffect> {
-        self.spine_runtime.as_mut()?.take_observer_effect()
     }
 
     pub(crate) fn validate_spine_control(&self, tool: spine_core::SpineTool) -> Result<(), String> {

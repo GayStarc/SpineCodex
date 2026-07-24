@@ -1989,6 +1989,28 @@ async fn record_inter_agent_communication_preserves_item_id_in_rollout_and_resum
     assert_eq!(resumed_item.id(), Some(live_item_id.as_str()));
 }
 
+async fn wait_for_spinetree_file(
+    projection_root: &Path,
+    file_name: &str,
+    expected: &str,
+) -> anyhow::Result<PathBuf> {
+    timeout(Duration::from_secs(2), async {
+        loop {
+            if let Ok(entries) = std::fs::read_dir(projection_root) {
+                for entry in entries.flatten() {
+                    let path = entry.path().join(file_name);
+                    if std::fs::read_to_string(path).is_ok_and(|body| body == expected) {
+                        return entry.path();
+                    }
+                }
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("timed out waiting for {file_name}"))
+}
+
 #[tokio::test]
 async fn spinetree_memory_projection_publishes_closed_memory_after_recording() -> anyhow::Result<()>
 {
@@ -2062,11 +2084,14 @@ async fn spinetree_memory_projection_publishes_closed_memory_after_recording() -
         .record_conversation_items(turn_context.as_ref(), &items)
         .await;
 
-    let projection_root = workspace.path().join(".codex/spinetree");
-    let session_dir = std::fs::read_dir(&projection_root)?
-        .next()
-        .expect("projection session directory should exist")?
-        .path();
+    let expected_user_messages =
+        "# User Messages\n\n## User Message [U1]\nrequest\n\n## User Message [U2]\ndetail\n";
+    let session_dir = wait_for_spinetree_file(
+        &workspace.path().join(".codex/spinetree"),
+        "USER.md",
+        expected_user_messages,
+    )
+    .await?;
     let path = session_dir.join("1.1_task.md");
     assert!(std::fs::symlink_metadata(&path)?.file_type().is_file());
     assert!(!session_dir.join(".memory").exists());
@@ -2074,7 +2099,7 @@ async fn spinetree_memory_projection_publishes_closed_memory_after_recording() -
     assert_eq!(body, "# Spine Memory 1.1\n\n## Node Memory\ndone");
     assert_eq!(
         std::fs::read_to_string(session_dir.join("USER.md"))?,
-        "# User Messages\n\n## User Message [U1]\nrequest\n\n## User Message [U2]\ndetail\n"
+        expected_user_messages
     );
     Ok(())
 }
@@ -2137,13 +2162,17 @@ async fn spinetree_memory_projection_rebuilds_user_messages_after_rollout_recons
         .apply_rollout_reconstruction(turn_context.as_ref(), &rollout)
         .await;
 
-    let session_dir = std::fs::read_dir(workspace.path().join(".codex/spinetree"))?
-        .next()
-        .expect("projection session directory should exist")?
-        .path();
+    let expected_user_messages =
+        "# User Messages\n\n## User Message [U1]\nfirst\n\n## User Message [U2]\nreplacement\n";
+    let session_dir = wait_for_spinetree_file(
+        &workspace.path().join(".codex/spinetree"),
+        "USER.md",
+        expected_user_messages,
+    )
+    .await?;
     assert_eq!(
         std::fs::read_to_string(session_dir.join("USER.md"))?,
-        "# User Messages\n\n## User Message [U1]\nfirst\n\n## User Message [U2]\nreplacement\n"
+        expected_user_messages
     );
     Ok(())
 }
@@ -2152,7 +2181,12 @@ async fn spinetree_memory_projection_rebuilds_user_messages_after_rollout_recons
 async fn spine_observer_failure_preserves_context_and_tree_delivery_order() -> anyhow::Result<()> {
     let workspace = tempfile::tempdir()?;
     let workspace_path = workspace.path().to_path_buf();
-    let (mut session, turn_context, rx) = make_session_and_context_with_auth_and_config_and_rx(
+    std::fs::create_dir_all(workspace.path().join(".codex"))?;
+    std::fs::write(
+        workspace.path().join(".codex/spinetree"),
+        b"block projection directory creation",
+    )?;
+    let (session, turn_context, rx) = make_session_and_context_with_auth_and_config_and_rx(
         CodexAuth::from_api_key("Test API Key"),
         Vec::new(),
         move |config| {
@@ -2164,32 +2198,6 @@ async fn spine_observer_failure_preserves_context_and_tree_delivery_order() -> a
         },
     )
     .await;
-    Arc::get_mut(&mut session)
-        .expect("test session should be uniquely owned")
-        .spinetree_memory_projection =
-        crate::spine::memory_projection::SpinetreeMemoryProjection::from_config(
-            workspace.path(),
-            "observer-failure-test",
-            true,
-            true,
-        )?;
-    let seed = user_message("seed projection directory");
-    session
-        .record_conversation_items(turn_context.as_ref(), std::slice::from_ref(&seed))
-        .await;
-    let _ = rx.recv().await.expect("seed raw response item event");
-    let _ = rx.recv().await.expect("seed Spine tree update event");
-    let projection_dir = session
-        .spinetree_memory_projection
-        .as_ref()
-        .expect("memory projection should be enabled")
-        .root_dir()
-        .to_path_buf();
-    let projection_root = projection_dir
-        .parent()
-        .expect("projection directory should have a parent");
-    std::fs::rename(&projection_dir, projection_root.join("moved"))?;
-    std::fs::write(&projection_dir, b"block projection directory recreation")?;
     let message = user_message("observer failure must not roll back history");
     session
         .record_conversation_items(turn_context.as_ref(), std::slice::from_ref(&message))
@@ -2201,16 +2209,14 @@ async fn spine_observer_failure_preserves_context_and_tree_delivery_order() -> a
     assert!(matches!(raw_item.msg, EventMsg::RawResponseItem(_)));
     assert_eq!(tree_update.id, turn_context.sub_id);
     assert_eq!(raw_item.id, turn_context.sub_id);
-    let mut projected_seed = user_message("[U1]\nseed projection directory");
-    projected_seed.set_turn_id_if_missing(&turn_context.sub_id);
-    let mut projected_message = user_message("[U2]\nobserver failure must not roll back history");
+    let mut projected_message = user_message("[U1]\nobserver failure must not roll back history");
     projected_message.set_turn_id_if_missing(&turn_context.sub_id);
     assert_eq!(
         session.state.lock().await.history.raw_items(),
-        &[projected_seed.clone(), projected_message.clone()]
+        std::slice::from_ref(&projected_message)
     );
     let projected = session.clone_history().await;
-    assert_eq!(projected.raw_items(), &[projected_seed, projected_message]);
+    assert_eq!(projected.raw_items(), &[projected_message]);
     Ok(())
 }
 
@@ -2238,6 +2244,22 @@ async fn spine_observer_delivery_follows_each_session_transition() {
         EventMsg::RawResponseItem(_)
     ));
 
+    {
+        let mut state = session.state.lock().await;
+        state.set_token_info(Some(TokenUsageInfo {
+            total_token_usage: TokenUsage {
+                input_tokens: 42,
+                total_tokens: 42,
+                ..TokenUsage::default()
+            },
+            last_token_usage: TokenUsage {
+                input_tokens: 42,
+                total_tokens: 42,
+                ..TokenUsage::default()
+            },
+            model_context_window: Some(1_000),
+        }));
+    }
     session.send_token_count_event(turn_context.as_ref()).await;
     assert!(matches!(
         rx.recv().await.expect("token tree event").msg,
@@ -6261,7 +6283,25 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         session_configuration.session_source.clone(),
     );
 
-    let state = SessionState::new(session_configuration.clone());
+    let memory_projection =
+        crate::spine::memory_projection::SpinetreeMemoryProjection::from_config(
+            session_configuration.cwd().as_path(),
+            &thread_id.to_string(),
+            config.features.enabled(Feature::SpinetreeMemoryProjection),
+            config.features.enabled(Feature::SpineJit),
+        )
+        .expect("valid Spine memory projection configuration");
+    let spine_observer = crate::spine::observer::CodexSpineObserverHandler::new(
+        tx_event.clone(),
+        thread_id.to_string(),
+        memory_projection,
+        config.features.enabled(Feature::SpineJit),
+    );
+    let state = SessionState::new_with_auto_compact_window_ids(
+        session_configuration.clone(),
+        AutoCompactWindowIds::new_initial(),
+        spine_observer,
+    );
     let (environment_manager, resolved_environments) =
         resolved_environments_for_configuration(&session_configuration).await;
     let resolved_turn_environments = resolved_environments.clone();
@@ -6417,7 +6457,6 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         spawn_failure_record: Mutex::new(None),
         managed_network_proxy_refresh_lock: Semaphore::new(/*permits*/ 1),
         features: config.features.clone(),
-        spinetree_memory_projection: None,
         multi_agent_version: OnceLock::from(config.multi_agent_version_from_features()),
         pending_mcp_server_refresh_config: Mutex::new(None),
         conversation: Arc::new(RealtimeConversationManager::new()),
@@ -8398,7 +8437,25 @@ where
         session_configuration.session_source.clone(),
     );
 
-    let state = SessionState::new(session_configuration.clone());
+    let memory_projection =
+        crate::spine::memory_projection::SpinetreeMemoryProjection::from_config(
+            session_configuration.cwd().as_path(),
+            &thread_id.to_string(),
+            config.features.enabled(Feature::SpinetreeMemoryProjection),
+            config.features.enabled(Feature::SpineJit),
+        )
+        .expect("valid Spine memory projection configuration");
+    let spine_observer = crate::spine::observer::CodexSpineObserverHandler::new(
+        tx_event.clone(),
+        thread_id.to_string(),
+        memory_projection,
+        config.features.enabled(Feature::SpineJit),
+    );
+    let state = SessionState::new_with_auto_compact_window_ids(
+        session_configuration.clone(),
+        AutoCompactWindowIds::new_initial(),
+        spine_observer,
+    );
     let (environment_manager, resolved_turn_environments) =
         resolved_environments_for_configuration(&session_configuration).await;
     let turn_environments = Arc::new(ThreadEnvironments::new(
@@ -8553,7 +8610,6 @@ where
         spawn_failure_record: Mutex::new(None),
         managed_network_proxy_refresh_lock: Semaphore::new(/*permits*/ 1),
         features: config.features.clone(),
-        spinetree_memory_projection: None,
         multi_agent_version: OnceLock::from(config.multi_agent_version_from_features()),
         pending_mcp_server_refresh_config: Mutex::new(None),
         conversation: Arc::new(RealtimeConversationManager::new()),
