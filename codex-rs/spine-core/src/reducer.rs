@@ -591,6 +591,9 @@ fn classify_control(group: &ToolCallGroup) -> Option<Control> {
     if let Some(control) = classify_spawn(group) {
         return Some(control);
     }
+    if group.calls.iter().any(|call| call.name == SPINE_SPAWN) {
+        return None;
+    }
     let mut controls = group.calls.iter().filter_map(|call| {
         if call.outcome != Some(ToolOutcome::Succeeded) {
             return None;
