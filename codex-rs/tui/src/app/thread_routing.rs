@@ -5,9 +5,9 @@
 //! when the visible thread changes.
 
 use super::*;
+use crate::history_cell::spine_spawn_status;
 use crate::session_resume::read_session_model;
 use codex_app_server_protocol::CollabAgentStatus;
-use codex_app_server_protocol::ThreadStatus;
 
 #[derive(Clone, Copy)]
 pub(super) enum ThreadRollbackOrigin {
@@ -1703,27 +1703,10 @@ impl App {
     }
 }
 
-fn spine_spawn_status(notification: &ServerNotification) -> Option<CollabAgentStatus> {
-    match notification {
-        ServerNotification::TurnStarted(_) => Some(CollabAgentStatus::Running),
-        ServerNotification::TurnCompleted(notification) => Some(match notification.turn.status {
-            TurnStatus::Completed => CollabAgentStatus::Completed,
-            TurnStatus::Interrupted => CollabAgentStatus::Interrupted,
-            TurnStatus::Failed => CollabAgentStatus::Errored,
-            TurnStatus::InProgress => CollabAgentStatus::Running,
-        }),
-        ServerNotification::ThreadStatusChanged(notification) => match notification.status {
-            ThreadStatus::Active { .. } => Some(CollabAgentStatus::Running),
-            ThreadStatus::SystemError => Some(CollabAgentStatus::Errored),
-            ThreadStatus::NotLoaded | ThreadStatus::Idle => None,
-        },
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codex_app_server_protocol::ThreadStatus;
     use codex_protocol::models::ActivePermissionProfile;
     use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_WORKSPACE;
 

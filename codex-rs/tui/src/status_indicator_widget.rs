@@ -25,6 +25,8 @@ use crate::line_truncation::truncate_line_with_ellipsis_if_overflow;
 use crate::motion::MotionMode;
 use crate::motion::ReducedMotionIndicator;
 use crate::motion::activity_indicator;
+use crate::motion::green_activity_indicator;
+use crate::motion::green_shimmer_text;
 use crate::motion::shimmer_text;
 use crate::render::renderable::Renderable;
 use crate::text_formatting::capitalize_first;
@@ -45,6 +47,7 @@ pub(crate) enum StatusDetailsCapitalization {
 pub(crate) struct StatusIndicatorWidget {
     /// Animated header text (defaults to "Working").
     header: String,
+    organic_working_word: Option<&'static str>,
     details: Option<String>,
     details_max_lines: usize,
     /// Optional suffix rendered after the elapsed/interrupt segment.
@@ -85,6 +88,7 @@ impl StatusIndicatorWidget {
     ) -> Self {
         Self {
             header: String::from("Working"),
+            organic_working_word: None,
             details: None,
             details_max_lines: STATUS_DETAILS_DEFAULT_MAX_LINES,
             inline_message: None,
@@ -108,6 +112,10 @@ impl StatusIndicatorWidget {
     /// Update the animated header label (left of the brackets).
     pub(crate) fn update_header(&mut self, header: String) {
         self.header = header;
+    }
+
+    pub(crate) fn set_organic_working_word(&mut self, word: Option<&'static str>) {
+        self.organic_working_word = word;
     }
 
     /// Update the details text shown below the header.
@@ -148,6 +156,11 @@ impl StatusIndicatorWidget {
     #[cfg(test)]
     pub(crate) fn details(&self) -> Option<&str> {
         self.details.as_deref()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn organic_working_word(&self) -> Option<&str> {
+        self.organic_working_word
     }
 
     pub(crate) fn set_interrupt_hint_visible(&mut self, visible: bool) {
@@ -253,15 +266,29 @@ impl Renderable for StatusIndicatorWidget {
         let motion_mode = MotionMode::from_animations_enabled(self.animations_enabled);
 
         let mut spans = Vec::with_capacity(5);
-        if let Some(indicator) = activity_indicator(
-            Some(self.last_resume_at),
-            motion_mode,
-            ReducedMotionIndicator::Hidden,
-        ) {
-            spans.push(indicator);
-            spans.push(" ".into());
+        if self.header == "Working"
+            && let Some(activity_word) = self.organic_working_word
+        {
+            if let Some(indicator) = green_activity_indicator(
+                Some(self.last_resume_at),
+                motion_mode,
+                ReducedMotionIndicator::StaticBullet,
+            ) {
+                spans.push(indicator);
+                spans.push(" ".into());
+            }
+            spans.extend(green_shimmer_text(activity_word, motion_mode));
+        } else {
+            if let Some(indicator) = activity_indicator(
+                Some(self.last_resume_at),
+                motion_mode,
+                ReducedMotionIndicator::Hidden,
+            ) {
+                spans.push(indicator);
+                spans.push(" ".into());
+            }
+            spans.extend(shimmer_text(&self.header, motion_mode));
         }
-        spans.extend(shimmer_text(&self.header, motion_mode));
         if !spans.is_empty() {
             spans.push(" ".into());
         }
@@ -338,6 +365,26 @@ mod tests {
 
         // Render into a fixed-size test terminal and snapshot the backend.
         let mut terminal = Terminal::new(TestBackend::new(80, 2)).expect("terminal");
+        terminal
+            .draw(|f| w.render(f.area(), f.buffer_mut()))
+            .expect("draw");
+        insta::assert_snapshot!(terminal.backend());
+    }
+
+    #[test]
+    fn renders_organic_working_header_when_enabled() {
+        let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
+        let tx = AppEventSender::new(tx_raw);
+        let mut w = StatusIndicatorWidget::new(
+            tx,
+            crate::tui::FrameRequester::test_dummy(),
+            /*animations_enabled*/ false,
+        );
+        w.set_organic_working_word(Some("Blooming"));
+        w.is_paused = true;
+        w.elapsed_running = Duration::ZERO;
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 1)).expect("terminal");
         terminal
             .draw(|f| w.render(f.area(), f.buffer_mut()))
             .expect("draw");

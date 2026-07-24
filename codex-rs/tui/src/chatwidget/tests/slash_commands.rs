@@ -107,55 +107,26 @@ async fn debugspine_requests_the_app_owned_snapshot() {
 }
 
 #[tokio::test]
-async fn live_spine_tree_working_animation_follows_the_agent_turn_lifecycle() {
-    use crate::history_cell::HistoryCell;
-    use crate::history_cell::SpineTreeViewState;
-
+async fn organic_working_status_is_scoped_to_spine_jit_agent_turns() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-    let snapshot = codex_app_server_protocol::SpineTreeUpdatedNotification {
-        thread_id: "thread-1".to_string(),
-        turn_id: "turn-1".to_string(),
-        snapshot_seq: 1,
-        active_node_id: "1".to_string(),
-        settled_spawn_call_ids: Vec::new(),
-        nodes: vec![codex_app_server_protocol::SpineTreeNode {
-            node_id: "1".to_string(),
-            parent_id: None,
-            kind: codex_app_server_protocol::SpineTreeNodeKind::Task,
-            status: codex_app_server_protocol::SpineTreeNodeStatus::Live,
-            summary: Some("inspect current changes".to_string()),
-            memory_summary: None,
-            start: 0,
-            end: None,
-            context_pressure: None,
-            spawn_outcome: None,
-        }],
-    };
-    let mut state = SpineTreeViewState::new(true);
-    state.apply_tree_update(snapshot.clone());
-
+    chat.turn_lifecycle.last_turn_id = Some("turn-1".to_string());
+    chat.set_feature_enabled(Feature::SpineJit, /*enabled*/ true);
     chat.turn_lifecycle.start(Instant::now());
-    chat.set_spine_tree_view(Some(snapshot), state.render_cell());
-    chat.set_feature_enabled(Feature::Goals, /*enabled*/ false);
-    assert!(chat.turn_lifecycle.agent_turn_started_at.is_some());
-    assert!(
-        chat.live_spine_tree_cell
-            .as_ref()
-            .and_then(HistoryCell::transcript_animation_tick)
-            .is_some()
+    chat.update_task_running_state();
+
+    assert_eq!(
+        chat.bottom_pane
+            .status_widget()
+            .and_then(|status| status.organic_working_word()),
+        Some(crate::motion::activity_word_for_identity("turn-1"))
     );
 
-    chat.turn_lifecycle.finish();
-    chat.update_task_running_state();
-    let idle = chat
-        .live_spine_tree_cell
-        .as_ref()
-        .expect("live tree should remain visible after the turn");
-    assert_eq!(idle.transcript_animation_tick(), None);
-    assert!(
-        idle.display_lines(80)
-            .iter()
-            .any(|line| line.to_string() == "  └ ◉ inspect current changes")
+    chat.set_feature_enabled(Feature::SpineJit, /*enabled*/ false);
+    assert_eq!(
+        chat.bottom_pane
+            .status_widget()
+            .and_then(|status| status.organic_working_word()),
+        None
     );
 }
 

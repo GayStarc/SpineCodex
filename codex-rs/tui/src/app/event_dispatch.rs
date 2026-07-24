@@ -312,6 +312,13 @@ impl App {
                     tui.frame_requester().schedule_frame();
                 }
             }
+            AppEvent::InvalidateSpineTreeView { thread_id } => {
+                self.spine_tree_views.remove(&thread_id);
+                if self.chat_widget.thread_id() == Some(thread_id) {
+                    self.chat_widget.set_spine_tree_view(None, None);
+                    tui.frame_requester().schedule_frame();
+                }
+            }
             AppEvent::ShowSpineTreeSnapshot { debug } => {
                 let Some(thread_id) = self.chat_widget.thread_id() else {
                     return Ok(AppRunControl::Continue);
@@ -326,13 +333,6 @@ impl App {
                         .add_info_message("Spine Tree is not available yet.".to_string(), None);
                     return Ok(AppRunControl::Continue);
                 };
-                if !debug && self.chat_widget.spine_tree_turn_is_working() {
-                    let live_cell = state.render_cell();
-                    self.chat_widget
-                        .set_spine_tree_view(Some(snapshot), live_cell);
-                    tui.frame_requester().schedule_frame();
-                    return Ok(AppRunControl::Continue);
-                }
                 let cell = if debug {
                     history_cell::new_debug_spine_tree_snapshot(snapshot)
                 } else {

@@ -74,6 +74,7 @@ use codex_app_server_protocol::SpineTreeUpdatedNotification;
 use codex_app_server_protocol::Thread;
 use codex_app_server_protocol::ThreadClosedNotification;
 use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::ThreadRolledBackNotification;
 use codex_app_server_protocol::ThreadSettings;
 use codex_app_server_protocol::ThreadSettingsUpdatedNotification;
 use codex_app_server_protocol::ThreadStartedNotification;
@@ -5978,12 +5979,63 @@ async fn late_usage_result_can_follow_finalized_plan() {
 }
 
 #[tokio::test]
-async fn thread_rollback_response_discards_queued_active_thread_events() {
-    let mut app = make_test_app().await;
+async fn thread_rollback_response_discards_queued_events_and_invalidates_spine_projection() {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
     let thread_id = ThreadId::new();
+    let other_thread_id = ThreadId::new();
     let (tx, rx) = mpsc::channel(8);
+    app.chat_widget
+        .handle_thread_session_quiet(test_thread_session(
+            thread_id,
+            test_path_buf("/tmp/project"),
+        ));
+    while app_event_rx.try_recv().is_ok() {}
     app.active_thread_id = Some(thread_id);
     app.active_thread_rx = Some(rx);
+    let snapshot =
+        |thread_id: ThreadId, snapshot_seq: u64, summary: &str| SpineTreeUpdatedNotification {
+            thread_id: thread_id.to_string(),
+            turn_id: "turn".to_string(),
+            snapshot_seq,
+            active_node_id: "1".to_string(),
+            settled_spawn_call_ids: Vec::new(),
+            nodes: vec![SpineTreeNode {
+                node_id: "1".to_string(),
+                parent_id: None,
+                kind: SpineTreeNodeKind::Task,
+                status: SpineTreeNodeStatus::Live,
+                summary: Some(summary.to_string()),
+                memory_summary: None,
+                start: 0,
+                end: None,
+                context_pressure: None,
+                spawn_outcome: None,
+            }],
+        };
+    let current = snapshot(thread_id, 10, "before rollback");
+    {
+        let state = app.spine_tree_views.entry(thread_id).or_default();
+        state.apply_tree_update(current.clone());
+        state.apply_spawn_progress(SpineSpawnProgressUpdatedNotification {
+            thread_id: thread_id.to_string(),
+            turn_id: "turn".to_string(),
+            call_id: "spawn-before-rollback".to_string(),
+            tasks: vec![SpineSpawnTaskProgress {
+                ordinal: 0,
+                summary: "stale child".to_string(),
+                thread_id: ThreadId::new().to_string(),
+                agent_path: Some("/root/stale-child".to_string()),
+                status: CollabAgentStatus::Running,
+            }],
+        });
+        app.chat_widget
+            .set_spine_tree_view(Some(current), state.render_cell());
+    }
+    assert!(app.chat_widget.active_cell_transcript_key().is_some());
+    app.spine_tree_views
+        .entry(other_thread_id)
+        .or_default()
+        .apply_tree_update(snapshot(other_thread_id, 11, "other thread"));
     tx.send(ThreadBufferedEvent::Notification(
         ServerNotification::ConfigWarning(ConfigWarningNotification {
             summary: "stale warning".to_string(),
@@ -6033,6 +6085,60 @@ async fn thread_rollback_response_discards_queued_active_thread_events() {
         .as_mut()
         .expect("active receiver should remain attached");
     assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+    assert!(app.spine_tree_views.contains_key(&thread_id));
+    assert!(app.chat_widget.active_cell_transcript_key().is_some());
+    while app_event_rx.try_recv().is_ok() {}
+
+    app.handle_thread_event_now(ThreadBufferedEvent::Notification(
+        ServerNotification::SpineTreeUpdated(snapshot(
+            thread_id,
+            11,
+            "queued before rollback barrier",
+        )),
+    ));
+    app.handle_thread_event_now(ThreadBufferedEvent::Notification(
+        ServerNotification::ThreadRolledBack(ThreadRolledBackNotification {
+            thread_id: thread_id.to_string(),
+        }),
+    ));
+    app.handle_thread_event_now(ThreadBufferedEvent::Notification(
+        ServerNotification::SpineTreeUpdated(snapshot(thread_id, 4, "after rollback")),
+    ));
+
+    let events = [
+        app_event_rx.try_recv().expect("queued old tree update"),
+        app_event_rx
+            .try_recv()
+            .expect("rollback invalidation barrier"),
+        app_event_rx.try_recv().expect("rollback replacement tree"),
+    ];
+    assert!(matches!(events[0], AppEvent::UpsertSpineTreeCell { .. }));
+    assert!(matches!(
+        events[1],
+        AppEvent::InvalidateSpineTreeView {
+            thread_id: invalidated
+        } if invalidated == thread_id
+    ));
+    assert!(matches!(events[2], AppEvent::UpsertSpineTreeCell { .. }));
+
+    let mut tui = crate::tui::test_support::make_test_tui().expect("test tui");
+    let mut app_server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
+        .await
+        .expect("embedded app server");
+    for event in events {
+        app.handle_event(&mut tui, &mut app_server, event)
+            .await
+            .expect("ordered projection event should apply");
+    }
+    assert_eq!(
+        app.spine_tree_views
+            .get(&thread_id)
+            .and_then(SpineTreeViewState::snapshot)
+            .map(|snapshot| (snapshot.snapshot_seq, snapshot.nodes[0].summary.as_deref())),
+        Some((4, Some("after rollback")))
+    );
+    assert!(app.spine_tree_views.contains_key(&other_thread_id));
+    app_server.shutdown().await.expect("app server shutdown");
 }
 
 #[tokio::test]

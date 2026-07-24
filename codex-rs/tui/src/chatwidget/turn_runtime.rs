@@ -21,21 +21,23 @@ impl ChatWidget {
     /// The bottom pane only has one running flag, but this module treats it as a derived state of
     /// both the agent turn lifecycle and MCP startup lifecycle.
     pub(super) fn update_task_running_state(&mut self) {
+        let organic_working_word = (self.turn_lifecycle.agent_turn_running
+            && self.config.features.enabled(Feature::SpineJit))
+        .then(|| {
+            crate::motion::activity_word_for_identity(
+                self.turn_lifecycle
+                    .last_turn_id
+                    .as_deref()
+                    .unwrap_or("spine"),
+            )
+        });
+        self.bottom_pane
+            .set_organic_working_word(organic_working_word);
         self.bottom_pane.set_task_running(
             self.turn_lifecycle.agent_turn_running || self.mcp_startup_status.is_some(),
         );
-        self.sync_spine_tree_working_state();
         self.refresh_plan_mode_nudge();
         self.refresh_status_surfaces();
-    }
-
-    fn sync_spine_tree_working_state(&mut self) {
-        let changed = self.live_spine_tree_cell.as_mut().is_some_and(|cell| {
-            cell.set_active_working_started_at(self.turn_lifecycle.agent_turn_started_at)
-        });
-        if changed {
-            self.bump_active_cell_revision();
-        }
     }
 
     pub(super) fn collect_runtime_metrics_delta(&mut self) {
@@ -518,20 +520,13 @@ impl ChatWidget {
     pub(crate) fn set_spine_tree_view(
         &mut self,
         snapshot: Option<SpineTreeUpdatedNotification>,
-        mut live_cell: Option<history_cell::SpineTreeUpdateCell>,
+        live_cell: Option<history_cell::SpineTreeUpdateCell>,
     ) {
-        if let Some(cell) = live_cell.as_mut() {
-            cell.set_active_working_started_at(self.turn_lifecycle.agent_turn_started_at);
-        }
         self.last_spine_tree_snapshot = snapshot;
         self.live_spine_tree_cell = live_cell;
         self.refresh_status_surfaces();
         self.bump_active_cell_revision();
         self.request_redraw();
-    }
-
-    pub(crate) fn spine_tree_turn_is_working(&self) -> bool {
-        self.turn_lifecycle.agent_turn_running
     }
 
     pub(super) fn interrupted_turn_message(&self, reason: TurnAbortReason) -> String {

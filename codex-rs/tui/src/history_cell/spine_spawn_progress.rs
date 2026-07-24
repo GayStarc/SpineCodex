@@ -1,48 +1,24 @@
 use crate::motion::MotionMode;
+use crate::motion::ORGANIC_ACTIVITY_WORDS;
 use crate::motion::ReducedMotionIndicator;
 use crate::motion::green_activity_indicator;
 use crate::motion::green_shimmer_text;
 use crate::multi_agents::AgentActivityTracker;
 use crate::render::line_utils::push_owned_lines;
-use crate::wrapping::{RtOptions, adaptive_wrap_line};
+use crate::wrapping::RtOptions;
+use crate::wrapping::adaptive_wrap_line;
 use codex_app_server_protocol::CollabAgentStatus;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::SpineSpawnProgressUpdatedNotification;
 use codex_app_server_protocol::SpineSpawnTaskProgress;
+use codex_app_server_protocol::ThreadStatus;
+use codex_app_server_protocol::TurnStatus;
 use rand::Rng;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use std::collections::HashMap;
-use std::hash::DefaultHasher;
-use std::hash::Hash;
-use std::hash::Hasher;
 use std::time::Instant;
-
-pub(super) const SPAWN_ACTIVITY_WORDS: &[&str] = &[
-    "Germinating",
-    "Budding",
-    "Sprouting",
-    "Rooting",
-    "Branching",
-    "Unfurling",
-    "Blooming",
-    "Flourishing",
-    "Sketching",
-    "Shaping",
-    "Layering",
-    "Weaving",
-    "Composing",
-    "Rendering",
-    "Unfolding",
-    "Evolving",
-];
-
-pub(super) fn activity_word_for_identity(identity: &str) -> &'static str {
-    let mut hasher = DefaultHasher::new();
-    identity.hash(&mut hasher);
-    SPAWN_ACTIVITY_WORDS[hasher.finish() as usize % SPAWN_ACTIVITY_WORDS.len()]
-}
 
 const ACTIVITY_PREVIEW_LINES: usize = 4;
 const ACTIVITY_INDENT: &str = "   ";
@@ -76,8 +52,18 @@ impl SpineSpawnOverlay {
 
     pub(crate) fn replace_notification(
         &mut self,
-        notification: SpineSpawnProgressUpdatedNotification,
+        mut notification: SpineSpawnProgressUpdatedNotification,
     ) {
+        for task in &mut notification.tasks {
+            if let Some(current) = self
+                .notification
+                .tasks
+                .iter()
+                .find(|current| current.thread_id == task.thread_id)
+            {
+                task.status = merged_status(&current.status, task.status.clone());
+            }
+        }
         self.notification = notification;
         self.activity.retain(|thread_id, _| {
             self.notification
@@ -93,18 +79,23 @@ impl SpineSpawnOverlay {
         thread_id: &str,
         notifications: impl Iterator<Item = ServerNotification>,
     ) -> bool {
-        let Some(task) = self
+        let Some(task_index) = self
             .notification
             .tasks
             .iter()
-            .find(|task| task.thread_id == thread_id)
+            .position(|task| task.thread_id == thread_id)
         else {
             return false;
         };
-        let tracker = self.activity.entry(task.thread_id.clone()).or_default();
+        let tracker = self.activity.entry(thread_id.to_string()).or_default();
         let mut changed = false;
         for notification in notifications {
-            changed |= tracker.apply(&notification);
+            changed |= apply_notification(
+                &mut self.notification.tasks[task_index],
+                tracker,
+                &notification,
+                spine_spawn_status(&notification),
+            );
         }
         changed
     }
@@ -123,16 +114,8 @@ impl SpineSpawnOverlay {
         else {
             return false;
         };
-        let status_changed = status.is_some_and(|status| {
-            if task.status == status {
-                false
-            } else {
-                task.status = status;
-                true
-            }
-        });
         let tracker = self.activity.entry(thread_id.to_string()).or_default();
-        tracker.apply(notification) || status_changed
+        apply_notification(task, tracker, notification, status)
     }
 
     pub(crate) fn has_child_thread(&self, thread_id: &str) -> bool {
@@ -155,11 +138,7 @@ impl SpineSpawnOverlay {
         else {
             return false;
         };
-        if task.status == status {
-            return false;
-        }
-        task.status = status;
-        true
+        apply_status(&mut task.status, status)
     }
 
     pub(crate) fn display_lines(
@@ -256,6 +235,64 @@ impl SpineSpawnOverlay {
     }
 }
 
+fn apply_notification(
+    task: &mut SpineSpawnTaskProgress,
+    tracker: &mut AgentActivityTracker,
+    notification: &ServerNotification,
+    status: Option<CollabAgentStatus>,
+) -> bool {
+    let activity_changed = tracker.apply(notification);
+    let status_changed = status.is_some_and(|status| apply_status(&mut task.status, status));
+    let inferred_running = activity_changed
+        && task.status == CollabAgentStatus::PendingInit
+        && apply_status(&mut task.status, CollabAgentStatus::Running);
+    activity_changed || status_changed || inferred_running
+}
+
+fn apply_status(current: &mut CollabAgentStatus, incoming: CollabAgentStatus) -> bool {
+    let next = merged_status(current, incoming);
+    if *current == next {
+        return false;
+    }
+    *current = next;
+    true
+}
+
+fn merged_status(current: &CollabAgentStatus, incoming: CollabAgentStatus) -> CollabAgentStatus {
+    let current_is_terminal = matches!(
+        current,
+        CollabAgentStatus::Interrupted
+            | CollabAgentStatus::Completed
+            | CollabAgentStatus::Errored
+            | CollabAgentStatus::Shutdown
+            | CollabAgentStatus::NotFound
+    );
+    if (*current != CollabAgentStatus::PendingInit && incoming == CollabAgentStatus::PendingInit)
+        || (current_is_terminal && incoming == CollabAgentStatus::Running)
+    {
+        return current.clone();
+    }
+    incoming
+}
+
+pub(crate) fn spine_spawn_status(notification: &ServerNotification) -> Option<CollabAgentStatus> {
+    match notification {
+        ServerNotification::TurnStarted(_) => Some(CollabAgentStatus::Running),
+        ServerNotification::TurnCompleted(notification) => Some(match notification.turn.status {
+            TurnStatus::Completed => CollabAgentStatus::Completed,
+            TurnStatus::Interrupted => CollabAgentStatus::Interrupted,
+            TurnStatus::Failed => CollabAgentStatus::Errored,
+            TurnStatus::InProgress => CollabAgentStatus::Running,
+        }),
+        ServerNotification::ThreadStatusChanged(notification) => match notification.status {
+            ThreadStatus::Active { .. } => Some(CollabAgentStatus::Running),
+            ThreadStatus::SystemError => Some(CollabAgentStatus::Errored),
+            ThreadStatus::NotLoaded | ThreadStatus::Idle => None,
+        },
+        _ => None,
+    }
+}
+
 fn random_activity_words(
     tasks: &[SpineSpawnTaskProgress],
     existing: &HashMap<String, String>,
@@ -265,7 +302,7 @@ fn random_activity_words(
         .filter(|(thread_id, _)| tasks.iter().any(|task| task.thread_id == **thread_id))
         .map(|(thread_id, word)| (thread_id.clone(), word.clone()))
         .collect::<HashMap<_, _>>();
-    let mut available = SPAWN_ACTIVITY_WORDS
+    let mut available = ORGANIC_ACTIVITY_WORDS
         .iter()
         .copied()
         .filter(|word| !assigned.values().any(|assigned| assigned == word))
@@ -279,7 +316,7 @@ fn random_activity_words(
             let index = rng.random_range(0..available.len());
             available.swap_remove(index).to_string()
         } else {
-            let base = SPAWN_ACTIVITY_WORDS[rng.random_range(0..SPAWN_ACTIVITY_WORDS.len())];
+            let base = ORGANIC_ACTIVITY_WORDS[rng.random_range(0..ORGANIC_ACTIVITY_WORDS.len())];
             let mut label = format!("Further {base}");
             while assigned.values().any(|assigned| assigned == &label) {
                 label.insert_str(0, "Further ");

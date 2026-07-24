@@ -98,6 +98,7 @@ impl ChatWidget {
         }
         if feature == Feature::SpineJit {
             self.sync_spine_tree_enabled();
+            self.update_task_running_state();
         }
         if feature == Feature::MentionsV2 {
             self.sync_mentions_v2_enabled();

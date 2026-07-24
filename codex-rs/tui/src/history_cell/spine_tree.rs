@@ -1,10 +1,5 @@
 use super::spine_spawn_progress::SpineSpawnOverlay;
-use super::spine_spawn_progress::activity_word_for_identity;
 use super::*;
-use crate::motion::MotionMode;
-use crate::motion::ReducedMotionIndicator;
-use crate::motion::green_activity_indicator;
-use crate::motion::green_shimmer_text;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::SpineSpawnOutcome;
 use codex_app_server_protocol::SpineSpawnProgressUpdatedNotification;
@@ -13,7 +8,6 @@ use codex_app_server_protocol::SpineTreeNodeKind;
 use codex_app_server_protocol::SpineTreeNodeStatus;
 use codex_app_server_protocol::SpineTreeUpdatedNotification;
 use std::collections::HashSet;
-use std::time::Instant;
 
 #[path = "spine_tree_debug.rs"]
 mod debug;
@@ -30,7 +24,6 @@ pub(crate) fn new_spine_tree_snapshot(
         display_mode: SpineTreeDisplayMode::Pretty,
         spawn_overlays: Vec::new(),
         animations_enabled: false,
-        active_working_started_at: None,
     }
 }
 
@@ -42,7 +35,6 @@ pub(crate) fn new_debug_spine_tree_snapshot(
         display_mode: SpineTreeDisplayMode::Debug(None),
         spawn_overlays: Vec::new(),
         animations_enabled: false,
-        active_working_started_at: None,
     }
 }
 
@@ -55,7 +47,6 @@ pub(crate) fn new_debug_spine_node_snapshot(
         display_mode: SpineTreeDisplayMode::Debug(Some(node_id)),
         spawn_overlays: Vec::new(),
         animations_enabled: false,
-        active_working_started_at: None,
     }
 }
 
@@ -193,7 +184,6 @@ impl SpineTreeViewState {
             display_mode: SpineTreeDisplayMode::Pretty,
             spawn_overlays: self.overlays.clone(),
             animations_enabled: self.animations_enabled,
-            active_working_started_at: None,
         })
     }
 
@@ -204,7 +194,6 @@ impl SpineTreeViewState {
             display_mode: SpineTreeDisplayMode::Pretty,
             spawn_overlays: self.overlays.clone(),
             animations_enabled: false,
-            active_working_started_at: None,
         })
     }
 
@@ -222,17 +211,6 @@ pub(crate) struct SpineTreeUpdateCell {
     display_mode: SpineTreeDisplayMode,
     spawn_overlays: Vec<SpineSpawnOverlay>,
     animations_enabled: bool,
-    active_working_started_at: Option<Instant>,
-}
-
-impl SpineTreeUpdateCell {
-    pub(crate) fn set_active_working_started_at(&mut self, started_at: Option<Instant>) -> bool {
-        if self.active_working_started_at == started_at {
-            return false;
-        }
-        self.active_working_started_at = started_at;
-        true
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -249,7 +227,6 @@ impl HistoryCell for SpineTreeUpdateCell {
                 &self.spawn_overlays,
                 width,
                 self.animations_enabled,
-                self.active_working_started_at,
             ),
             SpineTreeDisplayMode::Debug(node_id) => {
                 debug::display_lines(&self.snapshot, width, node_id.as_deref())
@@ -274,7 +251,6 @@ impl HistoryCell for SpineTreeUpdateCell {
             .spawn_overlays
             .iter()
             .filter_map(SpineSpawnOverlay::running_animation_start)
-            .chain(self.active_working_started_at)
             .min()?;
         Some(started_at.elapsed().as_millis() as u64 / 600)
     }
@@ -285,7 +261,6 @@ fn pretty_display_lines(
     overlays: &[SpineSpawnOverlay],
     width: u16,
     animations_enabled: bool,
-    active_working_started_at: Option<Instant>,
 ) -> Vec<Line<'static>> {
     let mut lines = vec![pretty_header(snapshot)];
     if let Err(error) = validate_spine_tree_snapshot(snapshot) {
@@ -327,7 +302,6 @@ fn pretty_display_lines(
         &mut lines,
         overlays_at_root && !overlays.is_empty(),
         animations_enabled,
-        active_working_started_at,
     );
     if overlays_at_root {
         for (index, overlay) in overlays.iter().enumerate() {
@@ -373,32 +347,16 @@ fn render_pretty_node(
     width: u16,
     out: &mut Vec<Line<'static>>,
     animations_enabled: bool,
-    active_working_started_at: Option<Instant>,
 ) {
     let children = child_nodes(snapshot, Some(node.node_id.as_str()));
     let active = node.node_id == snapshot.active_node_id;
     let line_prefix = format!("{}{}", prefix, pretty_branch(is_last));
     let child_prefix = format!("{}{}", prefix, pretty_child_prefix(is_last));
-    let mut spans = vec![Span::from(line_prefix).dim()];
-    if active && let Some(started_at) = active_working_started_at {
-        let motion_mode = MotionMode::from_animations_enabled(animations_enabled);
-        if let Some(indicator) = green_activity_indicator(
-            Some(started_at),
-            motion_mode,
-            ReducedMotionIndicator::StaticBullet,
-        ) {
-            spans.push(indicator);
-            spans.push(" ".into());
-        }
-        spans.extend(green_shimmer_text(
-            activity_word_for_identity(&node.node_id),
-            motion_mode,
-        ));
-        spans.push(" ".into());
-    } else {
-        spans.push(pretty_marker(node, active, !children.is_empty()));
-        spans.push(" ".into());
-    }
+    let mut spans = vec![
+        Span::from(line_prefix).dim(),
+        pretty_marker(node, active, !children.is_empty()),
+        " ".into(),
+    ];
     spans.push(Span::from(pretty_node_label_text(node, active)));
 
     let line = Line::from(spans);
@@ -420,7 +378,6 @@ fn render_pretty_node(
         out,
         !node_overlays.is_empty(),
         animations_enabled,
-        active_working_started_at,
     );
     for (index, overlay) in node_overlays.iter().enumerate() {
         out.extend(overlay.display_lines(
@@ -442,7 +399,6 @@ fn render_pretty_nodes(
     out: &mut Vec<Line<'static>>,
     has_trailing_overlay: bool,
     animations_enabled: bool,
-    active_working_started_at: Option<Instant>,
 ) {
     let items = pretty_render_items(snapshot, nodes, active_path);
     let item_count = items.len();
@@ -463,7 +419,6 @@ fn render_pretty_nodes(
                     width,
                     out,
                     animations_enabled,
-                    active_working_started_at,
                 );
             }
         }
@@ -1202,71 +1157,6 @@ mod tests {
 
         assert!(live.transcript_animation_tick().is_some());
         assert_eq!(snapshot.transcript_animation_tick(), None);
-    }
-
-    #[test]
-    fn active_node_animates_only_while_the_host_turn_is_working() {
-        let mut state = SpineTreeViewState::new(true);
-        state.apply_tree_update(snapshot(
-            "1",
-            vec![node(
-                "1",
-                None,
-                Some("inspect current changes"),
-                SpineTreeNodeStatus::Live,
-            )],
-        ));
-        let mut cell = state.render_cell().expect("active tree should render");
-
-        let idle = cell.display_lines(80);
-        let idle_node = idle
-            .iter()
-            .find(|line| line.to_string().contains("inspect current changes"))
-            .expect("active node should render");
-        assert_eq!(idle_node.to_string(), "  └ ◉ inspect current changes");
-        assert_eq!(cell.transcript_animation_tick(), None);
-
-        assert!(cell.set_active_working_started_at(Some(Instant::now())));
-        let working = cell.display_lines(80);
-        let working_node = working
-            .iter()
-            .find(|line| line.to_string().contains("inspect current changes"))
-            .expect("working active node should render");
-        assert!(
-            working_node
-                .to_string()
-                .contains(activity_word_for_identity("1")),
-            "{working_node:?}"
-        );
-        let status_spans = &working_node.spans[1..working_node.spans.len() - 1];
-        assert!(
-            status_spans
-                .iter()
-                .filter(|span| !span.content.trim().is_empty())
-                .all(|span| span.style.fg == Some(Color::Green)),
-            "working marker and word should be green: {working_node:?}"
-        );
-        let summary = working_node
-            .spans
-            .last()
-            .expect("working node should end with its summary");
-        assert_eq!(summary.style.fg, None);
-        assert!(
-            !summary.style.add_modifier.contains(Modifier::DIM),
-            "working summary should use the normal foreground: {working_node:?}"
-        );
-        assert!(cell.transcript_animation_tick().is_some());
-
-        assert!(cell.set_active_working_started_at(None));
-        assert_eq!(cell.transcript_animation_tick(), None);
-        assert_eq!(
-            cell.display_lines(80)
-                .into_iter()
-                .find(|line| line.to_string().contains("inspect current changes"))
-                .expect("idle active node should still render")
-                .to_string(),
-            "  └ ◉ inspect current changes"
-        );
     }
 
     #[test]

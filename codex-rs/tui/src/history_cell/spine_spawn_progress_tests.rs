@@ -1,12 +1,14 @@
 use super::plain_lines;
-use super::spine_spawn_progress::SPAWN_ACTIVITY_WORDS;
 use super::spine_spawn_progress::SpineSpawnOverlay;
+use crate::motion::ORGANIC_ACTIVITY_WORDS;
 use codex_app_server_protocol::CollabAgentStatus;
 use codex_app_server_protocol::ItemCompletedNotification;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::SpineSpawnProgressUpdatedNotification;
 use codex_app_server_protocol::SpineSpawnTaskProgress;
 use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::ThreadStatus;
+use codex_app_server_protocol::ThreadStatusChangedNotification;
 use ratatui::style::Color;
 use ratatui::style::Modifier;
 use ratatui::text::Line;
@@ -218,6 +220,107 @@ fn pending_task_uses_a_pending_specific_empty_state() {
 }
 
 #[test]
+fn first_safe_activity_promotes_pending_task_to_running() {
+    let mut overlay = SpineSpawnOverlay::new(SpineSpawnProgressUpdatedNotification {
+        thread_id: "parent".to_string(),
+        turn_id: "turn-1".to_string(),
+        call_id: "spawn-1".to_string(),
+        tasks: vec![SpineSpawnTaskProgress {
+            ordinal: 0,
+            summary: "active child".to_string(),
+            thread_id: "child".to_string(),
+            agent_path: None,
+            status: CollabAgentStatus::PendingInit,
+        }],
+    });
+    let activity = ServerNotification::ItemCompleted(ItemCompletedNotification {
+        item: ThreadItem::AgentMessage {
+            id: "message-1".to_string(),
+            text: "child produced activity".to_string(),
+            phase: None,
+            memory_citation: None,
+        },
+        thread_id: "child".to_string(),
+        turn_id: "turn-1".to_string(),
+        completed_at_ms: 1,
+    });
+
+    assert!(overlay.update_activity("child", &activity, None));
+    let rendered = plain_lines(overlay.display_lines("  ", true, 80, false))
+        .into_iter()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(rendered.contains("•"), "{rendered}");
+    assert!(rendered.contains("child produced activity"), "{rendered}");
+    assert!(!rendered.contains("Waiting to start..."), "{rendered}");
+
+    overlay.replace_notification(SpineSpawnProgressUpdatedNotification {
+        thread_id: "parent".to_string(),
+        turn_id: "turn-1".to_string(),
+        call_id: "spawn-1".to_string(),
+        tasks: vec![SpineSpawnTaskProgress {
+            ordinal: 0,
+            summary: "active child".to_string(),
+            thread_id: "child".to_string(),
+            agent_path: None,
+            status: CollabAgentStatus::PendingInit,
+        }],
+    });
+    let refreshed = plain_lines(overlay.display_lines("  ", true, 80, false))
+        .into_iter()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(refreshed.contains("•"), "{refreshed}");
+    assert!(refreshed.contains("child produced activity"), "{refreshed}");
+}
+
+#[test]
+fn seeded_native_terminal_status_wins_over_activity_and_late_pending_updates() {
+    let progress = || SpineSpawnProgressUpdatedNotification {
+        thread_id: "parent".to_string(),
+        turn_id: "turn-1".to_string(),
+        call_id: "spawn-1".to_string(),
+        tasks: vec![SpineSpawnTaskProgress {
+            ordinal: 0,
+            summary: "active child".to_string(),
+            thread_id: "child".to_string(),
+            agent_path: None,
+            status: CollabAgentStatus::PendingInit,
+        }],
+    };
+    let activity = ServerNotification::ItemCompleted(ItemCompletedNotification {
+        item: ThreadItem::AgentMessage {
+            id: "message-1".to_string(),
+            text: "child produced activity".to_string(),
+            phase: None,
+            memory_citation: None,
+        },
+        thread_id: "child".to_string(),
+        turn_id: "turn-1".to_string(),
+        completed_at_ms: 1,
+    });
+    let failed = ServerNotification::ThreadStatusChanged(ThreadStatusChangedNotification {
+        thread_id: "child".to_string(),
+        status: ThreadStatus::SystemError,
+    });
+    let mut overlay = SpineSpawnOverlay::new(progress());
+
+    assert!(overlay.seed_activity("child", [activity, failed].into_iter()));
+    overlay.replace_notification(progress());
+    assert!(!overlay.update_status("child", CollabAgentStatus::Running));
+
+    let rendered = plain_lines(overlay.display_lines("  ", true, 80, false))
+        .into_iter()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(rendered.contains("×"), "{rendered}");
+    assert!(!rendered.contains("Waiting to start..."), "{rendered}");
+}
+
+#[test]
 fn narrow_width_preserves_tree_prefixes_and_fixed_activity_rows() {
     let mut overlay = SpineSpawnOverlay::new(SpineSpawnProgressUpdatedNotification {
         thread_id: "parent".to_string(),
@@ -290,7 +393,7 @@ fn random_activity_words_are_unique_within_a_spawn_and_stable_across_refresh() {
     assert!(
         before
             .iter()
-            .all(|word| SPAWN_ACTIVITY_WORDS.contains(&word.as_str()))
+            .all(|word| ORGANIC_ACTIVITY_WORDS.contains(&word.as_str()))
     );
 
     let mut refreshed_tasks = tasks;
@@ -312,7 +415,7 @@ fn random_activity_words_are_unique_within_a_spawn_and_stable_across_refresh() {
 
 #[test]
 fn activity_words_remain_unique_beyond_the_base_pool() {
-    let task_count = SPAWN_ACTIVITY_WORDS.len() + 4;
+    let task_count = ORGANIC_ACTIVITY_WORDS.len() + 4;
     let tasks = (0..task_count)
         .map(|ordinal| SpineSpawnTaskProgress {
             ordinal: ordinal as u32,

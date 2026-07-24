@@ -225,6 +225,7 @@ pub(crate) struct BottomPane {
     is_task_running: bool,
     esc_backtrack_hint: bool,
     animations_enabled: bool,
+    organic_working_word: Option<&'static str>,
 
     /// Inline status indicator shown above the composer while a task is running.
     status: Option<StatusIndicatorWidget>,
@@ -294,6 +295,7 @@ impl BottomPane {
             pending_thread_approvals: PendingThreadApprovals::new(),
             esc_backtrack_hint: false,
             animations_enabled,
+            organic_working_word: None,
             context_window_percent: None,
             context_window_used_tokens: None,
             keymap,
@@ -1009,6 +1011,7 @@ impl BottomPane {
                     ));
                 }
                 if let Some(status) = self.status.as_mut() {
+                    status.set_organic_working_word(self.organic_working_word);
                     status.set_interrupt_hint_visible(/*visible*/ true);
                     status.set_interrupt_binding(primary_binding(&self.keymap.chat.interrupt_turn));
                 }
@@ -1040,11 +1043,23 @@ impl BottomPane {
                 self.animations_enabled,
             ));
             if let Some(status) = self.status.as_mut() {
+                status.set_organic_working_word(self.organic_working_word);
                 status.set_interrupt_binding(primary_binding(&self.keymap.chat.interrupt_turn));
             }
             self.sync_status_inline_message();
             self.request_redraw();
         }
+    }
+
+    pub(crate) fn set_organic_working_word(&mut self, word: Option<&'static str>) {
+        if self.organic_working_word == word {
+            return;
+        }
+        self.organic_working_word = word;
+        if let Some(status) = self.status.as_mut() {
+            status.set_organic_working_word(word);
+        }
+        self.request_redraw();
     }
 
     pub(crate) fn set_interrupt_hint_visible(&mut self, visible: bool) {

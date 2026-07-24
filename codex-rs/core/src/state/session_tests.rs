@@ -274,6 +274,72 @@ async fn spawn_context_install_is_atomic_and_independently_feature_gated() {
 }
 
 #[tokio::test]
+async fn spine_tree_spawn_outcome_belongs_only_to_the_spawned_node() {
+    let mut session_configuration = make_session_configuration_for_tests().await;
+    session_configuration.enable_spine_jit_for_test();
+    session_configuration.enable_spine_spawn_for_test();
+    let mut state = SessionState::new(session_configuration);
+    let (spawn_call, spawn_output) = spawn_call_and_output();
+
+    state.append_spine_rollout_items(&[
+        RolloutItem::ResponseItem(ResponseItem::FunctionCall {
+            id: None,
+            name: "spine.open".to_string(),
+            namespace: None,
+            arguments: r#"{"summary":"parent"}"#.to_string(),
+            call_id: "open-parent".to_string(),
+            internal_chat_message_metadata_passthrough: None,
+        }),
+        RolloutItem::ResponseItem(ResponseItem::FunctionCallOutput {
+            id: None,
+            call_id: "open-parent".to_string(),
+            output: FunctionCallOutputPayload {
+                body: FunctionCallOutputBody::Text("Spine open accepted.".to_string()),
+                success: Some(true),
+            },
+            internal_chat_message_metadata_passthrough: None,
+        }),
+        RolloutItem::ResponseItem(spawn_call),
+        RolloutItem::ResponseItem(spawn_output),
+        RolloutItem::ResponseItem(ResponseItem::FunctionCall {
+            id: None,
+            name: "spine.close".to_string(),
+            namespace: None,
+            arguments: r#"{"memory":"parent completed normally"}"#.to_string(),
+            call_id: "close-parent".to_string(),
+            internal_chat_message_metadata_passthrough: None,
+        }),
+        RolloutItem::ResponseItem(ResponseItem::FunctionCallOutput {
+            id: None,
+            call_id: "close-parent".to_string(),
+            output: FunctionCallOutputPayload {
+                body: FunctionCallOutputBody::Text("Spine close accepted.".to_string()),
+                success: Some(true),
+            },
+            internal_chat_message_metadata_passthrough: None,
+        }),
+    ]);
+
+    let snapshot = state.spine_tree_update().expect("tree enabled");
+    let parent = snapshot
+        .nodes
+        .iter()
+        .find(|node| node.node_id == "1.1")
+        .expect("parent node");
+    let errored_child = snapshot
+        .nodes
+        .iter()
+        .find(|node| node.node_id == "1.1.2")
+        .expect("errored spawned child");
+
+    assert_eq!(parent.spawn_outcome, None);
+    assert_eq!(
+        errored_child.spawn_outcome,
+        Some(codex_protocol::spine_tree::SpineSpawnOutcome::Errored)
+    );
+}
+
+#[tokio::test]
 async fn spine_tree_snapshot_is_derived_across_compact_and_rollout_replacement() {
     let mut disabled = make_session_configuration_for_tests().await;
     disabled.disable_spine_jit_for_test();

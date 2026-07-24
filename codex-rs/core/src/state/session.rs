@@ -153,7 +153,11 @@ impl SessionState {
             .map(|node| {
                 let spawn_outcome = node.memory.as_ref().and_then(|slots| {
                     slots.iter().find_map(|slot| match slot {
-                        codex_spine_core::MemorySlot::SpawnEvidence { outcome, .. } => {
+                        codex_spine_core::MemorySlot::SpawnEvidence {
+                            owner_node,
+                            outcome,
+                            ..
+                        } if owner_node == &node.id => {
                             Some(match outcome {
                                 codex_spine_core::SpawnOutcome::Completed => {
                                     codex_protocol::spine_tree::SpineSpawnOutcome::Completed
@@ -167,7 +171,8 @@ impl SessionState {
                             })
                         }
                         codex_spine_core::MemorySlot::User { .. }
-                        | codex_spine_core::MemorySlot::Summary { .. } => None,
+                        | codex_spine_core::MemorySlot::Summary { .. }
+                        | codex_spine_core::MemorySlot::SpawnEvidence { .. } => None,
                     })
                 });
                 codex_protocol::protocol::SpineTreeNodeSnapshot {

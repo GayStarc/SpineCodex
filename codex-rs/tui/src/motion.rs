@@ -3,6 +3,9 @@
 //! Callers choose an explicit reduced-motion fallback here instead of reaching
 //! directly for time-varying spinner or shimmer helpers.
 
+use std::hash::DefaultHasher;
+use std::hash::Hash;
+use std::hash::Hasher;
 use std::time::Instant;
 
 use ratatui::style::Stylize;
@@ -10,6 +13,55 @@ use ratatui::text::Span;
 
 use crate::shimmer::green_shimmer_spans;
 use crate::shimmer::shimmer_spans;
+
+pub(crate) const ORGANIC_ACTIVITY_WORDS: &[&str] = &[
+    "Germinating",
+    "Budding",
+    "Sprouting",
+    "Rooting",
+    "Branching",
+    "Unfurling",
+    "Blooming",
+    "Flourishing",
+    "Sketching",
+    "Shaping",
+    "Layering",
+    "Weaving",
+    "Composing",
+    "Rendering",
+    "Unfolding",
+    "Evolving",
+    "Awakening",
+    "Becoming",
+    "Emerging",
+    "Stirring",
+    "Quickening",
+    "Kindling",
+    "Growing",
+    "Greening",
+    "Blossoming",
+    "Ripening",
+    "Renewing",
+    "Cultivating",
+    "Nurturing",
+    "Deepening",
+    "Flowing",
+    "Gathering",
+    "Coalescing",
+    "Distilling",
+    "Refining",
+    "Crystallizing",
+    "Illuminating",
+    "Glimmering",
+    "Resonating",
+    "Materializing",
+];
+
+pub(crate) fn activity_word_for_identity(identity: &str) -> &'static str {
+    let mut hasher = DefaultHasher::new();
+    identity.hash(&mut hasher);
+    ORGANIC_ACTIVITY_WORDS[hasher.finish() as usize % ORGANIC_ACTIVITY_WORDS.len()]
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum MotionMode {

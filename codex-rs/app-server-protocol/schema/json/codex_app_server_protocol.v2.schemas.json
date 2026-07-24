@@ -12967,6 +12967,26 @@
           "properties": {
             "method": {
               "enum": [
+                "thread/rolledBack"
+              ],
+              "title": "Thread/rolledBackNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/ThreadRolledBackNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "Thread/rolledBackNotification",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
                 "skills/changed"
               ],
               "title": "Skills/changedNotificationMethod",
@@ -17383,6 +17403,19 @@
         "thread"
       ],
       "title": "ThreadRollbackResponse",
+      "type": "object"
+    },
+    "ThreadRolledBackNotification": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId"
+      ],
+      "title": "ThreadRolledBackNotification",
       "type": "object"
     },
     "ThreadSearchResult": {

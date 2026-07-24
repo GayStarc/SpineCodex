@@ -201,6 +201,12 @@ impl ChatWidget {
                     self.on_shutdown_complete();
                 }
             }
+            ServerNotification::ThreadRolledBack(notification) => {
+                if let Ok(thread_id) = ThreadId::from_string(&notification.thread_id) {
+                    self.app_event_tx
+                        .send(AppEvent::InvalidateSpineTreeView { thread_id });
+                }
+            }
             ServerNotification::ServerRequestResolved(_)
             | ServerNotification::AccountUpdated(_)
             | ServerNotification::AccountRateLimitsUpdated(_)

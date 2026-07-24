@@ -1463,6 +1463,18 @@ impl Session {
         turn_context: &TurnContext,
         rollout_items: &[RolloutItem],
     ) -> Option<PreviousTurnSettings> {
+        let previous_turn_settings = self
+            .install_rollout_reconstruction(turn_context, rollout_items)
+            .await;
+        self.publish_rollout_reconstruction(turn_context).await;
+        previous_turn_settings
+    }
+
+    async fn install_rollout_reconstruction(
+        &self,
+        turn_context: &TurnContext,
+        rollout_items: &[RolloutItem],
+    ) -> Option<PreviousTurnSettings> {
         let rollout_reconstruction::RolloutReconstruction {
             mut history,
             previous_turn_settings,
@@ -1513,9 +1525,12 @@ impl Session {
             self.set_auto_compact_window_estimated_prefill_for_scope(turn_context, prefix_tokens)
                 .await;
         }
+        previous_turn_settings
+    }
+
+    async fn publish_rollout_reconstruction(&self, turn_context: &TurnContext) {
         self.emit_spine_tree_update(turn_context).await;
         self.publish_spinetree_memory_projection().await;
-        previous_turn_settings
     }
 
     async fn set_auto_compact_window_estimated_prefill_for_scope(

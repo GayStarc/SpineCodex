@@ -535,7 +535,7 @@ pub async fn thread_rollback(sess: &Arc<Session>, sub_id: String, num_turns: u32
         .into_iter()
         .chain(std::iter::once(RolloutItem::EventMsg(rollback_msg.clone())))
         .collect::<Vec<_>>();
-    sess.apply_rollout_reconstruction(turn_context.as_ref(), replay_items.as_slice())
+    sess.install_rollout_reconstruction(turn_context.as_ref(), replay_items.as_slice())
         .await;
     sess.services
         .agent_control
@@ -562,6 +562,8 @@ pub async fn thread_rollback(sess: &Arc<Session>, sub_id: String, num_turns: u32
         msg: rollback_msg,
     })
     .await;
+    sess.publish_rollout_reconstruction(turn_context.as_ref())
+        .await;
 }
 
 pub(super) async fn persist_thread_memory_mode_update(

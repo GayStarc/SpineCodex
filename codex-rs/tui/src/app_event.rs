@@ -678,6 +678,10 @@ pub(crate) enum AppEvent {
         parent_thread_id: ThreadId,
     },
 
+    InvalidateSpineTreeView {
+        thread_id: ThreadId,
+    },
+
     ShowSpineTreeSnapshot {
         debug: bool,
     },

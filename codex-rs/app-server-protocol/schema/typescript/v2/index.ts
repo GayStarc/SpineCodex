@@ -453,6 +453,7 @@ export type { ThreadResumeParams } from "./ThreadResumeParams";
 export type { ThreadResumeResponse } from "./ThreadResumeResponse";
 export type { ThreadRollbackParams } from "./ThreadRollbackParams";
 export type { ThreadRollbackResponse } from "./ThreadRollbackResponse";
+export type { ThreadRolledBackNotification } from "./ThreadRolledBackNotification";
 export type { ThreadSearchResult } from "./ThreadSearchResult";
 export type { ThreadSetNameParams } from "./ThreadSetNameParams";
 export type { ThreadSetNameResponse } from "./ThreadSetNameResponse";

@@ -142,6 +142,7 @@ pub(crate) use request_user_input::*;
 pub(crate) use search::*;
 pub(crate) use separators::*;
 pub(crate) use session::*;
+pub(crate) use spine_spawn_progress::spine_spawn_status;
 pub(crate) use spine_tree::SpineTreeUpdateCell;
 pub(crate) use spine_tree::SpineTreeViewState;
 pub(crate) use spine_tree::new_debug_spine_node_snapshot;
