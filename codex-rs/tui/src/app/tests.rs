@@ -24,6 +24,7 @@ use crate::history_cell::AgentMarkdownCell;
 use crate::history_cell::AgentMessageCell;
 use crate::history_cell::HistoryCell;
 use crate::history_cell::PlainHistoryCell;
+use crate::history_cell::SpineTreeViewState;
 use crate::history_cell::UserHistoryCell;
 use crate::history_cell::new_session_info;
 use crate::multi_agents::AgentPickerThreadEntry;
@@ -42,6 +43,7 @@ use codex_app_server_protocol::AdditionalNetworkPermissions;
 use codex_app_server_protocol::AdditionalPermissionProfile;
 use codex_app_server_protocol::AgentMessageDeltaNotification;
 use codex_app_server_protocol::AskForApproval;
+use codex_app_server_protocol::CollabAgentStatus;
 use codex_app_server_protocol::CommandExecutionRequestApprovalParams;
 use codex_app_server_protocol::ConfigWarningNotification;
 use codex_app_server_protocol::FileChangeRequestApprovalParams;
@@ -416,6 +418,8 @@ async fn reset_thread_event_state_aborts_listener_tasks() {
 
     let mut app = make_test_app().await;
     let thread_id = ThreadId::new();
+    app.spine_tree_views
+        .insert(thread_id, SpineTreeViewState::default());
     let (started_tx, started_rx) = tokio::sync::oneshot::channel();
     let (dropped_tx, dropped_rx) = tokio::sync::oneshot::channel();
     let handle = tokio::spawn(async move {
@@ -431,6 +435,7 @@ async fn reset_thread_event_state_aborts_listener_tasks() {
     app.reset_thread_event_state();
 
     assert_eq!(app.thread_event_listener_tasks.is_empty(), true);
+    assert!(app.spine_tree_views.is_empty());
     time::timeout(Duration::from_millis(50), dropped_rx)
         .await
         .expect("timed out waiting for listener task abort")
@@ -505,18 +510,12 @@ async fn enqueue_thread_event_does_not_block_when_channel_full() -> Result<()> {
 }
 
 #[tokio::test]
-async fn enqueue_thread_notification_refreshes_spawn_activity_on_message_delta() -> Result<()> {
+async fn enqueue_thread_notification_updates_app_owned_spawn_projection() -> Result<()> {
     let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
     let child_thread_id = ThreadId::new();
+    let parent_thread_id = ThreadId::new();
     let agent_path = "/root/live-worker".to_string();
-    app.agent_navigation.upsert(
-        child_thread_id,
-        /*agent_nickname*/ None,
-        /*agent_role*/ None,
-        /*is_closed*/ false,
-    );
-    app.agent_navigation
-        .set_agent_path(child_thread_id, Some(agent_path.clone()));
+    app.ensure_thread_channel(child_thread_id);
 
     app.enqueue_thread_notification(
         child_thread_id,
@@ -533,48 +532,43 @@ async fn enqueue_thread_notification_refreshes_spawn_activity_on_message_delta()
         time::timeout(Duration::from_millis(50), app_event_rx.recv())
             .await
             .is_err(),
-        "activity without a live spine.spawn overlay must not emit a refresh"
+        "activity without a live spine.spawn overlay must not emit a UI event"
     );
 
-    let tree = crate::history_cell::new_spine_tree_update(
-        "turn-live".to_string(),
-        SpineTreeUpdatedNotification {
-            thread_id: "parent".to_string(),
-            turn_id: "turn-live".to_string(),
-            snapshot_seq: 1,
-            active_node_id: "1".to_string(),
-            nodes: vec![SpineTreeNode {
-                node_id: "1".to_string(),
-                parent_id: None,
-                kind: SpineTreeNodeKind::Task,
-                status: SpineTreeNodeStatus::Live,
-                summary: Some("active".to_string()),
-                memory_summary: None,
-                start: 0,
-                end: None,
-                context_pressure: None,
-            }],
-        },
-    )
-    .with_spawn_progress(SpineSpawnProgressUpdatedNotification {
-        thread_id: "parent".to_string(),
+    let snapshot = SpineTreeUpdatedNotification {
+        thread_id: parent_thread_id.to_string(),
+        turn_id: "turn-live".to_string(),
+        snapshot_seq: 1,
+        active_node_id: "1".to_string(),
+        settled_spawn_call_ids: Vec::new(),
+        nodes: vec![SpineTreeNode {
+            node_id: "1".to_string(),
+            parent_id: None,
+            kind: SpineTreeNodeKind::Task,
+            status: SpineTreeNodeStatus::Live,
+            summary: Some("active".to_string()),
+            memory_summary: None,
+            start: 0,
+            end: None,
+            context_pressure: None,
+            spawn_outcome: None,
+        }],
+    };
+    let progress = SpineSpawnProgressUpdatedNotification {
+        thread_id: parent_thread_id.to_string(),
         turn_id: "turn-live".to_string(),
         call_id: "spawn-live".to_string(),
         tasks: vec![SpineSpawnTaskProgress {
             ordinal: 0,
             summary: "live worker".to_string(),
+            thread_id: child_thread_id.to_string(),
             agent_path: Some(agent_path.clone()),
             status: codex_app_server_protocol::CollabAgentStatus::Running,
         }],
-    });
-    app.transcript_cells.push(Arc::new(tree));
-    app.thread_event_channels
-        .get(&child_thread_id)
-        .expect("child channel should exist")
-        .store
-        .lock()
-        .await
-        .enable_spine_spawn_activity();
+    };
+    let state = app.spine_tree_views.entry(parent_thread_id).or_default();
+    state.apply_tree_update(snapshot);
+    state.apply_spawn_progress(progress);
 
     app.enqueue_thread_notification(
         child_thread_id,
@@ -587,27 +581,267 @@ async fn enqueue_thread_notification_refreshes_spawn_activity_on_message_delta()
     )
     .await?;
 
-    let event = time::timeout(Duration::from_secs(1), app_event_rx.recv())
-        .await
-        .expect("delta should emit a refresh event")
-        .expect("app event channel should stay open");
-    let AppEvent::RefreshSpineSpawnActivity {
-        agent_path: refreshed_path,
-        preview,
-        status,
-    } = event
-    else {
-        panic!("expected RefreshSpineSpawnActivity, got {event:?}");
-    };
-    assert_eq!(refreshed_path, agent_path);
-    assert_eq!(status, None);
-    let rendered = preview
-        .lines(80)
+    let rendered = app
+        .spine_tree_views
+        .get(&parent_thread_id)
+        .and_then(|state| state.render_cell())
+        .expect("live projection should render")
+        .display_lines(80)
         .into_iter()
         .map(|line| line.to_string())
         .collect::<Vec<_>>()
         .join("\n");
     assert!(rendered.contains("streaming child content"), "{rendered}");
+    assert!(rendered.contains("continues"), "{rendered}");
+    let event = time::timeout(Duration::from_millis(50), app_event_rx.recv())
+        .await
+        .expect("timed out waiting for Spine tree refresh")
+        .expect("app event channel closed unexpectedly");
+    assert_matches!(
+        event,
+        AppEvent::SpineTreeViewChanged {
+            parent_thread_id: observed
+        } if observed == parent_thread_id
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn spawn_activity_routes_to_exact_parent_when_agent_paths_repeat() -> Result<()> {
+    let (mut app, _app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let parent_a = ThreadId::new();
+    let parent_b = ThreadId::new();
+    let child_a = ThreadId::new();
+    let child_b = ThreadId::new();
+    let agent_path = "/root/shared-worker".to_string();
+
+    for child in [child_a, child_b] {
+        app.ensure_thread_channel(child);
+    }
+
+    for (parent, child, turn_id, call_id) in [
+        (parent_a, child_a, "turn-a", "spawn-a"),
+        (parent_b, child_b, "turn-b", "spawn-b"),
+    ] {
+        let state = app.spine_tree_views.entry(parent).or_default();
+        state.apply_tree_update(SpineTreeUpdatedNotification {
+            thread_id: parent.to_string(),
+            turn_id: turn_id.to_string(),
+            snapshot_seq: 1,
+            active_node_id: "1".to_string(),
+            settled_spawn_call_ids: Vec::new(),
+            nodes: vec![SpineTreeNode {
+                node_id: "1".to_string(),
+                parent_id: None,
+                kind: SpineTreeNodeKind::Task,
+                status: SpineTreeNodeStatus::Live,
+                summary: Some("active".to_string()),
+                memory_summary: None,
+                start: 0,
+                end: None,
+                context_pressure: None,
+                spawn_outcome: None,
+            }],
+        });
+        state.apply_spawn_progress(SpineSpawnProgressUpdatedNotification {
+            thread_id: parent.to_string(),
+            turn_id: turn_id.to_string(),
+            call_id: call_id.to_string(),
+            tasks: vec![SpineSpawnTaskProgress {
+                ordinal: 0,
+                summary: "shared worker".to_string(),
+                thread_id: child.to_string(),
+                agent_path: Some(agent_path.clone()),
+                status: codex_app_server_protocol::CollabAgentStatus::Running,
+            }],
+        });
+    }
+
+    app.enqueue_thread_notification(
+        child_b,
+        ServerNotification::AgentMessageDelta(AgentMessageDeltaNotification {
+            thread_id: child_b.to_string(),
+            turn_id: "child-turn".to_string(),
+            item_id: "message-b".to_string(),
+            delta: "only parent b".to_string(),
+        }),
+    )
+    .await?;
+
+    let rendered = |parent| {
+        app.spine_tree_views
+            .get(&parent)
+            .and_then(|state| state.render_cell())
+            .expect("live projection should render")
+            .display_lines(80)
+            .into_iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    assert!(!rendered(parent_a).contains("only parent b"));
+    assert!(rendered(parent_b).contains("only parent b"));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn app_owned_spawn_projection_removes_overlay_only_on_tree_commit() -> Result<()> {
+    let (mut app, _app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let parent_thread_id = ThreadId::new();
+    let snapshot = SpineTreeUpdatedNotification {
+        thread_id: parent_thread_id.to_string(),
+        turn_id: "turn-live".to_string(),
+        snapshot_seq: 1,
+        active_node_id: "1".to_string(),
+        settled_spawn_call_ids: Vec::new(),
+        nodes: vec![SpineTreeNode {
+            node_id: "1".to_string(),
+            parent_id: None,
+            kind: SpineTreeNodeKind::Task,
+            status: SpineTreeNodeStatus::Live,
+            summary: Some("active".to_string()),
+            memory_summary: None,
+            start: 0,
+            end: None,
+            context_pressure: None,
+            spawn_outcome: None,
+        }],
+    };
+    let progress = SpineSpawnProgressUpdatedNotification {
+        thread_id: parent_thread_id.to_string(),
+        turn_id: "turn-live".to_string(),
+        call_id: "spawn-live".to_string(),
+        tasks: vec![SpineSpawnTaskProgress {
+            ordinal: 0,
+            summary: "live worker".to_string(),
+            thread_id: ThreadId::new().to_string(),
+            agent_path: Some("/root/live-worker".to_string()),
+            status: codex_app_server_protocol::CollabAgentStatus::Running,
+        }],
+    };
+    let state = app.spine_tree_views.entry(parent_thread_id).or_default();
+    state.apply_tree_update(snapshot.clone());
+    state.apply_spawn_progress(progress);
+    assert!(state.has_spawn_call("spawn-live"));
+
+    let mut committed = snapshot;
+    committed.snapshot_seq = 2;
+    committed.settled_spawn_call_ids = vec!["spawn-live".to_string()];
+    state.apply_tree_update(committed);
+    assert!(!state.has_spawn_call("spawn-live"));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn incomplete_parent_turn_clears_only_its_unsettled_spawn_overlays() -> Result<()> {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let parent_thread_id = ThreadId::new();
+    let live_child_thread_id = ThreadId::new();
+    let state = app.spine_tree_views.entry(parent_thread_id).or_default();
+    for (turn_id, call_id) in [
+        ("turn-completed", "spawn-completed"),
+        ("turn-interrupted", "spawn-interrupted"),
+        ("turn-failed", "spawn-failed"),
+        ("turn-live", "spawn-live"),
+    ] {
+        state.apply_spawn_progress(SpineSpawnProgressUpdatedNotification {
+            thread_id: parent_thread_id.to_string(),
+            turn_id: turn_id.to_string(),
+            call_id: call_id.to_string(),
+            tasks: vec![SpineSpawnTaskProgress {
+                ordinal: 0,
+                summary: call_id.to_string(),
+                thread_id: if call_id == "spawn-live" {
+                    live_child_thread_id.to_string()
+                } else {
+                    ThreadId::new().to_string()
+                },
+                agent_path: None,
+                status: CollabAgentStatus::Running,
+            }],
+        });
+    }
+
+    app.enqueue_thread_notification(
+        parent_thread_id,
+        turn_completed_notification(parent_thread_id, "turn-completed", TurnStatus::Completed),
+    )
+    .await?;
+    assert!(
+        app.spine_tree_views
+            .get(&parent_thread_id)
+            .expect("parent projection should remain")
+            .has_spawn_call("spawn-completed"),
+        "normal completion must wait for the typed tree commit"
+    );
+
+    app.enqueue_thread_notification(
+        parent_thread_id,
+        turn_completed_notification(
+            parent_thread_id,
+            "turn-interrupted",
+            TurnStatus::Interrupted,
+        ),
+    )
+    .await?;
+    app.enqueue_thread_notification(
+        parent_thread_id,
+        turn_completed_notification(parent_thread_id, "turn-failed", TurnStatus::Failed),
+    )
+    .await?;
+
+    let state = app
+        .spine_tree_views
+        .get(&parent_thread_id)
+        .expect("parent projection should remain");
+    assert!(!state.has_spawn_call("spawn-interrupted"));
+    assert!(!state.has_spawn_call("spawn-failed"));
+    assert!(state.has_spawn_call("spawn-completed"));
+    assert!(state.has_spawn_call("spawn-live"));
+    for _ in 0..2 {
+        assert_matches!(
+            app_event_rx.try_recv(),
+            Ok(AppEvent::SpineTreeViewChanged { parent_thread_id: observed })
+                if observed == parent_thread_id
+        );
+    }
+
+    app.enqueue_thread_notification(
+        parent_thread_id,
+        thread_closed_notification(parent_thread_id),
+    )
+    .await?;
+    let state = app
+        .spine_tree_views
+        .get(&parent_thread_id)
+        .expect("parent projection should remain");
+    assert!(!state.has_spawn_call("spawn-completed"));
+    assert!(!state.has_spawn_call("spawn-live"));
+    assert_matches!(
+        app_event_rx.try_recv(),
+        Ok(AppEvent::SpineTreeViewChanged { parent_thread_id: observed })
+            if observed == parent_thread_id
+    );
+
+    app.enqueue_thread_notification(
+        live_child_thread_id,
+        ServerNotification::AgentMessageDelta(AgentMessageDeltaNotification {
+            thread_id: live_child_thread_id.to_string(),
+            turn_id: "child-turn".to_string(),
+            item_id: "late-message".to_string(),
+            delta: "must not revive a closed overlay".to_string(),
+        }),
+    )
+    .await?;
+    assert!(
+        time::timeout(Duration::from_millis(50), app_event_rx.recv())
+            .await
+            .is_err(),
+        "child activity after parent closure must not refresh the removed overlay"
+    );
 
     Ok(())
 }
@@ -4185,6 +4419,7 @@ async fn make_test_app() -> App {
         runtime_permission_profile_override: None,
         file_search,
         transcript_cells: Vec::new(),
+        spine_tree_views: HashMap::new(),
         overlay: None,
         deferred_history_lines: Vec::new(),
         has_emitted_history_lines: false,
@@ -4250,6 +4485,7 @@ async fn make_test_app_with_channels() -> (
             runtime_permission_profile_override: None,
             file_search,
             transcript_cells: Vec::new(),
+            spine_tree_views: HashMap::new(),
             overlay: None,
             deferred_history_lines: Vec::new(),
             has_emitted_history_lines: false,

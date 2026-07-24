@@ -42,7 +42,8 @@ fn spawn_call_and_output() -> (ResponseItem, ResponseItem) {
     let arguments = serde_json::json!({
         "tasks": [
             {"summary": "first", "prompt": "inspect first"},
-            {"summary": "second", "prompt": "inspect second"}
+            {"summary": "second", "prompt": "inspect second"},
+            {"summary": "third", "prompt": "inspect third"}
         ]
     })
     .to_string();
@@ -50,7 +51,18 @@ fn spawn_call_and_output() -> (ResponseItem, ResponseItem) {
         "schema": codex_spine_core::SPINE_SPAWN_RESULT_SCHEMA,
         "results": [
             {"ordinal": 0, "outcome": "completed", "memory_body": "first memory"},
-            {"ordinal": 1, "outcome": "completed", "memory_body": "second memory"}
+            {
+                "ordinal": 1,
+                "outcome": "errored",
+                "memory_body": "second memory",
+                "diagnostic": "capacity"
+            },
+            {
+                "ordinal": 2,
+                "outcome": "aborted",
+                "memory_body": "third memory",
+                "diagnostic": "interrupted"
+            }
         ]
     })
     .to_string();
@@ -208,12 +220,27 @@ async fn spawn_context_install_is_atomic_and_independently_feature_gated() {
     state.record_items([&output], TruncationPolicy::Tokens(10_000));
     state.append_spine_rollout_items(&[RolloutItem::ResponseItem(output.clone())]);
     let projected = state.clone_history();
-    assert_eq!(projected.raw_items().len(), 4);
-    assert!(response_text(&projected.raw_items()[0]).contains("spine_spawn_evidence"));
-    assert!(response_text(&projected.raw_items()[1]).contains("first memory"));
+    assert_eq!(projected.raw_items().len(), 8);
+    assert!(response_text(&projected.raw_items()[2]).contains("spine_spawn_evidence"));
+    assert!(response_text(&projected.raw_items()[3]).contains("first memory"));
+    assert!(response_text(&projected.raw_items()[4]).contains("spine_spawn_evidence"));
+    assert!(response_text(&projected.raw_items()[5]).contains("second memory"));
+    assert!(response_text(&projected.raw_items()[6]).contains("spine_spawn_evidence"));
+    assert!(response_text(&projected.raw_items()[7]).contains("third memory"));
+    let tree = state.spine_tree_update().expect("tree enabled");
+    assert_eq!(tree.nodes.len(), 4);
+    assert_eq!(tree.settled_spawn_call_ids, ["spawn"]);
     assert_eq!(
-        state.spine_tree_update().expect("tree enabled").nodes.len(),
-        3
+        tree.nodes[1].spawn_outcome,
+        Some(codex_protocol::spine_tree::SpineSpawnOutcome::Completed)
+    );
+    assert_eq!(
+        tree.nodes[2].spawn_outcome,
+        Some(codex_protocol::spine_tree::SpineSpawnOutcome::Errored)
+    );
+    assert_eq!(
+        tree.nodes[3].spawn_outcome,
+        Some(codex_protocol::spine_tree::SpineSpawnOutcome::Aborted)
     );
 
     let mut disabled = make_session_configuration_for_tests().await;

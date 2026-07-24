@@ -233,104 +233,114 @@ impl App {
             AppEvent::InsertHistoryCell(cell) => {
                 self.insert_history_cell(tui, cell);
             }
-            AppEvent::UpsertSpineTreeCell { turn_id, snapshot } => {
-                let snapshot_seq = snapshot.snapshot_seq;
-                match spine_tree_upsert_action(self.transcript_cells.last(), &turn_id, snapshot_seq)
-                {
-                    SpineTreeUpsertAction::Replace => {
-                        let cell: Arc<dyn HistoryCell> =
-                            Arc::new(history_cell::new_spine_tree_update(turn_id, snapshot));
-                        if let Some(existing) = self.transcript_cells.last_mut() {
-                            *existing = cell;
-                        }
-                        if let Some(Overlay::Transcript(transcript)) = &mut self.overlay {
-                            transcript.replace_cells(self.transcript_cells.clone());
-                            tui.frame_requester().schedule_frame();
-                        }
-                        self.finish_required_stream_reflow(tui)?;
-                    }
-                    SpineTreeUpsertAction::Insert => {
-                        self.insert_history_cell(
-                            tui,
-                            Box::new(history_cell::new_spine_tree_update(turn_id, snapshot)),
-                        );
-                    }
-                    SpineTreeUpsertAction::Ignore => {}
+            AppEvent::UpsertSpineTreeCell { snapshot, .. } => {
+                let Some(parent_thread_id) = ThreadId::from_string(&snapshot.thread_id).ok() else {
+                    return Ok(AppRunControl::Continue);
+                };
+                let animations_enabled = self.config.animations;
+                let live = {
+                    let state = self
+                        .spine_tree_views
+                        .entry(parent_thread_id)
+                        .or_insert_with(|| {
+                            crate::history_cell::SpineTreeViewState::new(animations_enabled)
+                        });
+                    state.apply_tree_update(snapshot);
+                    (state.snapshot().cloned(), state.render_cell())
+                };
+                if self.chat_widget.thread_id() == Some(parent_thread_id) {
+                    self.chat_widget.set_spine_tree_view(live.0, live.1);
+                    tui.frame_requester().schedule_frame();
                 }
             }
             AppEvent::UpsertSpineSpawnProgressCell { notification } => {
-                let turn_id = notification.turn_id.clone();
-                let call_id = notification.call_id.clone();
-                let preview_stores = notification
+                let Some(parent_thread_id) = ThreadId::from_string(&notification.thread_id).ok()
+                else {
+                    return Ok(AppRunControl::Continue);
+                };
+                let child_threads = notification
                     .tasks
                     .iter()
-                    .filter_map(|task| task.agent_path.as_deref())
-                    .filter_map(|path| {
-                        let thread_id = self.agent_navigation.thread_id_for_agent_path(path)?;
-                        let store = self.thread_event_channels.get(&thread_id)?.store.clone();
-                        Some((path.to_string(), store))
+                    .filter_map(|task| {
+                        ThreadId::from_string(&task.thread_id)
+                            .ok()
+                            .map(|_| task.thread_id.clone())
                     })
                     .collect::<Vec<_>>();
-                let updated = spine_spawn_progress_update(
-                    self.transcript_cells.last(),
-                    self.chat_widget.spine_tree_snapshot(),
-                    notification,
-                );
-                if let Some((replace_last, updated)) = updated {
-                    let mut updated = updated;
-                    for (path, store) in preview_stores {
-                        let preview = {
-                            let mut store = store.lock().await;
-                            store.enable_spine_spawn_activity();
-                            store.spine_spawn_activity_preview()
-                        };
-                        if let Some(next) =
-                            updated.with_spawn_activity(&path, preview, /*status*/ None)
-                        {
-                            updated = next;
-                        }
+                let mut seeds = Vec::new();
+                for child_thread_id in child_threads {
+                    if let Some(notifications) = self
+                        .spine_activity_seed_notifications(
+                            ThreadId::from_string(&child_thread_id)
+                                .expect("progress task thread_id was validated above"),
+                        )
+                        .await
+                    {
+                        seeds.push((child_thread_id, notifications));
                     }
-                    if replace_last {
-                        if let Some(existing) = self.transcript_cells.last_mut() {
-                            *existing = Arc::new(updated);
-                        }
-                    } else {
-                        self.insert_history_cell(tui, Box::new(updated));
-                    }
-                } else {
-                    tracing::debug!(
-                        turn_id,
-                        call_id,
-                        "ignored spine spawn progress without a cached spine tree snapshot"
-                    );
                 }
-                if let Some(Overlay::Transcript(transcript)) = &mut self.overlay {
-                    transcript.replace_cells(self.transcript_cells.clone());
+                let animations_enabled = self.config.animations;
+                let live = {
+                    let state = self
+                        .spine_tree_views
+                        .entry(parent_thread_id)
+                        .or_insert_with(|| {
+                            crate::history_cell::SpineTreeViewState::new(animations_enabled)
+                        });
+                    state.apply_spawn_progress(notification.clone());
+                    for (child_thread_id, notifications) in seeds {
+                        state.seed_activity(
+                            &notification.turn_id,
+                            &notification.call_id,
+                            &child_thread_id,
+                            notifications.into_iter(),
+                        );
+                    }
+                    (state.snapshot().cloned(), state.render_cell())
+                };
+                if self.chat_widget.thread_id() == Some(parent_thread_id) {
+                    self.chat_widget.set_spine_tree_view(live.0, live.1);
                     tui.frame_requester().schedule_frame();
                 }
-                self.finish_required_stream_reflow(tui)?;
             }
-            AppEvent::RefreshSpineSpawnActivity {
-                agent_path,
-                preview,
-                status,
-            } => {
-                let updated = spine_spawn_activity_update(
-                    self.transcript_cells.last(),
-                    &agent_path,
-                    preview,
-                    status,
-                );
-                if let Some(updated) = updated {
-                    if let Some(existing) = self.transcript_cells.last_mut() {
-                        *existing = Arc::new(updated);
-                    }
-                    if let Some(Overlay::Transcript(transcript)) = &mut self.overlay {
-                        transcript.replace_cells(self.transcript_cells.clone());
-                    }
+            AppEvent::SpineTreeViewChanged { parent_thread_id } => {
+                if self.chat_widget.thread_id() == Some(parent_thread_id)
+                    && let Some(state) = self.spine_tree_views.get(&parent_thread_id)
+                {
+                    self.chat_widget
+                        .set_spine_tree_view(state.snapshot().cloned(), state.render_cell());
                     tui.frame_requester().schedule_frame();
-                    self.finish_required_stream_reflow(tui)?;
                 }
+            }
+            AppEvent::ShowSpineTreeSnapshot { debug } => {
+                let Some(thread_id) = self.chat_widget.thread_id() else {
+                    return Ok(AppRunControl::Continue);
+                };
+                let Some(state) = self.spine_tree_views.get(&thread_id) else {
+                    self.chat_widget
+                        .add_info_message("Spine Tree is not available yet.".to_string(), None);
+                    return Ok(AppRunControl::Continue);
+                };
+                let Some(snapshot) = state.snapshot().cloned() else {
+                    self.chat_widget
+                        .add_info_message("Spine Tree is not available yet.".to_string(), None);
+                    return Ok(AppRunControl::Continue);
+                };
+                if !debug && self.chat_widget.spine_tree_turn_is_working() {
+                    let live_cell = state.render_cell();
+                    self.chat_widget
+                        .set_spine_tree_view(Some(snapshot), live_cell);
+                    tui.frame_requester().schedule_frame();
+                    return Ok(AppRunControl::Continue);
+                }
+                let cell = if debug {
+                    history_cell::new_debug_spine_tree_snapshot(snapshot)
+                } else {
+                    state
+                        .snapshot_cell()
+                        .expect("snapshot was checked immediately above")
+                };
+                self.chat_widget.add_to_history(cell);
             }
             AppEvent::EndInitialHistoryReplayBuffer => {
                 self.finish_initial_history_replay_buffer(tui);
@@ -2597,266 +2607,5 @@ impl App {
                 AppRunControl::Continue
             }
         }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SpineTreeUpsertAction {
-    Replace,
-    Insert,
-    Ignore,
-}
-
-fn spine_tree_upsert_action(
-    last_cell: Option<&Arc<dyn HistoryCell>>,
-    turn_id: &str,
-    snapshot_seq: u64,
-) -> SpineTreeUpsertAction {
-    let Some(last_spine_tree) = trailing_live_spine_tree(last_cell, turn_id) else {
-        return SpineTreeUpsertAction::Insert;
-    };
-    if last_spine_tree.snapshot_seq() <= snapshot_seq {
-        SpineTreeUpsertAction::Replace
-    } else {
-        SpineTreeUpsertAction::Ignore
-    }
-}
-
-fn trailing_live_spine_tree<'a>(
-    last_cell: Option<&'a Arc<dyn HistoryCell>>,
-    turn_id: &str,
-) -> Option<&'a history_cell::SpineTreeUpdateCell> {
-    let tree = last_cell?
-        .as_any()
-        .downcast_ref::<history_cell::SpineTreeUpdateCell>()?;
-    (tree.is_live_update() && tree.turn_id() == turn_id).then_some(tree)
-}
-
-fn spine_spawn_progress_update(
-    last_cell: Option<&Arc<dyn HistoryCell>>,
-    cached_snapshot: Option<&codex_app_server_protocol::SpineTreeUpdatedNotification>,
-    notification: codex_app_server_protocol::SpineSpawnProgressUpdatedNotification,
-) -> Option<(bool, history_cell::SpineTreeUpdateCell)> {
-    let current = trailing_live_spine_tree(last_cell, &notification.turn_id);
-    let tree = current.cloned().or_else(|| {
-        cached_snapshot.cloned().map(|snapshot| {
-            history_cell::new_spine_tree_update(notification.turn_id.clone(), snapshot)
-        })
-    })?;
-    Some((current.is_some(), tree.with_spawn_progress(notification)))
-}
-
-fn spine_spawn_activity_update(
-    last_cell: Option<&Arc<dyn HistoryCell>>,
-    agent_path: &str,
-    preview: crate::multi_agents::AgentActivityPreview,
-    status: Option<codex_app_server_protocol::CollabAgentStatus>,
-) -> Option<history_cell::SpineTreeUpdateCell> {
-    let tree = last_cell?
-        .as_any()
-        .downcast_ref::<history_cell::SpineTreeUpdateCell>()?;
-    tree.with_spawn_activity(agent_path, preview, status)
-}
-
-#[cfg(test)]
-mod spine_tree_tests {
-    use super::*;
-    use codex_app_server_protocol::CollabAgentStatus;
-    use codex_app_server_protocol::SpineSpawnProgressUpdatedNotification;
-    use codex_app_server_protocol::SpineSpawnTaskProgress;
-    use codex_app_server_protocol::SpineTreeNode;
-    use codex_app_server_protocol::SpineTreeNodeKind;
-    use codex_app_server_protocol::SpineTreeNodeStatus;
-    use codex_app_server_protocol::SpineTreeUpdatedNotification;
-    use codex_app_server_protocol::ThreadItem;
-
-    fn live_cell(turn_id: &str, snapshot_seq: u64) -> Arc<dyn HistoryCell> {
-        Arc::new(history_cell::new_spine_tree_update(
-            turn_id.to_string(),
-            snapshot(turn_id, snapshot_seq),
-        ))
-    }
-
-    fn snapshot(turn_id: &str, snapshot_seq: u64) -> SpineTreeUpdatedNotification {
-        SpineTreeUpdatedNotification {
-            thread_id: "thread".to_string(),
-            turn_id: turn_id.to_string(),
-            snapshot_seq,
-            active_node_id: "1".to_string(),
-            nodes: vec![SpineTreeNode {
-                node_id: "1".to_string(),
-                parent_id: None,
-                kind: SpineTreeNodeKind::Task,
-                status: SpineTreeNodeStatus::Live,
-                summary: Some("active".to_string()),
-                memory_summary: None,
-                start: 0,
-                end: None,
-                context_pressure: None,
-            }],
-        }
-    }
-
-    fn spawn_progress(
-        turn_id: &str,
-        call_id: &str,
-        agent_path: &str,
-    ) -> SpineSpawnProgressUpdatedNotification {
-        SpineSpawnProgressUpdatedNotification {
-            thread_id: "thread".to_string(),
-            turn_id: turn_id.to_string(),
-            call_id: call_id.to_string(),
-            tasks: vec![SpineSpawnTaskProgress {
-                ordinal: 0,
-                summary: format!("task for {call_id}"),
-                agent_path: Some(agent_path.to_string()),
-                status: CollabAgentStatus::Running,
-            }],
-        }
-    }
-
-    #[test]
-    fn live_spine_tree_upsert_replaces_only_non_stale_same_turn_snapshot() {
-        let last = live_cell("turn-1", 4);
-        let cells = vec![last];
-
-        assert_eq!(
-            spine_tree_upsert_action(cells.last(), "turn-1", 5),
-            SpineTreeUpsertAction::Replace
-        );
-        assert_eq!(
-            spine_tree_upsert_action(cells.last(), "turn-1", 3),
-            SpineTreeUpsertAction::Ignore
-        );
-        assert_eq!(
-            spine_tree_upsert_action(cells.last(), "turn-2", 5),
-            SpineTreeUpsertAction::Insert
-        );
-
-        let manual: Arc<dyn HistoryCell> =
-            Arc::new(history_cell::new_spine_tree_snapshot(snapshot("turn-1", 4)));
-        assert_eq!(
-            spine_tree_upsert_action(Some(&manual), "turn-1", 5),
-            SpineTreeUpsertAction::Insert
-        );
-    }
-
-    #[test]
-    fn ordinary_tree_update_preserves_intervening_transcript_order() {
-        let cells = vec![
-            live_cell("turn-1", 4),
-            Arc::new(history_cell::PlainHistoryCell::new(vec!["activity".into()]))
-                as Arc<dyn HistoryCell>,
-        ];
-
-        assert_eq!(
-            spine_tree_upsert_action(cells.last(), "turn-1", 5),
-            SpineTreeUpsertAction::Insert
-        );
-    }
-
-    #[test]
-    fn later_turn_spawn_materializes_cached_tree_snapshot() {
-        let cached = snapshot("turn-1", 4);
-
-        let (replace_last, updated) = spine_spawn_progress_update(
-            None,
-            Some(&cached),
-            spawn_progress("turn-2", "spawn-1", "/root/worker"),
-        )
-        .expect("cached tree should materialize a live cell");
-
-        assert!(!replace_last);
-        assert_eq!(updated.turn_id(), "turn-2");
-        assert_eq!(updated.snapshot_seq(), 4);
-        assert!(updated.has_spawn_call("spawn-1"));
-    }
-
-    #[test]
-    fn spawn_progress_without_tree_or_snapshot_is_ignored() {
-        assert!(
-            spine_spawn_progress_update(
-                None,
-                None,
-                spawn_progress("turn-1", "spawn-1", "/root/worker"),
-            )
-            .is_none()
-        );
-    }
-
-    #[test]
-    fn multiple_spawn_calls_share_the_matching_live_tree_cell() {
-        let first = spine_spawn_progress_update(
-            None,
-            Some(&snapshot("turn-1", 4)),
-            spawn_progress("turn-2", "spawn-1", "/root/worker-1"),
-        )
-        .expect("first spawn should materialize a live cell")
-        .1;
-        let first = Arc::new(first) as Arc<dyn HistoryCell>;
-
-        let (replace_last, updated) = spine_spawn_progress_update(
-            Some(&first),
-            Some(&snapshot("turn-1", 4)),
-            spawn_progress("turn-2", "spawn-2", "/root/worker-2"),
-        )
-        .expect("second spawn should update the existing live cell");
-
-        assert!(replace_last);
-        assert!(updated.has_spawn_call("spawn-1"));
-        assert!(updated.has_spawn_call("spawn-2"));
-    }
-
-    #[test]
-    fn activity_refresh_updates_the_trailing_live_overlay() {
-        let tree = spine_spawn_progress_update(
-            None,
-            Some(&snapshot("turn-1", 4)),
-            spawn_progress("turn-2", "spawn-1", "/root/worker"),
-        )
-        .expect("spawn should materialize a live cell")
-        .1;
-        let tree = Arc::new(tree) as Arc<dyn HistoryCell>;
-        let items = [ThreadItem::AgentMessage {
-            id: "message-1".to_string(),
-            text: "reading manifests".to_string(),
-            phase: None,
-            memory_citation: None,
-        }];
-        let preview = crate::multi_agents::AgentActivityPreview::from_items(
-            items.iter(),
-            crate::multi_agents::AgentActivityPathDisplay::Hide,
-        );
-
-        let updated = spine_spawn_activity_update(Some(&tree), "/root/worker", preview, None)
-            .expect("activity should update the trailing live cell");
-
-        let rendered = updated
-            .display_lines(80)
-            .into_iter()
-            .map(|line| line.to_string())
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(rendered.contains("reading manifests"), "{rendered}");
-    }
-
-    #[test]
-    fn reduced_snapshot_replaces_the_trailing_overlay_cell() {
-        let tree = spine_spawn_progress_update(
-            None,
-            Some(&snapshot("turn-1", 4)),
-            spawn_progress("turn-2", "spawn-1", "/root/worker"),
-        )
-        .expect("spawn should materialize a live cell")
-        .1;
-        let tree = Arc::new(tree) as Arc<dyn HistoryCell>;
-
-        assert_eq!(
-            spine_tree_upsert_action(Some(&tree), "turn-2", 5),
-            SpineTreeUpsertAction::Replace
-        );
-        let reduced =
-            history_cell::new_spine_tree_update("turn-2".to_string(), snapshot("turn-2", 5));
-        assert!(!reduced.has_spawn_call("spawn-1"));
     }
 }

@@ -73,6 +73,7 @@ pub struct SpineReducer {
     cursor: NodeId,
     next_user_anchor: u64,
     last_boundary: Option<RawBoundary>,
+    settled_spawn_call_ids: Vec<String>,
 }
 
 impl Default for SpineReducer {
@@ -102,6 +103,7 @@ impl SpineReducer {
             cursor: root_id,
             next_user_anchor: 1,
             last_boundary: None,
+            settled_spawn_call_ids: Vec::new(),
         }
     }
 
@@ -116,6 +118,7 @@ impl SpineReducer {
     pub fn apply(&mut self, event: RolloutEvent) -> ProjectionDelta {
         let before = self.projection().visible_context;
         self.last_boundary = Some(event.boundary());
+        self.settled_spawn_call_ids.clear();
         match event {
             RolloutEvent::Message(message) => self.apply_message(message),
             RolloutEvent::ToolCall(group) => self.apply_toolcall(group),
@@ -137,6 +140,7 @@ impl SpineReducer {
             cursor: self.cursor.clone(),
             visible_context: self.render_current_epoch(),
             last_boundary: self.last_boundary,
+            settled_spawn_call_ids: self.settled_spawn_call_ids.clone(),
         }
     }
 
@@ -153,6 +157,15 @@ impl SpineReducer {
     }
 
     fn apply_toolcall(&mut self, group: ToolCallGroup) {
+        if group.is_complete() {
+            self.settled_spawn_call_ids.extend(
+                group
+                    .calls
+                    .iter()
+                    .filter(|call| call.name == SPINE_SPAWN)
+                    .map(|call| call.call_id.clone()),
+            );
+        }
         let control = classify_control(&group);
         match control {
             Some(Control::Open { summary }) => self.open(group, summary),

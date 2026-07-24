@@ -379,3 +379,37 @@ fn response_group_admission_rejects_conflicting_spine_controls() {
         assert!(calls_in_response_group(&rollout, "spawn").is_err());
     }
 }
+
+#[test]
+fn progress_event_carries_the_exact_child_thread_id_for_each_task() {
+    let tasks = vec![
+        SpawnTask {
+            summary: "first".to_string(),
+            prompt: "one".to_string(),
+        },
+        SpawnTask {
+            summary: "second".to_string(),
+            prompt: "two".to_string(),
+        },
+    ];
+    let thread_ids = [
+        codex_protocol::ThreadId::new(),
+        codex_protocol::ThreadId::new(),
+    ];
+    let paths = [
+        AgentPath::root().join("first").unwrap(),
+        AgentPath::root().join("second").unwrap(),
+    ];
+    let statuses = [AgentStatus::Running, AgentStatus::PendingInit];
+
+    let event = spawn_progress_event("spawn-1", &tasks, &thread_ids, &paths, &statuses);
+
+    assert_eq!(
+        event
+            .tasks
+            .iter()
+            .map(|task| task.thread_id)
+            .collect::<Vec<_>>(),
+        thread_ids
+    );
+}

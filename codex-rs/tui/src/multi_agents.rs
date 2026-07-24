@@ -80,6 +80,10 @@ impl AgentActivityPreview {
     }
 
     pub(crate) fn lines(&self, width: u16) -> Vec<Line<'static>> {
+        self.lines_with_limit(width, AGENT_ACTIVITY_PREVIEW_LINES)
+    }
+
+    pub(crate) fn lines_with_limit(&self, width: u16, max_lines: usize) -> Vec<Line<'static>> {
         let mut lines = self
             .activity
             .iter()
@@ -87,8 +91,8 @@ impl AgentActivityPreview {
             .filter(|line| !line.trim().is_empty())
             .map(|line| line.into_owned().dim().into())
             .collect::<Vec<_>>();
-        if lines.len() > AGENT_ACTIVITY_PREVIEW_LINES {
-            lines.drain(..lines.len() - AGENT_ACTIVITY_PREVIEW_LINES);
+        if lines.len() > max_lines {
+            lines.drain(..lines.len() - max_lines);
         }
         lines
     }

@@ -60,13 +60,14 @@ fn submit_current_composer(chat: &mut ChatWidget) {
 }
 
 #[tokio::test]
-async fn spine_tree_notification_displays_only_after_tree_changes() {
+async fn spine_tree_notification_is_forwarded_to_app_projection_owner() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-    let initial = codex_app_server_protocol::SpineTreeUpdatedNotification {
+    let snapshot = codex_app_server_protocol::SpineTreeUpdatedNotification {
         thread_id: "thread-1".to_string(),
         turn_id: "turn-1".to_string(),
         snapshot_seq: 1,
         active_node_id: "1".to_string(),
+        settled_spawn_call_ids: Vec::new(),
         nodes: vec![codex_app_server_protocol::SpineTreeNode {
             node_id: "1".to_string(),
             parent_id: None,
@@ -77,148 +78,85 @@ async fn spine_tree_notification_displays_only_after_tree_changes() {
             start: 0,
             end: None,
             context_pressure: None,
+            spawn_outcome: None,
         }],
     };
 
     chat.handle_server_notification(
-        ServerNotification::SpineTreeUpdated(initial.clone()),
+        ServerNotification::SpineTreeUpdated(snapshot.clone()),
         /*replay_kind*/ None,
     );
-    assert_eq!(chat.last_spine_tree_snapshot, Some(initial.clone()));
+    assert_eq!(chat.last_spine_tree_snapshot, None);
     assert_matches!(
         rx.try_recv(),
-        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
-    );
-
-    let react_step = codex_app_server_protocol::SpineTreeUpdatedNotification {
-        snapshot_seq: 2,
-        turn_id: "turn-2".to_string(),
-        ..initial.clone()
-    };
-    chat.handle_server_notification(
-        ServerNotification::SpineTreeUpdated(react_step.clone()),
-        /*replay_kind*/ None,
-    );
-    assert_eq!(chat.last_spine_tree_snapshot, Some(react_step.clone()));
-    assert_matches!(
-        rx.try_recv(),
-        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
-    );
-
-    let mut pressure_nodes = react_step.nodes.clone();
-    pressure_nodes[0].context_pressure =
-        Some(codex_app_server_protocol::SpineNodeContextPressure {
-            open_input_tokens: Some(10_000),
-            current_input_tokens: Some(42_000),
-            context_tokens: Some(32_000),
-            problem: None,
-        });
-    let pressure_step = codex_app_server_protocol::SpineTreeUpdatedNotification {
-        snapshot_seq: 3,
-        nodes: pressure_nodes,
-        ..react_step.clone()
-    };
-    chat.handle_server_notification(
-        ServerNotification::SpineTreeUpdated(pressure_step.clone()),
-        /*replay_kind*/ None,
-    );
-    assert_eq!(chat.last_spine_tree_snapshot, Some(pressure_step.clone()));
-    assert_matches!(
-        rx.try_recv(),
-        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
-    );
-
-    let mut nodes = pressure_step.nodes.clone();
-    nodes[0].status = codex_app_server_protocol::SpineTreeNodeStatus::Opened;
-    nodes.push(codex_app_server_protocol::SpineTreeNode {
-        node_id: "1.1".to_string(),
-        parent_id: Some("1".to_string()),
-        kind: codex_app_server_protocol::SpineTreeNodeKind::Task,
-        status: codex_app_server_protocol::SpineTreeNodeStatus::Live,
-        summary: Some("child".to_string()),
-        memory_summary: None,
-        start: 1,
-        end: None,
-        context_pressure: None,
-    });
-    let operation = codex_app_server_protocol::SpineTreeUpdatedNotification {
-        turn_id: "turn-2".to_string(),
-        snapshot_seq: 4,
-        active_node_id: "1.1".to_string(),
-        nodes,
-        ..pressure_step
-    };
-    chat.handle_server_notification(
-        ServerNotification::SpineTreeUpdated(operation.clone()),
-        /*replay_kind*/ None,
-    );
-
-    assert_eq!(chat.last_spine_tree_snapshot, Some(operation.clone()));
-    assert_matches!(
-        rx.try_recv(),
-        Ok(AppEvent::UpsertSpineTreeCell { turn_id, snapshot })
-            if turn_id == "turn-2" && snapshot == operation
-    );
-
-    let other_thread = codex_app_server_protocol::SpineTreeUpdatedNotification {
-        thread_id: "thread-2".to_string(),
-        turn_id: "turn-3".to_string(),
-        snapshot_seq: 10,
-        active_node_id: "2".to_string(),
-        nodes: Vec::new(),
-    };
-    chat.handle_server_notification(
-        ServerNotification::SpineTreeUpdated(other_thread.clone()),
-        /*replay_kind*/ None,
-    );
-    assert_eq!(chat.last_spine_tree_snapshot, Some(other_thread));
-    assert_matches!(
-        rx.try_recv(),
-        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        Ok(AppEvent::UpsertSpineTreeCell { snapshot: actual })
+            if actual == snapshot
     );
 }
 
 #[tokio::test]
-async fn debugspine_renders_cached_rollout_snapshot() {
+async fn debugspine_requests_the_app_owned_snapshot() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-    chat.last_spine_tree_snapshot = Some(codex_app_server_protocol::SpineTreeUpdatedNotification {
-        thread_id: "thread".to_string(),
-        turn_id: "turn".to_string(),
-        snapshot_seq: 7,
-        active_node_id: "1".to_string(),
-        nodes: vec![codex_app_server_protocol::SpineTreeNode {
-            node_id: "1".to_string(),
-            parent_id: None,
-            kind: codex_app_server_protocol::SpineTreeNodeKind::RootEpoch,
-            status: codex_app_server_protocol::SpineTreeNodeStatus::Live,
-            summary: Some("active scope".to_string()),
-            memory_summary: Some("hidden memory".to_string()),
-            start: 4,
-            end: None,
-            context_pressure: Some(codex_app_server_protocol::SpineNodeContextPressure {
-                open_input_tokens: Some(10_000),
-                current_input_tokens: Some(42_000),
-                context_tokens: Some(32_000),
-                problem: None,
-            }),
-        }],
-    });
 
     chat.dispatch_command(SlashCommand::DebugSpine);
 
-    let cells = drain_insert_history(&mut rx);
-    let rendered = lines_to_single_string(&cells[0]);
-    assert!(rendered.contains("Debug Spine Tree"), "got {rendered}");
-    assert!(
-        rendered.contains("1 active scope current"),
-        "got {rendered}"
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::ShowSpineTreeSnapshot { debug: true })
     );
-    assert!(rendered.contains("rollout 4.."), "got {rendered}");
+}
+
+#[tokio::test]
+async fn live_spine_tree_working_animation_follows_the_agent_turn_lifecycle() {
+    use crate::history_cell::HistoryCell;
+    use crate::history_cell::SpineTreeViewState;
+
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let snapshot = codex_app_server_protocol::SpineTreeUpdatedNotification {
+        thread_id: "thread-1".to_string(),
+        turn_id: "turn-1".to_string(),
+        snapshot_seq: 1,
+        active_node_id: "1".to_string(),
+        settled_spawn_call_ids: Vec::new(),
+        nodes: vec![codex_app_server_protocol::SpineTreeNode {
+            node_id: "1".to_string(),
+            parent_id: None,
+            kind: codex_app_server_protocol::SpineTreeNodeKind::Task,
+            status: codex_app_server_protocol::SpineTreeNodeStatus::Live,
+            summary: Some("inspect current changes".to_string()),
+            memory_summary: None,
+            start: 0,
+            end: None,
+            context_pressure: None,
+            spawn_outcome: None,
+        }],
+    };
+    let mut state = SpineTreeViewState::new(true);
+    state.apply_tree_update(snapshot.clone());
+
+    chat.turn_lifecycle.start(Instant::now());
+    chat.set_spine_tree_view(Some(snapshot), state.render_cell());
+    chat.set_feature_enabled(Feature::Goals, /*enabled*/ false);
+    assert!(chat.turn_lifecycle.agent_turn_started_at.is_some());
     assert!(
-        rendered.contains("~32.0K inclusive context"),
-        "got {rendered}"
+        chat.live_spine_tree_cell
+            .as_ref()
+            .and_then(HistoryCell::transcript_animation_tick)
+            .is_some()
     );
-    assert!(!rendered.contains("hidden memory"), "got {rendered}");
+
+    chat.turn_lifecycle.finish();
+    chat.update_task_running_state();
+    let idle = chat
+        .live_spine_tree_cell
+        .as_ref()
+        .expect("live tree should remain visible after the turn");
+    assert_eq!(idle.transcript_animation_tick(), None);
+    assert!(
+        idle.display_lines(80)
+            .iter()
+            .any(|line| line.to_string() == "  └ ◉ inspect current changes")
+    );
 }
 
 #[tokio::test]
@@ -229,6 +167,7 @@ async fn debugspine_with_node_id_renders_only_node_details_and_memory() {
         turn_id: "turn".to_string(),
         snapshot_seq: 7,
         active_node_id: "1".to_string(),
+        settled_spawn_call_ids: Vec::new(),
         nodes: vec![
             codex_app_server_protocol::SpineTreeNode {
                 node_id: "1".to_string(),
@@ -240,6 +179,7 @@ async fn debugspine_with_node_id_renders_only_node_details_and_memory() {
                 start: 0,
                 end: None,
                 context_pressure: None,
+                spawn_outcome: None,
             },
             codex_app_server_protocol::SpineTreeNode {
                 node_id: "1.1".to_string(),
@@ -251,6 +191,7 @@ async fn debugspine_with_node_id_renders_only_node_details_and_memory() {
                 start: 4,
                 end: Some(9),
                 context_pressure: None,
+                spawn_outcome: None,
             },
         ],
     });
@@ -275,6 +216,7 @@ async fn debugspine_with_unknown_node_id_reports_an_error() {
         turn_id: "turn".to_string(),
         snapshot_seq: 7,
         active_node_id: "1".to_string(),
+        settled_spawn_call_ids: Vec::new(),
         nodes: vec![codex_app_server_protocol::SpineTreeNode {
             node_id: "1".to_string(),
             parent_id: None,
@@ -285,6 +227,7 @@ async fn debugspine_with_unknown_node_id_reports_an_error() {
             start: 0,
             end: None,
             context_pressure: None,
+            spawn_outcome: None,
         }],
     });
 

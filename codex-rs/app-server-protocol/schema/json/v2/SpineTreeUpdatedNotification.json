@@ -45,6 +45,14 @@
       ],
       "type": "string"
     },
+    "SpineSpawnOutcome": {
+      "enum": [
+        "completed",
+        "errored",
+        "aborted"
+      ],
+      "type": "string"
+    },
     "SpineTreeNode": {
       "properties": {
         "contextPressure": {
@@ -82,6 +90,17 @@
             "string",
             "null"
           ]
+        },
+        "spawnOutcome": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SpineSpawnOutcome"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "start": {
           "format": "uint64",
@@ -130,6 +149,13 @@
     "nodes": {
       "items": {
         "$ref": "#/definitions/SpineTreeNode"
+      },
+      "type": "array"
+    },
+    "settledSpawnCallIds": {
+      "default": [],
+      "items": {
+        "type": "string"
       },
       "type": "array"
     },

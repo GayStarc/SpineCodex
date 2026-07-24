@@ -49,16 +49,6 @@ impl App {
             .or_insert_with(|| ThreadEventChannel::new(THREAD_EVENT_CHANNEL_CAPACITY))
     }
 
-    fn has_live_spine_spawn_agent(&self, agent_path: &str) -> bool {
-        self.transcript_cells
-            .last()
-            .and_then(|cell| {
-                cell.as_any()
-                    .downcast_ref::<crate::history_cell::SpineTreeUpdateCell>()
-            })
-            .is_some_and(|tree| tree.is_live_update() && tree.has_spawn_agent_path(agent_path))
-    }
-
     pub(super) async fn set_thread_active(&mut self, thread_id: ThreadId, active: bool) {
         if let Some(channel) = self.thread_event_channels.get_mut(&thread_id) {
             let mut store = channel.store.lock().await;
@@ -910,33 +900,23 @@ impl App {
             (channel.sender.clone(), Arc::clone(&channel.store))
         };
         let activity_status = spine_spawn_status(&notification);
-        let live_agent_path = self
-            .agent_navigation
-            .get(&thread_id)
-            .and_then(|entry| entry.agent_path.clone())
-            .filter(|agent_path| self.has_live_spine_spawn_agent(agent_path));
-
-        let (should_send, pending_status, activity_preview) = {
+        let (should_send, pending_status) = {
             let mut guard = store.lock().await;
             if guard.session.is_none()
                 && let Some(session) = inferred_session
             {
                 guard.session = Some(session);
             }
-            let activity_changed = guard.push_notification(notification.clone());
-            let activity_preview = if activity_changed || activity_status.is_some() {
-                live_agent_path
-                    .clone()
-                    .map(|agent_path| (agent_path, guard.spine_spawn_activity_preview()))
-            } else {
-                None
-            };
-            (
-                guard.active,
-                guard.side_parent_pending_status(),
-                activity_preview,
-            )
+            guard.push_notification(notification.clone());
+            (guard.active, guard.side_parent_pending_status())
         };
+        self.route_spine_activity(thread_id, &notification, activity_status)
+            .await;
+        if self.clear_incomplete_spine_overlays(thread_id, &notification) {
+            self.app_event_tx.send(AppEvent::SpineTreeViewChanged {
+                parent_thread_id: thread_id,
+            });
+        }
         let notification_status_change = SideParentStatusChange::for_notification(&notification);
 
         if should_send {
@@ -959,15 +939,119 @@ impl App {
         } else if let Some(change) = notification_status_change {
             self.apply_side_parent_status_change(thread_id, change);
         }
-        if let Some((agent_path, preview)) = activity_preview {
-            self.app_event_tx.send(AppEvent::RefreshSpineSpawnActivity {
-                agent_path,
-                preview,
-                status: activity_status,
-            });
-        }
         self.refresh_pending_thread_approvals().await;
         Ok(())
+    }
+
+    fn clear_incomplete_spine_overlays(
+        &mut self,
+        parent_thread_id: ThreadId,
+        notification: &ServerNotification,
+    ) -> bool {
+        let turn_id = match notification {
+            ServerNotification::TurnCompleted(notification)
+                if matches!(
+                    notification.turn.status,
+                    TurnStatus::Interrupted | TurnStatus::Failed
+                ) =>
+            {
+                Some(notification.turn.id.as_str())
+            }
+            ServerNotification::ThreadClosed(_) => None,
+            _ => return false,
+        };
+        self.spine_tree_views
+            .get_mut(&parent_thread_id)
+            .is_some_and(|state| state.clear_incomplete_spawn_overlays(turn_id))
+    }
+
+    async fn route_spine_activity(
+        &mut self,
+        child_thread_id: ThreadId,
+        notification: &ServerNotification,
+        status: Option<CollabAgentStatus>,
+    ) {
+        let Some(store) = self
+            .thread_event_channels
+            .get(&child_thread_id)
+            .map(|channel| channel.store.clone())
+        else {
+            return;
+        };
+        let child_thread_id = child_thread_id.to_string();
+        let Some((parent_thread_id, turn_id, call_id)) =
+            self.spine_tree_views
+                .iter()
+                .find_map(|(parent_thread_id, state)| {
+                    state
+                        .overlay_key_for_child_thread(&child_thread_id)
+                        .map(|(turn_id, call_id)| (*parent_thread_id, turn_id, call_id))
+                })
+        else {
+            return;
+        };
+        let seeded = self
+            .spine_tree_views
+            .get(&parent_thread_id)
+            .is_some_and(|state| state.is_activity_seeded(&turn_id, &call_id, &child_thread_id));
+        let changed = if !seeded {
+            let notifications = {
+                let store = store.lock().await;
+                store
+                    .buffer
+                    .iter()
+                    .filter_map(|event| match event {
+                        ThreadBufferedEvent::Notification(notification) => {
+                            Some(notification.clone())
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+            };
+            if let Some(state) = self.spine_tree_views.get_mut(&parent_thread_id) {
+                let mut changed = state.seed_activity(
+                    &turn_id,
+                    &call_id,
+                    &child_thread_id,
+                    notifications.into_iter(),
+                );
+                if let Some(status) = status {
+                    changed |= state.update_status(&turn_id, &call_id, &child_thread_id, status);
+                }
+                changed
+            } else {
+                false
+            }
+        } else if let Some(state) = self.spine_tree_views.get_mut(&parent_thread_id) {
+            state.apply_activity(&turn_id, &call_id, &child_thread_id, notification, status)
+        } else {
+            false
+        };
+        if changed {
+            self.app_event_tx
+                .send(AppEvent::SpineTreeViewChanged { parent_thread_id });
+        }
+    }
+
+    pub(super) async fn spine_activity_seed_notifications(
+        &self,
+        child_thread_id: ThreadId,
+    ) -> Option<Vec<ServerNotification>> {
+        let store = self
+            .thread_event_channels
+            .get(&child_thread_id)
+            .map(|channel| channel.store.clone())?;
+        let store = store.lock().await;
+        Some(
+            store
+                .buffer
+                .iter()
+                .filter_map(|event| match event {
+                    ThreadBufferedEvent::Notification(notification) => Some(notification.clone()),
+                    _ => None,
+                })
+                .collect(),
+        )
     }
 
     /// Locally remembers receiver threads referenced by a collab notification.

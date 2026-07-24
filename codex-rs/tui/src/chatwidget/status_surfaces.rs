@@ -1190,6 +1190,7 @@ mod spine_status_tests {
             turn_id: "turn".to_string(),
             snapshot_seq: 1,
             active_node_id: "1.2".to_string(),
+            settled_spawn_call_ids: Vec::new(),
             nodes: vec![SpineTreeNode {
                 node_id: "1.2".to_string(),
                 parent_id: Some("1".to_string()),
@@ -1200,6 +1201,7 @@ mod spine_status_tests {
                 start: 0,
                 end: None,
                 context_pressure: None,
+                spawn_outcome: None,
             }],
         };
 

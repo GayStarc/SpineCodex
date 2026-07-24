@@ -732,6 +732,7 @@ fn spawn_imports_ordered_closed_siblings_atomically_without_moving_cursor() {
     let projection = apply(&[spawn(1, tasks.clone(), results.clone())]);
 
     assert_eq!(projection.cursor.to_string(), "1");
+    assert_eq!(projection.settled_spawn_call_ids, ["spawn-1"]);
     assert_eq!(node(&projection, "1").children.len(), 2);
     assert_eq!(node(&projection, "1.1").status, NodeStatus::Closed);
     assert_eq!(node(&projection, "1.2").status, NodeStatus::Closed);
@@ -867,6 +868,7 @@ fn spawn_calls_are_imported_in_function_call_then_task_order() {
     first.calls.extend(second.calls);
 
     let projection = apply(&[RolloutEvent::ToolCall(first)]);
+    assert_eq!(projection.settled_spawn_call_ids, ["spawn-1", "spawn-3"]);
     assert_eq!(projection.nodes.len(), 5);
     assert_eq!(projection.visible_context.len(), 9);
     assert!(matches!(
@@ -1106,6 +1108,45 @@ fn structural_node_ids_are_deterministic_under_replay() {
 fn projection_last_boundary_tracks_native_event_boundary() {
     let projection = apply(&[message(4, MessageRole::User, "request"), open(8, "child")]);
     assert_eq!(projection.last_boundary, Some(boundary(9)));
+}
+
+#[test]
+fn settled_spawn_call_ids_describe_only_the_latest_event() {
+    let tasks = spawn_tasks();
+    let results = vec![
+        spawn_result(0, SpawnOutcome::Completed, "one"),
+        spawn_result(1, SpawnOutcome::Completed, "two"),
+    ];
+    let committed = apply(&[spawn(1, tasks.clone(), results.clone())]);
+    assert_eq!(committed.settled_spawn_call_ids, ["spawn-1"]);
+
+    let later_message = apply(&[
+        spawn(1, tasks, results),
+        message(3, MessageRole::Assistant, "continued"),
+    ]);
+    assert!(later_message.settled_spawn_call_ids.is_empty());
+}
+
+#[test]
+fn failed_spawn_call_settles_without_importing_children() {
+    let projection = apply(&[RolloutEvent::ToolCall(group(
+        1,
+        vec![ToolUse {
+            call_id: "spawn-failed".to_string(),
+            name: "spine.spawn".to_string(),
+            arguments: serde_json::json!({"tasks": spawn_tasks()}).to_string(),
+            outcome: Some(ToolOutcome::Failed),
+            output: Some("spawn failed".to_string()),
+            output_boundary: Some(boundary(2)),
+        }],
+    ))]);
+
+    assert_eq!(projection.settled_spawn_call_ids, ["spawn-failed"]);
+    assert_eq!(projection.nodes.len(), 1);
+    assert!(matches!(
+        projection.visible_context.as_slice(),
+        [ContextItem::ToolCall(_)]
+    ));
 }
 
 #[test]

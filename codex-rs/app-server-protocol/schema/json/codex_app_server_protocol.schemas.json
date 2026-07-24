@@ -4512,6 +4512,26 @@
           "properties": {
             "method": {
               "enum": [
+                "turn/spineSpawnProgress/updated"
+              ],
+              "title": "Turn/spineSpawnProgress/updatedNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/SpineSpawnProgressUpdatedNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "Turn/spineSpawnProgress/updatedNotification",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
                 "item/started"
               ],
               "title": "Item/startedNotificationMethod",
@@ -16982,6 +17002,74 @@
         ],
         "type": "string"
       },
+      "SpineSpawnOutcome": {
+        "enum": [
+          "completed",
+          "errored",
+          "aborted"
+        ],
+        "type": "string"
+      },
+      "SpineSpawnProgressUpdatedNotification": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "description": "Live-only progress for an experimental `spine.spawn` transaction.  The event is intentionally not represented in thread history or replay.",
+        "properties": {
+          "callId": {
+            "type": "string"
+          },
+          "tasks": {
+            "items": {
+              "$ref": "#/definitions/v2/SpineSpawnTaskProgress"
+            },
+            "type": "array"
+          },
+          "threadId": {
+            "type": "string"
+          },
+          "turnId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "callId",
+          "tasks",
+          "threadId",
+          "turnId"
+        ],
+        "title": "SpineSpawnProgressUpdatedNotification",
+        "type": "object"
+      },
+      "SpineSpawnTaskProgress": {
+        "properties": {
+          "agentPath": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ordinal": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "status": {
+            "$ref": "#/definitions/v2/CollabAgentStatus"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ordinal",
+          "status",
+          "summary",
+          "threadId"
+        ],
+        "type": "object"
+      },
       "SpineTreeNode": {
         "properties": {
           "contextPressure": {
@@ -17019,6 +17107,17 @@
               "string",
               "null"
             ]
+          },
+          "spawnOutcome": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/SpineSpawnOutcome"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           },
           "start": {
             "format": "uint64",
@@ -17068,6 +17167,13 @@
           "nodes": {
             "items": {
               "$ref": "#/definitions/v2/SpineTreeNode"
+            },
+            "type": "array"
+          },
+          "settledSpawnCallIds": {
+            "default": [],
+            "items": {
+              "type": "string"
             },
             "type": "array"
           },

@@ -640,6 +640,7 @@ pub(crate) struct ChatWidget {
     pet_image_support_override: Option<crate::pets::PetImageSupport>,
     thread_id: Option<ThreadId>,
     last_spine_tree_snapshot: Option<SpineTreeUpdatedNotification>,
+    live_spine_tree_cell: Option<history_cell::SpineTreeUpdateCell>,
     /// Nudge dismissals that should survive draft edits within the current thread scope.
     ///
     /// The nudge is only a discovery aid, so once a user dismisses it or enters Plan mode we keep it
@@ -1928,10 +1929,12 @@ impl ChatWidget {
     pub(crate) fn active_cell_transcript_key(&self) -> Option<ActiveCellTranscriptKey> {
         let cell = self.transcript.active_cell.as_ref();
         let hook_cell = self.active_hook_cell.as_ref();
+        let spine_tree_cell = self.live_spine_tree_cell.as_ref();
         let token_activity_cell = self.pending_token_activity_output();
         let rate_limit_reset_hint = self.pending_rate_limit_reset_hint();
         if cell.is_none()
             && hook_cell.is_none()
+            && spine_tree_cell.is_none()
             && token_activity_cell.is_none()
             && rate_limit_reset_hint.is_none()
         {
@@ -1946,6 +1949,10 @@ impl ChatWidget {
                 .and_then(|cell| cell.transcript_animation_tick())
                 .or_else(|| {
                     hook_cell.and_then(super::history_cell::HistoryCell::transcript_animation_tick)
+                })
+                .or_else(|| {
+                    spine_tree_cell
+                        .and_then(super::history_cell::HistoryCell::transcript_animation_tick)
                 }),
         })
     }
@@ -1971,6 +1978,13 @@ impl ChatWidget {
                 lines.push(HyperlinkLine::from(""));
             }
             lines.extend(hook_lines);
+        }
+        if let Some(spine_tree_cell) = self.live_spine_tree_cell.as_ref() {
+            let spine_lines = spine_tree_cell.transcript_hyperlink_lines(width);
+            if !spine_lines.is_empty() && !lines.is_empty() {
+                lines.push(HyperlinkLine::from(""));
+            }
+            lines.extend(spine_lines);
         }
         if let Some(token_activity_cell) = self.pending_token_activity_output() {
             let token_activity_lines = token_activity_cell.transcript_hyperlink_lines(width);

@@ -519,6 +519,11 @@ pub struct SpineProjection {
     pub cursor: NodeId,
     pub visible_context: Vec<ContextItem>,
     pub last_boundary: Option<RawBoundary>,
+    /// Spawn call ids reduced by the most recent rollout event.
+    ///
+    /// This is transient reducer provenance for the host projection. It is
+    /// empty unless the last event completed one or more `spine.spawn` calls.
+    pub settled_spawn_call_ids: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -18,6 +18,7 @@ use crate::protocol::v2::ReasoningSummaryTextDeltaNotification;
 use crate::protocol::v2::ReasoningTextDeltaNotification;
 use crate::protocol::v2::SpineNodeContextPressure;
 use crate::protocol::v2::SpineNodeContextPressureProblem;
+use crate::protocol::v2::SpineSpawnOutcome;
 use crate::protocol::v2::SpineSpawnProgressUpdatedNotification;
 use crate::protocol::v2::SpineSpawnTaskProgress;
 use crate::protocol::v2::SpineTreeNode;
@@ -86,6 +87,7 @@ pub fn item_event_to_server_notification(
                 turn_id,
                 snapshot_seq: event.snapshot_seq,
                 active_node_id: event.active_node_id,
+                settled_spawn_call_ids: event.settled_spawn_call_ids,
                 nodes: event
                     .nodes
                     .into_iter()
@@ -116,6 +118,17 @@ pub fn item_event_to_server_notification(
                         },
                         summary: node.summary,
                         memory_summary: node.memory_summary,
+                        spawn_outcome: node.spawn_outcome.map(|outcome| match outcome {
+                            codex_protocol::spine_tree::SpineSpawnOutcome::Completed => {
+                                SpineSpawnOutcome::Completed
+                            }
+                            codex_protocol::spine_tree::SpineSpawnOutcome::Errored => {
+                                SpineSpawnOutcome::Errored
+                            }
+                            codex_protocol::spine_tree::SpineSpawnOutcome::Aborted => {
+                                SpineSpawnOutcome::Aborted
+                            }
+                        }),
                         start: node.start,
                         end: node.end,
                         context_pressure: node.context_pressure.map(|pressure| {
@@ -152,6 +165,7 @@ pub fn item_event_to_server_notification(
                         .map(|task| SpineSpawnTaskProgress {
                             ordinal: task.ordinal,
                             summary: task.summary,
+                            thread_id: task.thread_id.to_string(),
                             agent_path: task.agent_path.map(String::from),
                             status: CollabAgentState::from(task.status).status,
                         })
@@ -558,6 +572,8 @@ mod tests {
     use codex_protocol::protocol::CollabResumeEndEvent;
     use codex_protocol::protocol::ExecCommandOutputDeltaEvent;
     use codex_protocol::protocol::ExecOutputStream;
+    use codex_protocol::protocol::SpineSpawnProgressEvent;
+    use codex_protocol::protocol::SpineSpawnTaskProgress;
     use codex_protocol::protocol::SpineTreeNodeSnapshot;
     use codex_protocol::protocol::SpineTreeUpdateEvent;
     use pretty_assertions::assert_eq;
@@ -704,6 +720,7 @@ mod tests {
             EventMsg::SpineTreeUpdate(SpineTreeUpdateEvent {
                 snapshot_seq: 12,
                 active_node_id: "3.2".to_string(),
+                settled_spawn_call_ids: vec!["spawn-2".to_string()],
                 nodes: vec![SpineTreeNodeSnapshot {
                     node_id: "3.2".to_string(),
                     parent_id: Some("3".to_string()),
@@ -711,6 +728,7 @@ mod tests {
                     status: codex_protocol::spine_tree::SpineTreeNodeStatus::Closed,
                     summary: Some("mapped node".to_string()),
                     memory_summary: Some("mapped memory".to_string()),
+                    spawn_outcome: Some(codex_protocol::spine_tree::SpineSpawnOutcome::Errored),
                     start: 10,
                     end: Some(12),
                     context_pressure: Some(
@@ -732,6 +750,7 @@ mod tests {
             turn_id: "turn-3".to_string(),
             snapshot_seq: 12,
             active_node_id: "3.2".to_string(),
+            settled_spawn_call_ids: vec!["spawn-2".to_string()],
             nodes: vec![SpineTreeNode {
                 node_id: "3.2".to_string(),
                 parent_id: Some("3".to_string()),
@@ -739,6 +758,7 @@ mod tests {
                 status: SpineTreeNodeStatus::Closed,
                 summary: Some("mapped node".to_string()),
                 memory_summary: Some("mapped memory".to_string()),
+                spawn_outcome: Some(SpineSpawnOutcome::Errored),
                 start: 10,
                 end: Some(12),
                 context_pressure: Some(SpineNodeContextPressure {
@@ -752,6 +772,34 @@ mod tests {
         match notification {
             ServerNotification::SpineTreeUpdated(payload) => assert_eq!(payload, expected),
             other => panic!("expected Spine tree notification, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn spine_spawn_progress_maps_child_thread_ids() {
+        let child_thread_id = ThreadId::new();
+        let notification = item_event_to_server_notification(
+            EventMsg::SpineSpawnProgress(SpineSpawnProgressEvent {
+                call_id: "spawn-1".to_string(),
+                tasks: vec![SpineSpawnTaskProgress {
+                    ordinal: 0,
+                    summary: "child".to_string(),
+                    thread_id: child_thread_id,
+                    agent_path: None,
+                    status: codex_protocol::protocol::AgentStatus::Running,
+                }],
+            }),
+            "parent",
+            "turn",
+        );
+
+        match notification {
+            ServerNotification::SpineSpawnProgressUpdated(progress) => {
+                assert_eq!(progress.thread_id, "parent");
+                assert_eq!(progress.turn_id, "turn");
+                assert_eq!(progress.tasks[0].thread_id, child_thread_id.to_string());
+            }
+            other => panic!("expected spawn progress notification, got {other:?}"),
         }
     }
 }

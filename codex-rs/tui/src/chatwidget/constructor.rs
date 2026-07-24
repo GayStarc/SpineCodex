@@ -190,6 +190,7 @@ impl ChatWidget {
             pet_image_support_override: None,
             thread_id: None,
             last_spine_tree_snapshot: None,
+            live_spine_tree_cell: None,
             dismissed_plan_mode_nudge_scopes: HashSet::new(),
             thread_name: None,
             thread_rename_block_message: None,

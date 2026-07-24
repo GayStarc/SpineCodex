@@ -287,6 +287,16 @@ async fn execute_batch(
         .collect::<HashMap<_, _>>();
     let progress_calls = Arc::new(calls.to_vec());
     let progress_paths = Arc::new(child_paths.clone());
+    let mut progress_thread_ids = vec![None; task_count];
+    for (ordinal, thread_id, _) in &live {
+        progress_thread_ids[*ordinal] = Some(*thread_id);
+    }
+    let progress_thread_ids = Arc::new(
+        progress_thread_ids
+            .into_iter()
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| "spine.spawn live child identity is incomplete".to_string())?,
+    );
     let initial_statuses = join_all(
         live.iter()
             .map(|(_, thread_id, _)| session.services.agent_control.get_status(*thread_id)),
@@ -304,6 +314,7 @@ async fn execute_batch(
                 batch_progress_event(
                     progress_calls.as_ref(),
                     call_ordinal,
+                    progress_thread_ids.as_ref(),
                     progress_paths.as_ref(),
                     &progress_statuses.lock().await,
                 ),
@@ -315,6 +326,7 @@ async fn execute_batch(
         let session = session.clone();
         let turn = turn.clone();
         let progress_calls = progress_calls.clone();
+        let progress_thread_ids = progress_thread_ids.clone();
         let progress_paths = progress_paths.clone();
         let progress_statuses = progress_statuses.clone();
         let ordinal = *ordinal;
@@ -328,6 +340,7 @@ async fn execute_batch(
                 batch_progress_event(
                     progress_calls.as_ref(),
                     call_ordinal,
+                    progress_thread_ids.as_ref(),
                     progress_paths.as_ref(),
                     &statuses,
                 )
@@ -401,6 +414,7 @@ async fn execute_batch(
                     batch_progress_event(
                         progress_calls.as_ref(),
                         call_ordinal,
+                        progress_thread_ids.as_ref(),
                         progress_paths.as_ref(),
                         &statuses,
                     )
@@ -450,6 +464,7 @@ async fn teardown_transaction_children(
 fn batch_progress_event(
     calls: &[SpawnBatchCall],
     call_ordinal: usize,
+    thread_ids: &[ThreadId],
     paths: &[AgentPath],
     statuses: &[AgentStatus],
 ) -> SpineSpawnProgressEvent {
@@ -463,6 +478,7 @@ fn batch_progress_event(
     spawn_progress_event(
         &call.call_id,
         &call.tasks,
+        &thread_ids[start..end],
         &paths[start..end],
         &statuses[start..end],
     )
@@ -495,6 +511,7 @@ fn finish_batch_receipts(
 fn spawn_progress_event(
     call_id: &str,
     tasks: &[SpawnTask],
+    thread_ids: &[ThreadId],
     paths: &[AgentPath],
     statuses: &[AgentStatus],
 ) -> SpineSpawnProgressEvent {
@@ -502,15 +519,19 @@ fn spawn_progress_event(
         call_id: call_id.to_string(),
         tasks: tasks
             .iter()
+            .zip(thread_ids)
             .zip(paths)
             .zip(statuses)
             .enumerate()
-            .map(|(ordinal, ((task, path), status))| SpineSpawnTaskProgress {
-                ordinal: ordinal as u32,
-                summary: task.summary.clone(),
-                agent_path: Some(path.clone()),
-                status: status.clone(),
-            })
+            .map(
+                |(ordinal, (((task, thread_id), path), status))| SpineSpawnTaskProgress {
+                    ordinal: ordinal as u32,
+                    summary: task.summary.clone(),
+                    thread_id: *thread_id,
+                    agent_path: Some(path.clone()),
+                    status: status.clone(),
+                },
+            )
             .collect(),
     }
 }

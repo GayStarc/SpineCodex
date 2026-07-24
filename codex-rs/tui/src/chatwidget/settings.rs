@@ -92,7 +92,6 @@ impl ChatWidget {
             if !enabled {
                 self.current_goal_status_indicator = None;
                 self.current_goal_status = None;
-                self.turn_lifecycle.goal_status_active_turn_started_at = None;
                 self.turn_lifecycle.budget_limited_turn_ids.clear();
                 self.update_collaboration_mode_indicator();
             }
@@ -644,9 +643,9 @@ impl ChatWidget {
         if !self.config.features.enabled(Feature::Goals) {
             return None;
         }
-        self.current_goal_status.as_ref().and_then(|state| {
-            state.indicator(now, self.turn_lifecycle.goal_status_active_turn_started_at)
-        })
+        self.current_goal_status
+            .as_ref()
+            .and_then(|state| state.indicator(now, self.turn_lifecycle.agent_turn_started_at))
     }
 
     pub(super) fn on_thread_goal_updated(&mut self, goal: AppThreadGoal, turn_id: Option<String>) {

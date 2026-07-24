@@ -41,6 +41,7 @@ fn tree_renders_ids_statuses_and_rollout_ranges_without_memory() {
         turn_id: "turn".to_string(),
         snapshot_seq: 7,
         active_node_id: "2.1".to_string(),
+        settled_spawn_call_ids: Vec::new(),
         nodes: vec![previous, outer, active],
     });
 
@@ -77,6 +78,7 @@ fn node_detail_renders_all_available_fields_and_memory() {
             turn_id: "turn".to_string(),
             snapshot_seq: 7,
             active_node_id: "2.1".to_string(),
+            settled_spawn_call_ids: Vec::new(),
             nodes: vec![
                 node(
                     "2",
@@ -119,6 +121,7 @@ fn node_detail_omits_memory_when_unavailable() {
             turn_id: "turn".to_string(),
             snapshot_seq: 7,
             active_node_id: "1".to_string(),
+            settled_spawn_call_ids: Vec::new(),
             nodes: vec![node(
                 "1",
                 None,
@@ -163,5 +166,6 @@ fn node(
         start: 0,
         end: None,
         context_pressure: None,
+        spawn_outcome: None,
     }
 }

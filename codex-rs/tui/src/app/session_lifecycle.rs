@@ -341,7 +341,20 @@ impl App {
                 entry.agent_role.clone(),
             );
         }
+        let selected_thread_id = chat_widget.thread_id();
         self.chat_widget = chat_widget;
+        if let Some(thread_id) = selected_thread_id {
+            let live = self
+                .spine_tree_views
+                .get(&thread_id)
+                .map(|state| (state.snapshot().cloned(), state.render_cell()));
+            self.chat_widget.set_spine_tree_view(
+                live.as_ref().and_then(|live| live.0.clone()),
+                live.and_then(|live| live.1),
+            );
+        } else {
+            self.chat_widget.set_spine_tree_view(None, None);
+        }
         self.sync_active_agent_label();
     }
 
@@ -475,6 +488,7 @@ impl App {
     pub(super) fn reset_thread_event_state(&mut self) {
         self.abort_all_thread_event_listeners();
         self.thread_event_channels.clear();
+        self.spine_tree_views.clear();
         self.agent_navigation.clear();
         self.side_threads.clear();
         self.active_thread_id = None;

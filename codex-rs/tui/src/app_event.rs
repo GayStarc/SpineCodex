@@ -54,7 +54,6 @@ use codex_protocol::models::ActivePermissionProfile;
 use codex_protocol::openai_models::ReasoningEffort;
 
 use crate::history_cell::HistoryCell;
-use crate::multi_agents::AgentActivityPreview;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ThreadGoalSetMode {
@@ -668,7 +667,6 @@ pub(crate) enum AppEvent {
     InsertHistoryCell(Box<dyn HistoryCell>),
 
     UpsertSpineTreeCell {
-        turn_id: String,
         snapshot: SpineTreeUpdatedNotification,
     },
 
@@ -676,10 +674,12 @@ pub(crate) enum AppEvent {
         notification: SpineSpawnProgressUpdatedNotification,
     },
 
-    RefreshSpineSpawnActivity {
-        agent_path: String,
-        preview: AgentActivityPreview,
-        status: Option<codex_app_server_protocol::CollabAgentStatus>,
+    SpineTreeViewChanged {
+        parent_thread_id: ThreadId,
+    },
+
+    ShowSpineTreeSnapshot {
+        debug: bool,
     },
 
     /// Finish buffering initial resume replay after all replay events have been queued.

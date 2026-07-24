@@ -8,6 +8,7 @@ use std::time::Instant;
 use ratatui::style::Stylize;
 use ratatui::text::Span;
 
+use crate::shimmer::green_shimmer_spans;
 use crate::shimmer::shimmer_spans;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -59,6 +60,33 @@ pub(crate) fn shimmer_text(text: &str, motion_mode: MotionMode) -> Vec<Span<'sta
     }
 }
 
+pub(crate) fn green_activity_indicator(
+    start_time: Option<Instant>,
+    motion_mode: MotionMode,
+    reduced_motion_indicator: ReducedMotionIndicator,
+) -> Option<Span<'static>> {
+    match motion_mode {
+        MotionMode::Animated => Some(animated_green_activity_indicator(start_time)),
+        MotionMode::Reduced => match reduced_motion_indicator {
+            ReducedMotionIndicator::Hidden => None,
+            ReducedMotionIndicator::StaticBullet => Some("•".green()),
+        },
+    }
+}
+
+pub(crate) fn green_shimmer_text(text: &str, motion_mode: MotionMode) -> Vec<Span<'static>> {
+    match motion_mode {
+        MotionMode::Animated => green_shimmer_spans(text),
+        MotionMode::Reduced => {
+            if text.is_empty() {
+                Vec::new()
+            } else {
+                vec![text.to_string().green()]
+            }
+        }
+    }
+}
+
 fn animated_activity_indicator(start_time: Option<Instant>) -> Span<'static> {
     let elapsed = start_time.map(|st| st.elapsed()).unwrap_or_default();
     if supports_color::on_cached(supports_color::Stream::Stdout)
@@ -72,6 +100,26 @@ fn animated_activity_indicator(start_time: Option<Instant>) -> Span<'static> {
     } else {
         let blink_on = (elapsed.as_millis() / 600).is_multiple_of(2);
         if blink_on { "•".into() } else { "◦".dim() }
+    }
+}
+
+fn animated_green_activity_indicator(start_time: Option<Instant>) -> Span<'static> {
+    let elapsed = start_time.map(|st| st.elapsed()).unwrap_or_default();
+    if supports_color::on_cached(supports_color::Stream::Stdout)
+        .map(|level| level.has_16m)
+        .unwrap_or(false)
+    {
+        green_shimmer_spans("•")
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| "•".green())
+    } else {
+        let blink_on = (elapsed.as_millis() / 600).is_multiple_of(2);
+        if blink_on {
+            "•".green()
+        } else {
+            "◦".green().dim()
+        }
     }
 }
 

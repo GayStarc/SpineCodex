@@ -54,6 +54,7 @@ use crate::plan_tool::UpdatePlanArgs;
 use crate::request_permissions::RequestPermissionsEvent;
 use crate::request_permissions::RequestPermissionsResponse;
 use crate::request_user_input::RequestUserInputResponse;
+pub use crate::spine_tree::SpineSpawnOutcome;
 pub use crate::spine_tree::SpineSpawnProgressEvent;
 pub use crate::spine_tree::SpineSpawnTaskProgress;
 pub use crate::spine_tree::SpineTreeNodeKind;

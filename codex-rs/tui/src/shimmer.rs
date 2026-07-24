@@ -19,6 +19,21 @@ fn elapsed_since_start() -> Duration {
 }
 
 pub(crate) fn shimmer_spans(text: &str) -> Vec<Span<'static>> {
+    let base_color = default_fg().unwrap_or((128, 128, 128));
+    let highlight_color = default_bg().unwrap_or((255, 255, 255));
+    shimmer_spans_with_palette(text, base_color, highlight_color, None)
+}
+
+pub(crate) fn green_shimmer_spans(text: &str) -> Vec<Span<'static>> {
+    shimmer_spans_with_palette(text, (32, 160, 80), (160, 255, 190), Some(Color::Green))
+}
+
+fn shimmer_spans_with_palette(
+    text: &str,
+    base_color: (u8, u8, u8),
+    highlight_color: (u8, u8, u8),
+    fallback_color: Option<Color>,
+) -> Vec<Span<'static>> {
     let chars: Vec<char> = text.chars().collect();
     if chars.is_empty() {
         return Vec::new();
@@ -36,8 +51,6 @@ pub(crate) fn shimmer_spans(text: &str) -> Vec<Span<'static>> {
     let band_half_width = 5.0;
 
     let mut spans: Vec<Span<'static>> = Vec::with_capacity(chars.len());
-    let base_color = default_fg().unwrap_or((128, 128, 128));
-    let highlight_color = default_bg().unwrap_or((255, 255, 255));
     for (i, ch) in chars.iter().enumerate() {
         let i_pos = i as isize + padding as isize;
         let pos = pos as isize;
@@ -61,7 +74,8 @@ pub(crate) fn shimmer_spans(text: &str) -> Vec<Span<'static>> {
                     .add_modifier(Modifier::BOLD)
             }
         } else {
-            color_for_level(t)
+            let style = color_for_level(t);
+            fallback_color.map_or(style, |color| style.fg(color))
         };
         spans.push(Span::styled(ch.to_string(), style));
     }

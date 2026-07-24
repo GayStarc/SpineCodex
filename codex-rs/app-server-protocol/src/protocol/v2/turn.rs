@@ -425,6 +425,8 @@ pub struct SpineTreeUpdatedNotification {
     pub snapshot_seq: u64,
     pub active_node_id: String,
     pub nodes: Vec<SpineTreeNode>,
+    #[serde(default)]
+    pub settled_spawn_call_ids: Vec<String>,
 }
 
 /// Live-only progress for an experimental `spine.spawn` transaction.  The
@@ -445,6 +447,7 @@ pub struct SpineSpawnProgressUpdatedNotification {
 pub struct SpineSpawnTaskProgress {
     pub ordinal: u32,
     pub summary: String,
+    pub thread_id: String,
     pub agent_path: Option<String>,
     pub status: CollabAgentStatus,
 }
@@ -459,9 +462,20 @@ pub struct SpineTreeNode {
     pub status: SpineTreeNodeStatus,
     pub summary: Option<String>,
     pub memory_summary: Option<String>,
+    #[serde(default)]
+    pub spawn_outcome: Option<SpineSpawnOutcome>,
     pub start: u64,
     pub end: Option<u64>,
     pub context_pressure: Option<SpineNodeContextPressure>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "lowercase")]
+#[ts(export_to = "v2/")]
+pub enum SpineSpawnOutcome {
+    Completed,
+    Errored,
+    Aborted,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]

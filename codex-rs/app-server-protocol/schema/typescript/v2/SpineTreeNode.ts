@@ -4,5 +4,6 @@
 import type { SpineTreeNodeKind } from "../SpineTreeNodeKind";
 import type { SpineTreeNodeStatus } from "../SpineTreeNodeStatus";
 import type { SpineNodeContextPressure } from "./SpineNodeContextPressure";
+import type { SpineSpawnOutcome } from "./SpineSpawnOutcome";
 
-export type SpineTreeNode = { nodeId: string, parentId: string | null, kind: SpineTreeNodeKind, status: SpineTreeNodeStatus, summary: string | null, memorySummary: string | null, start: bigint, end: bigint | null, contextPressure: SpineNodeContextPressure | null, };
+export type SpineTreeNode = { nodeId: string, parentId: string | null, kind: SpineTreeNodeKind, status: SpineTreeNodeStatus, summary: string | null, memorySummary: string | null, spawnOutcome: SpineSpawnOutcome | null, start: bigint, end: bigint | null, contextPressure: SpineNodeContextPressure | null, };
