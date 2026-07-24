@@ -95,7 +95,7 @@ use codex_terminal_detection::TerminalName;
 #[derive(Debug, Parser)]
 #[clap(
     author,
-    version,
+    version = codex_protocol::CODEX_COMPAT_VERSION,
     // If a sub‑command is given, ignore requirements of the default args.
     subcommand_negates_reqs = true,
     // The packaged native executable is named `codex`, but product help must
@@ -2836,6 +2836,14 @@ mod tests {
             command
                 .get_subcommands()
                 .all(|subcommand| subcommand.get_name() != "responses")
+        );
+    }
+
+    #[test]
+    fn cli_version_matches_codex_compatibility_baseline() {
+        assert_eq!(
+            MultitoolCli::command().get_version(),
+            Some(codex_protocol::CODEX_COMPAT_VERSION)
         );
     }
 
