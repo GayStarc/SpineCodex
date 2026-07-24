@@ -11493,7 +11493,8 @@ fn test_tui_notification_condition_rejects_unknown_value() {
 
 #[test]
 fn spine_sdk_embedded_config_loads() {
-    let config = load_spine_config(None).expect("embedded Spine config must load");
+    let (config, _) = crate::spine::config::load(None, &ManagedFeatures::default())
+        .expect("embedded Spine config must load");
     assert_eq!(config.schema_version(), 1);
     assert_eq!(config.trim_threshold_bytes(), 10_000);
 }
@@ -11508,13 +11509,17 @@ fn spine_sdk_explicit_config_is_fail_closed() -> anyhow::Result<()> {
     )?;
     let valid_path = AbsolutePathBuf::from_absolute_path(valid_path)?;
     assert_eq!(
-        load_spine_config(Some(&valid_path))?.trim_threshold_bytes(),
+        crate::spine::config::load(Some(&valid_path), &ManagedFeatures::default())?
+            .0
+            .trim_threshold_bytes(),
         2048
     );
 
     let missing = AbsolutePathBuf::from_absolute_path(temp.path().join("missing.toml"))?;
     assert_eq!(
-        load_spine_config(Some(&missing)).unwrap_err().kind(),
+        crate::spine::config::load(Some(&missing), &ManagedFeatures::default())
+            .unwrap_err()
+            .kind(),
         std::io::ErrorKind::NotFound
     );
 
@@ -11522,7 +11527,9 @@ fn spine_sdk_explicit_config_is_fail_closed() -> anyhow::Result<()> {
     std::fs::write(&invalid_path, "schema_version = 2\n")?;
     let invalid_path = AbsolutePathBuf::from_absolute_path(invalid_path)?;
     assert_eq!(
-        load_spine_config(Some(&invalid_path)).unwrap_err().kind(),
+        crate::spine::config::load(Some(&invalid_path), &ManagedFeatures::default())
+            .unwrap_err()
+            .kind(),
         std::io::ErrorKind::InvalidData
     );
     Ok(())
