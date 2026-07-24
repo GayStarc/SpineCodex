@@ -3192,7 +3192,6 @@ impl Session {
                     reference_context_item.clone(),
                     world_state_baseline,
                     auto_compact_window,
-                    &compacted_rollout_item,
                 )
                 .await;
             self.persist_rollout_items(std::slice::from_ref(&compacted_rollout_item))
@@ -3225,7 +3224,6 @@ impl Session {
                 reference_context_item.clone(),
                 world_state_baseline,
                 auto_compact_window,
-                &compacted_rollout_item,
             )
             .await;
         self.finish_compacted_history(
@@ -3244,18 +3242,14 @@ impl Session {
         reference_context_item: Option<TurnContextItem>,
         world_state_baseline: Option<Arc<WorldState>>,
         auto_compact_window: (u64, AutoCompactWindowIds),
-        compacted_rollout_item: &RolloutItem,
     ) -> (
         Option<WorldStateItem>,
         Option<crate::spine::observer::CodexSpineObserverEffect>,
     ) {
         let mut world_state_item = None;
         let mut state = self.state.lock().await;
-        let RolloutItem::Compacted(compacted_item) = compacted_rollout_item else {
-            unreachable!("compacted history installation requires a compacted rollout item");
-        };
         state.replace_history(items, reference_context_item);
-        state.append_spine_inputs(std::slice::from_ref(compacted_rollout_item));
+        state.compact_spine_live();
         state.install_auto_compact_window(auto_compact_window.0, auto_compact_window.1);
         if let Some(world_state) = world_state_baseline {
             let snapshot = world_state.snapshot();

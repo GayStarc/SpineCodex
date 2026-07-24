@@ -131,18 +131,7 @@ fn trim_candidate_text(fragment: &str) -> String {
 
 fn token_count(input_tokens: i64) -> RolloutItem {
     RolloutItem::EventMsg(codex_protocol::protocol::EventMsg::TokenCount(
-        TokenCountEvent {
-            info: Some(TokenUsageInfo {
-                total_token_usage: TokenUsage::default(),
-                last_token_usage: TokenUsage {
-                    input_tokens,
-                    total_tokens: input_tokens,
-                    ..TokenUsage::default()
-                },
-                model_context_window: Some(200_000),
-            }),
-            rate_limits: None,
-        },
+        token_count_event(input_tokens),
     ))
 }
 
@@ -216,6 +205,20 @@ fn record_first_projected_request_usage(
     state.record_auto_compact_window_server_prefill_from_usage(Some(claim), provider_usage, model);
 }
 
+fn token_count_event(input_tokens: i64) -> TokenCountEvent {
+    TokenCountEvent {
+        info: Some(TokenUsageInfo {
+            total_token_usage: TokenUsage::default(),
+            last_token_usage: TokenUsage {
+                input_tokens,
+                total_tokens: input_tokens,
+                ..TokenUsage::default()
+            },
+            model_context_window: Some(200_000),
+        }),
+        rate_limits: None,
+    }
+}
 fn rollout_history(items: &[RolloutItem]) -> Vec<ResponseItem> {
     items
         .iter()
@@ -1112,7 +1115,7 @@ async fn incremental_materialization_matches_full_rebuild_across_transition_matr
         window_id: None,
     });
     live.replace_history(vec![replacement], None);
-    live.append_spine_inputs(std::slice::from_ref(&compacted));
+    live.compact_spine_live();
     rollout.push(compacted);
     assert_incremental_matches_rebuild(&configuration, &live, &rollout);
 }
@@ -1191,7 +1194,7 @@ async fn spine_live_append_uses_source_ordinals_across_event_items() {
     let mut state = SessionState::new(session_configuration);
     let user = response_message("user", "request");
     state.record_items(std::iter::once(&user), TruncationPolicy::Tokens(10_000));
-    state.append_spine_inputs(&[token_count(1_000)]);
+    state.observe_token_count(token_count_event(1_000));
 
     let call = ResponseItem::FunctionCall {
         id: None,
@@ -1320,14 +1323,7 @@ async fn spine_materialization_updates_trimmed_boundaries_and_rebuilds_after_com
 
     let replacement = response_message("user", "compacted context");
     state.replace_history(vec![replacement.clone()], None);
-    state.append_spine_inputs(&[RolloutItem::Compacted(CompactedItem {
-        message: "compact memory".to_string(),
-        replacement_history: Some(vec![replacement.clone()]),
-        window_number: None,
-        first_window_id: None,
-        previous_window_id: None,
-        window_id: None,
-    })]);
+    state.compact_spine_live();
     assert_eq!(state.clone_history().raw_items(), &[replacement]);
 
     state.replace_history_from_rollout(snipped.raw_items().to_vec(), None, &rollout);
@@ -1513,7 +1509,7 @@ async fn context_transitions_publish_compact_and_replay_before_return() {
         window_id: None,
     };
     state.replace_history(vec![replacement.clone()], None);
-    state.append_spine_inputs(&[RolloutItem::Compacted(compacted_item.clone())]);
+    state.compact_spine_live();
     let compacted = state
         .spine_tree_update()
         .expect("compacted snapshot should be available");
@@ -1658,7 +1654,7 @@ async fn legacy_compact_recovery_keeps_reconstructed_prefix_opaque() {
 }
 
 #[tokio::test]
-async fn archived_inter_agent_message_preserves_anchor_sequence_after_compact() {
+async fn archived_inter_agent_message_does_not_consume_a_user_anchor() {
     let mut configuration = make_session_configuration_for_tests().await;
     configuration.enable_spine_jit_for_test();
     let mut state = SessionState::new(configuration);
@@ -1688,7 +1684,7 @@ async fn archived_inter_agent_message_preserves_anchor_sequence_after_compact() 
 
     assert_eq!(
         state.clone_history().raw_items(),
-        &[replacement, response_message("user", "[U2]\nafter compact"),]
+        &[replacement, response_message("user", "[U1]\nafter compact"),]
     );
 }
 
@@ -2114,16 +2110,8 @@ async fn spine_trim_validation_uses_only_the_previous_completed_toolcall() {
     );
 
     let replacement = response_message("user", "compacted context");
-    let compacted = CompactedItem {
-        message: "compact memory".to_string(),
-        replacement_history: Some(vec![replacement.clone()]),
-        window_number: None,
-        first_window_id: None,
-        previous_window_id: None,
-        window_id: None,
-    };
     state.replace_history(vec![replacement], None);
-    state.append_spine_inputs(&[RolloutItem::Compacted(compacted)]);
+    state.compact_spine_live();
     let trim_after_compact = ResponseItem::FunctionCall {
         id: None,
         name: "trim".to_string(),

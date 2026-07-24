@@ -3,7 +3,6 @@
 use codex_protocol::models::AdditionalPermissionProfile;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ResponseItem;
-use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::RolloutItem;
 use codex_sandboxing::policy_transforms::merge_permission_profiles;
 use std::collections::HashMap;
@@ -146,7 +145,15 @@ impl SessionState {
     }
 
     pub(crate) fn observe_token_count(&mut self, event: TokenCountEvent) {
-        self.append_spine_inputs(&[RolloutItem::EventMsg(EventMsg::TokenCount(event))]);
+        if let Some(spine) = &mut self.spine_runtime {
+            spine.observe_token_count(event);
+        }
+    }
+
+    pub(crate) fn compact_spine_live(&mut self) {
+        if let Some(spine) = &mut self.spine_runtime {
+            spine.compact_live(&mut self.history);
+        }
     }
 
     pub(crate) fn previous_turn_settings(&self) -> Option<PreviousTurnSettings> {
@@ -246,12 +253,6 @@ impl SessionState {
         &mut self,
     ) -> Option<crate::spine::observer::CodexSpineObserverEffect> {
         self.spine_runtime.as_mut()?.take_observer_effect()
-    }
-
-    pub(crate) fn append_spine_inputs(&mut self, items: &[RolloutItem]) {
-        if let Some(spine) = &mut self.spine_runtime {
-            spine.append(items, &mut self.history);
-        }
     }
 
     pub(crate) fn validate_spine_control(&self, tool: spine_core::SpineTool) -> Result<(), String> {

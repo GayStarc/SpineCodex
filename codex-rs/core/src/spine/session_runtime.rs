@@ -69,24 +69,6 @@ impl SessionSpineRuntime {
         self.queue_observer(true);
     }
 
-    pub(crate) fn append(&mut self, items: &[RolloutItem], history: &mut ContextManager) {
-        for item in items {
-            match item {
-                RolloutItem::ResponseItem(item) => {
-                    self.append_response_items(std::slice::from_ref(item), history)
-                }
-                RolloutItem::EventMsg(EventMsg::TokenCount(event)) => {
-                    self.observe_token_count(event.clone());
-                }
-                RolloutItem::Compacted(compacted) => {
-                    self.compact_live(compacted, history);
-                }
-                RolloutItem::InterAgentCommunication(_) => {}
-                _ => {}
-            }
-        }
-    }
-
     pub(crate) fn observe_token_count(&mut self, event: TokenCountEvent) {
         if let Some(usage) = event.info.map(|info| info.last_token_usage) {
             self.runtime.observe_usage(spine_core::TokenUsageSample {
@@ -97,11 +79,7 @@ impl SessionSpineRuntime {
         self.queue_observer(false);
     }
 
-    fn compact_live(
-        &mut self,
-        _compacted: &codex_protocol::protocol::CompactedItem,
-        history: &mut ContextManager,
-    ) {
+    pub(crate) fn compact_live(&mut self, history: &mut ContextManager) {
         let compact_boundary = RawBoundary(self.next_boundary);
         self.next_boundary = self.next_boundary.saturating_add(1);
         self.runtime.handler_mut().reset_sources();
