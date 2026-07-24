@@ -37,6 +37,7 @@ enum SpineHandlerKind {
 }
 
 impl SpineHandler {
+<<<<<<< HEAD
     pub(crate) fn controls(catalog: &ToolCatalog) -> Vec<Self> {
         [SpineTool::Open, SpineTool::Close, SpineTool::Next]
             .into_iter()
@@ -63,6 +64,15 @@ impl SpineHandler {
             .definition(SpineTool::Spawn)
             .cloned()
             .map(Self::from_definition)
+=======
+    pub(crate) fn add_tools(catalog: &ToolCatalog, mode: ModeKind, mut add: impl FnMut(Self)) {
+        for definition in catalog.definitions() {
+            if mode == ModeKind::Plan && definition.tool == SpineTool::Spawn {
+                continue;
+            }
+            add(Self::from_definition(definition.clone()));
+        }
+>>>>>>> refactor(spine): let SDK own tool exposure
     }
 
     fn from_definition(definition: ToolDefinition) -> Self {
@@ -302,6 +312,7 @@ impl CoreToolRuntime for SpineHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pretty_assertions::assert_eq;
 
     fn catalog() -> ToolCatalog {
         let config = spine_core::SpineConfig::v1()
@@ -312,6 +323,12 @@ mod tests {
             ])
             .unwrap();
         ToolCatalog::new(&config).unwrap()
+    }
+
+    fn handlers(mode: ModeKind) -> Vec<SpineHandler> {
+        let mut handlers = Vec::new();
+        SpineHandler::add_tools(&catalog(), mode, |handler| handlers.push(handler));
+        handlers
     }
 
     #[test]
@@ -347,30 +364,50 @@ mod tests {
     }
 
     #[test]
-    fn tool_names_are_namespaced() {
+    fn tool_registration_follows_sdk_catalog() {
         let catalog = catalog();
-        let handlers = SpineHandler::controls(&catalog);
+        let mut handlers = Vec::new();
+        SpineHandler::add_tools(&catalog, ModeKind::Default, |handler| {
+            handlers.push(handler);
+        });
         assert_eq!(
-            handlers[0].tool_name(),
-            ToolName::namespaced(SPINE_NAMESPACE, SpineTool::Open.name())
+            handlers
+                .iter()
+                .map(|handler| handler.tool_name())
+                .collect::<Vec<_>>(),
+            catalog
+                .definitions()
+                .iter()
+                .map(|definition| { ToolName::namespaced(SPINE_NAMESPACE, definition.tool.name()) })
+                .collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn plan_mode_suppresses_only_spawn() {
         assert_eq!(
-            handlers[1].tool_name(),
-            ToolName::namespaced(SPINE_NAMESPACE, SpineTool::Close.name())
-        );
-        assert_eq!(
-            handlers[2].tool_name(),
-            ToolName::namespaced(SPINE_NAMESPACE, SpineTool::Next.name())
+            handlers(ModeKind::Plan)
+                .iter()
+                .map(|handler| handler.tool_name())
+                .collect::<Vec<_>>(),
+            [
+                SpineTool::Open,
+                SpineTool::Close,
+                SpineTool::Next,
+                SpineTool::Trim,
+            ]
+            .map(|tool| ToolName::namespaced(SPINE_NAMESPACE, tool.name()))
         );
     }
 
     #[test]
     fn spine_tools_are_direct_model_only() {
         assert!(
-            SpineHandler::controls(&catalog())
+            handlers(ModeKind::Default)
                 .iter()
                 .all(|handler| handler.exposure() == ToolExposure::DirectModelOnly)
         );
+<<<<<<< HEAD
         assert_eq!(
             SpineHandler::trim(&catalog()).unwrap().exposure(),
             ToolExposure::DirectModelOnly
@@ -384,6 +421,8 @@ mod tests {
             ToolExposure::DirectModelOnly
 >>>>>>> refactor(spine): move config and tool contracts into sdk
         );
+=======
+>>>>>>> refactor(spine): let SDK own tool exposure
     }
 
     #[test]

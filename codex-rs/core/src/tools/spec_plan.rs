@@ -692,6 +692,7 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut
 
     planned_tools.add(PlanHandler);
 
+<<<<<<< HEAD
     if features.enabled(Feature::SpineJit) {
         for handler in SpineHandler::controls(&turn_context.config.spine_tools) {
             planned_tools.add(handler);
@@ -714,6 +715,13 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut
             planned_tools.add(handler);
         }
     }
+=======
+    SpineHandler::add_tools(
+        &turn_context.config.spine_tools,
+        turn_context.collaboration_mode.mode,
+        |handler| planned_tools.add(handler),
+    );
+>>>>>>> refactor(spine): let SDK own tool exposure
 
     if features.enabled(Feature::DeferredExecutor) {
         planned_tools.add(WaitForEnvironmentHandler);

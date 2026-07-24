@@ -48,7 +48,7 @@ impl SpineTool {
     }
 
     pub const fn all() -> [Self; 5] {
-        [Self::Open, Self::Close, Self::Next, Self::Trim, Self::Spawn]
+        [Self::Open, Self::Close, Self::Next, Self::Spawn, Self::Trim]
     }
 }
 
