@@ -235,7 +235,7 @@ async fn spine_adapter_publishes_real_sse_pressure_samples() -> Result<()> {
 }
 
 #[tokio::test]
-async fn spine_adapter_item_ids_cover_projection_only_status() -> Result<()> {
+async fn spine_status_receives_item_id_at_prompt_boundary() -> Result<()> {
     let server = start_mock_server().await;
     let response_mock = mount_sse_once(
         &server,
@@ -264,8 +264,13 @@ async fn spine_adapter_item_ids_cover_projection_only_status() -> Result<()> {
             item.get("role").and_then(Value::as_str) == Some("developer")
                 && item.to_string().contains("<spine_status ")
         })
-        .context("missing projection-only status")?;
-    assert!(status.get("id").and_then(Value::as_str).is_some());
+        .context("missing prompt-only Spine status")?;
+    assert!(
+        status
+            .get("id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| id.starts_with("msg_"))
+    );
     for item in input {
         assert!(
             item.get("id").and_then(Value::as_str).is_some(),

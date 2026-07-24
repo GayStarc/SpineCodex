@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -1098,6 +1099,11 @@ pub(crate) fn build_prompt(
     turn_context: &TurnContext,
     base_instructions: BaseInstructions,
 ) -> Prompt {
+    let input = if turn_context.item_ids_enabled() {
+        Session::assign_missing_response_item_ids(Cow::Owned(input)).into_owned()
+    } else {
+        input
+    };
     Prompt {
         input,
         tools: router.model_visible_specs(),
