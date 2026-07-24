@@ -20,21 +20,32 @@ Core workflow:
 1. Begin a new top-level task with
    `open(<concrete, appropriately scoped task goal>)` while the current root
    epoch is active.
-2. Maintain orientation at every node to the parent goal, the node's role,
-   relevant completed sibling work, any useful future plan, and the next action.
-3. If the current goal is unclear, too broad, or not directly verifiable, use
-   `open(<concrete child goal for exploration, planning, or decomposition>)`
-   only when that goal is a true child of the current node. Recurse until the
-   next work belongs in a focused, specific, and verifiable leaf node.
-4. Use `next(<concrete sibling goal>, memory)` when the next work is a true
+2. If the current node contains multiple pieces of work with clear scope and
+   ownership boundaries, or if any part requires deeper exploration, use
+   `open(<concrete, appropriately scoped direct-child goal>)` to enter one such
+   piece. Apply this recursively as needed until the active work belongs in a
+   focused, specific, and verifiable leaf node.
+3. Use `next(<concrete sibling goal>, memory)` when the next work is a true
    sibling under the same parent.
-5. Use `close(memory)` when the current node has produced enough state for
+4. Use `close(memory)` when the current node has produced enough state for
    correct continuation and the next work belongs to its immediate parent. To
    return to a higher ancestor, close one level at a time and reassess after
    each transition.
 
 Conventions:
 
+* Minimize total context pressure, roughly model iterations times average
+  visible context, by recursively decomposing work at semantic boundaries,
+  batching independent work, and completing each focused node in as few
+  iterations as practical. When a distinct subproblem deserves its own node,
+  open that node as soon as the boundary is known, before accumulating its
+  detailed exploration and implementation history in the parent. `open`
+  focuses scope but does not reduce inherited context; ancestor work remains
+  visible to every descendant, and the boundary's compression benefit is
+  realized only after `close` or `next`. Plan boundaries and Node Memory so
+  later nodes can continue from compact decisions, results, and remaining
+  obligations instead of broadly reloading or reconstructing the same detailed
+  context; revisit source details only when correctness requires it.
 * Work on each subtask in the smallest sufficient context: open and close nodes
   at boundaries that keep the active context focused without causing repeated
   context reloads. Use the context pressure reported in `<spine_status>` to
