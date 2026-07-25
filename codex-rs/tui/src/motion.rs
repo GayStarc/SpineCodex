@@ -138,23 +138,23 @@ pub(crate) fn green_growth_marker(elapsed: Duration, motion_mode: MotionMode) ->
         return Span::styled("ϒ", green);
     }
 
-    let phase_ms = elapsed.as_millis() % 2_000;
-    if phase_ms < 250 {
+    let phase_ms = elapsed.as_millis() % 2_700;
+    if phase_ms < 900 {
         Span::styled(".", green.add_modifier(Modifier::DIM))
-    } else if phase_ms < 400 {
+    } else if phase_ms < 1_200 {
+        Span::styled(".", green.add_modifier(Modifier::BOLD))
+    } else if phase_ms < 1_360 {
         Span::styled("ʏ", green.add_modifier(Modifier::DIM))
-    } else if phase_ms < 550 {
+    } else if phase_ms < 1_520 {
         Span::styled("Ү", green)
-    } else if phase_ms < 1_250 {
+    } else if phase_ms < 2_420 {
         Span::styled("ϒ", green.add_modifier(Modifier::BOLD))
-    } else if phase_ms < 1_450 {
+    } else if phase_ms < 2_530 {
         Span::styled("ϒ", green)
-    } else if phase_ms < 1_600 {
+    } else if phase_ms < 2_615 {
         Span::styled("Ү", green)
-    } else if phase_ms < 1_750 {
-        Span::styled("ʏ", green.add_modifier(Modifier::DIM))
     } else {
-        Span::styled(".", green.add_modifier(Modifier::DIM))
+        Span::styled("ʏ", green.add_modifier(Modifier::DIM))
     }
 }
 
@@ -325,29 +325,29 @@ mod tests {
     }
 
     #[test]
-    fn green_growth_marker_follows_two_second_cycle() {
+    fn green_growth_marker_follows_cycle() {
         let green = motion_green_style();
         let dim_green = green.add_modifier(Modifier::DIM);
         let bold_green = green.add_modifier(Modifier::BOLD);
         let cases = [
             (0, ".", dim_green),
-            (249, ".", dim_green),
-            (250, "ʏ", dim_green),
-            (399, "ʏ", dim_green),
-            (400, "Ү", green),
-            (549, "Ү", green),
-            (550, "ϒ", bold_green),
-            (1_249, "ϒ", bold_green),
-            (1_250, "ϒ", green),
-            (1_449, "ϒ", green),
-            (1_450, "Ү", green),
-            (1_599, "Ү", green),
-            (1_600, "ʏ", dim_green),
-            (1_749, "ʏ", dim_green),
-            (1_750, ".", dim_green),
-            (1_999, ".", dim_green),
-            (2_000, ".", dim_green),
-            (4_000, ".", dim_green),
+            (899, ".", dim_green),
+            (900, ".", bold_green),
+            (1_199, ".", bold_green),
+            (1_200, "ʏ", dim_green),
+            (1_359, "ʏ", dim_green),
+            (1_360, "Ү", green),
+            (1_519, "Ү", green),
+            (1_520, "ϒ", bold_green),
+            (2_419, "ϒ", bold_green),
+            (2_420, "ϒ", green),
+            (2_529, "ϒ", green),
+            (2_530, "Ү", green),
+            (2_614, "Ү", green),
+            (2_615, "ʏ", dim_green),
+            (2_699, "ʏ", dim_green),
+            (2_700, ".", dim_green),
+            (5_400, ".", dim_green),
         ];
 
         for (elapsed_ms, glyph, style) in cases {
@@ -362,7 +362,7 @@ mod tests {
     #[test]
     fn green_growth_marker_is_static_with_reduced_motion() {
         let green = motion_green_style();
-        for elapsed_ms in [0, 550, 1_250, 1_999, 2_000] {
+        for elapsed_ms in [0, 1_520, 2_420, 2_699, 2_700] {
             assert_eq!(
                 green_growth_marker(Duration::from_millis(elapsed_ms), MotionMode::Reduced),
                 Span::styled("ϒ", green)

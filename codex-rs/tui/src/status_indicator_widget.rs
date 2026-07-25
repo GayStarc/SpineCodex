@@ -568,7 +568,7 @@ mod tests {
         );
         w.set_organic_working_word(Some("Blooming"));
         w.is_paused = true;
-        w.elapsed_running = Duration::from_millis(550);
+        w.elapsed_running = Duration::from_millis(1_520);
 
         let mut terminal = Terminal::new(TestBackend::new(80, 1)).expect("terminal");
         terminal
