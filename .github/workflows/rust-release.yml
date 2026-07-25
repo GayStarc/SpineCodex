@@ -211,6 +211,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           target="${{ matrix.target }}"
           release_dir="${CARGO_TARGET_DIR}/${target}/release"
           binaries=(
@@ -610,6 +611,7 @@ jobs:
     permissions:
       id-token: write
       contents: read
+
     steps:
       - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:

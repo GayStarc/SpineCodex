@@ -811,6 +811,7 @@ fn replace_last_turn_images_replaces_tool_output_images() {
         },
     ];
     let mut history = create_history_with_items(items);
+
     assert!(history.replace_last_turn_images("Invalid image"));
 
     assert_eq!(

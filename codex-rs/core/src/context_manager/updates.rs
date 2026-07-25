@@ -94,8 +94,6 @@ fn build_multi_agent_mode_update_item(
 
     match effective_multi_agent_mode {
         Some(multi_agent_mode) => Some(MultiAgentModeInstructions::new(multi_agent_mode).render()),
-        // Built-in mode copy is scoped to the collaboration surface. When the feature turns off,
-        // this update cancels proactive collaboration without constraining independent tools.
         None if previous.multi_agent_mode == Some(MultiAgentMode::Proactive) => {
             Some(MultiAgentModeInstructions::new(MultiAgentMode::ExplicitRequestOnly).render())
         }

@@ -225,6 +225,7 @@ async fn compact_resume_and_fork_preserve_model_history_view() {
     // 3. Capture the requests to the model and validate the history slices.
     let mut requests = gather_request_bodies(&request_log);
     normalize_compact_prompts(&mut requests);
+
     // input after compact is a prefix of input after resume/fork
     let compact_request = &requests[requests.len() - 3];
     let resume_request = &requests[requests.len() - 2];
