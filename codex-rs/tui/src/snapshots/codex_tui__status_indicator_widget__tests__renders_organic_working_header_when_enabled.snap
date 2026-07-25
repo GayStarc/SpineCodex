@@ -3,4 +3,4 @@ source: tui/src/status_indicator_widget.rs
 assertion_line: 386
 expression: terminal.backend()
 ---
-"• Blooming (0s • esc to interrupt)                                              "
+"ϒ Blooming (0s • esc to interrupt)                                              "

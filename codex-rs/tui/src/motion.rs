@@ -6,6 +6,7 @@
 use std::hash::DefaultHasher;
 use std::hash::Hash;
 use std::hash::Hasher;
+use std::time::Duration;
 use std::time::Instant;
 
 use ratatui::style::Color;
@@ -131,19 +132,30 @@ pub(crate) fn green_activity_indicator(
     }
 }
 
-pub(crate) fn green_breathing_marker(
-    start_time: Option<Instant>,
-    motion_mode: MotionMode,
-    full_marker: &'static str,
-    quiet_marker: &'static str,
-) -> Span<'static> {
-    breathing_styled_marker(
-        start_time,
-        motion_mode,
-        full_marker,
-        quiet_marker,
-        motion_green_style(),
-    )
+pub(crate) fn green_growth_marker(elapsed: Duration, motion_mode: MotionMode) -> Span<'static> {
+    let green = motion_green_style();
+    if motion_mode == MotionMode::Reduced {
+        return Span::styled("ϒ", green);
+    }
+
+    let phase_ms = elapsed.as_millis() % 2_000;
+    if phase_ms < 250 {
+        Span::styled(".", green.add_modifier(Modifier::DIM))
+    } else if phase_ms < 400 {
+        Span::styled("ʏ", green.add_modifier(Modifier::DIM))
+    } else if phase_ms < 550 {
+        Span::styled("Ү", green)
+    } else if phase_ms < 1_250 {
+        Span::styled("ϒ", green.add_modifier(Modifier::BOLD))
+    } else if phase_ms < 1_450 {
+        Span::styled("ϒ", green)
+    } else if phase_ms < 1_600 {
+        Span::styled("Ү", green)
+    } else if phase_ms < 1_750 {
+        Span::styled("ʏ", green.add_modifier(Modifier::DIM))
+    } else {
+        Span::styled(".", green.add_modifier(Modifier::DIM))
+    }
 }
 
 pub(crate) fn blue_breathing_marker(
@@ -309,7 +321,62 @@ mod tests {
     }
 
     #[test]
-    fn green_breathing_marker_alternates_glyph_weight() {
+    fn green_growth_marker_follows_two_second_cycle() {
+        let green = motion_green_style();
+        let dim_green = green.add_modifier(Modifier::DIM);
+        let bold_green = green.add_modifier(Modifier::BOLD);
+        let cases = [
+            (0, ".", dim_green),
+            (249, ".", dim_green),
+            (250, "ʏ", dim_green),
+            (399, "ʏ", dim_green),
+            (400, "Ү", green),
+            (549, "Ү", green),
+            (550, "ϒ", bold_green),
+            (1_249, "ϒ", bold_green),
+            (1_250, "ϒ", green),
+            (1_449, "ϒ", green),
+            (1_450, "Ү", green),
+            (1_599, "Ү", green),
+            (1_600, "ʏ", dim_green),
+            (1_749, "ʏ", dim_green),
+            (1_750, ".", dim_green),
+            (1_999, ".", dim_green),
+            (2_000, ".", dim_green),
+            (4_000, ".", dim_green),
+        ];
+
+        for (elapsed_ms, glyph, style) in cases {
+            assert_eq!(
+                green_growth_marker(Duration::from_millis(elapsed_ms), MotionMode::Animated),
+                Span::styled(glyph, style),
+                "unexpected growth marker at {elapsed_ms} ms"
+            );
+        }
+    }
+
+    #[test]
+    fn green_growth_marker_is_static_with_reduced_motion() {
+        let green = motion_green_style();
+        for elapsed_ms in [0, 550, 1_250, 1_999, 2_000] {
+            assert_eq!(
+                green_growth_marker(Duration::from_millis(elapsed_ms), MotionMode::Reduced),
+                Span::styled("ϒ", green)
+            );
+        }
+    }
+
+    #[test]
+    fn green_growth_marker_glyphs_are_one_column_wide() {
+        use unicode_width::UnicodeWidthStr;
+
+        for glyph in [".", "ʏ", "Ү", "ϒ"] {
+            assert_eq!(UnicodeWidthStr::width(glyph), 1, "{glyph}");
+        }
+    }
+
+    #[test]
+    fn breathing_marker_alternates_glyph_weight() {
         let green = motion_green_style();
         assert_eq!(
             breathing_marker(std::time::Duration::from_millis(0), "◉", "◌", green),

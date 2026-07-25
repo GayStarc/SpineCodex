@@ -25,7 +25,7 @@ use crate::line_truncation::truncate_line_with_ellipsis_if_overflow;
 use crate::motion::MotionMode;
 use crate::motion::ReducedMotionIndicator;
 use crate::motion::activity_indicator;
-use crate::motion::green_breathing_marker;
+use crate::motion::green_growth_marker;
 use crate::motion::green_shimmer_text;
 use crate::motion::shimmer_text;
 use crate::render::renderable::Renderable;
@@ -269,8 +269,7 @@ impl Renderable for StatusIndicatorWidget {
         if self.header == "Working"
             && let Some(activity_word) = self.organic_working_word
         {
-            let indicator =
-                green_breathing_marker(Some(self.last_resume_at), motion_mode, "•", "◦");
+            let indicator = green_growth_marker(elapsed_duration, motion_mode);
             spans.push(indicator);
             spans.push(" ".into());
             spans.extend(green_shimmer_text(activity_word, motion_mode));
@@ -556,5 +555,28 @@ mod tests {
                 .is_some_and(|span| span.content.as_ref().contains('…')),
             "expected one-line details to be ellipsized, got {last:?}"
         );
+    }
+
+    #[test]
+    fn organic_working_marker_uses_accumulated_elapsed_time() {
+        let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
+        let tx = AppEventSender::new(tx_raw);
+        let mut w = StatusIndicatorWidget::new(
+            tx,
+            crate::tui::FrameRequester::test_dummy(),
+            /*animations_enabled*/ true,
+        );
+        w.set_organic_working_word(Some("Blooming"));
+        w.is_paused = true;
+        w.elapsed_running = Duration::from_millis(550);
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 1)).expect("terminal");
+        terminal
+            .draw(|f| w.render(f.area(), f.buffer_mut()))
+            .expect("draw");
+
+        let marker = &terminal.backend().buffer().content()[0];
+        assert_eq!(marker.symbol(), "ϒ");
+        assert!(marker.modifier.contains(ratatui::style::Modifier::BOLD));
     }
 }
