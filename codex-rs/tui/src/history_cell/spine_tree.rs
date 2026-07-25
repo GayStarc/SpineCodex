@@ -8,49 +8,12 @@ use codex_app_server_protocol::SpineTreeNodeKind;
 use codex_app_server_protocol::SpineTreeNodeStatus;
 use codex_app_server_protocol::SpineTreeUpdatedNotification;
 use std::collections::HashSet;
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering;
-use std::time::Instant;
-
-use crate::motion::MotionMode;
-use crate::motion::blue_breathing_marker;
-use crate::motion::white_shimmer_text;
 
 #[path = "spine_tree_debug.rs"]
 mod debug;
 
 const PRETTY_MAX_VISIBLE_SIBLINGS: usize = 3;
 const INVALID_SPINE_TREE_SNAPSHOT_LABEL: &str = "invalid Spine tree snapshot";
-
-#[derive(Debug, Clone)]
-pub(crate) struct SpineTreeWorkingPresentation {
-    started_at: Instant,
-    alive: Option<Arc<AtomicBool>>,
-}
-
-impl SpineTreeWorkingPresentation {
-    fn live_tail(started_at: Instant) -> Self {
-        Self {
-            started_at,
-            alive: None,
-        }
-    }
-
-    pub(crate) fn current_turn(started_at: Instant, alive: Arc<AtomicBool>) -> Self {
-        Self {
-            started_at,
-            alive: Some(alive),
-        }
-    }
-
-    fn started_at_if_active(&self) -> Option<Instant> {
-        self.alive
-            .as_ref()
-            .is_none_or(|alive| alive.load(Ordering::Relaxed))
-            .then_some(self.started_at)
-    }
-}
 
 #[cfg(test)]
 pub(crate) fn new_spine_tree_snapshot(
@@ -61,7 +24,6 @@ pub(crate) fn new_spine_tree_snapshot(
         display_mode: SpineTreeDisplayMode::Pretty,
         spawn_overlays: Vec::new(),
         animations_enabled: false,
-        working_presentation: None,
     }
 }
 
@@ -73,7 +35,6 @@ pub(crate) fn new_debug_spine_tree_snapshot(
         display_mode: SpineTreeDisplayMode::Debug(None),
         spawn_overlays: Vec::new(),
         animations_enabled: false,
-        working_presentation: None,
     }
 }
 
@@ -86,7 +47,6 @@ pub(crate) fn new_debug_spine_node_snapshot(
         display_mode: SpineTreeDisplayMode::Debug(Some(node_id)),
         spawn_overlays: Vec::new(),
         animations_enabled: false,
-        working_presentation: None,
     }
 }
 
@@ -232,18 +192,11 @@ impl SpineTreeViewState {
             return None;
         }
         let snapshot = self.snapshot.clone()?;
-        let started_at = self
-            .overlays
-            .iter()
-            .map(SpineSpawnOverlay::animation_start)
-            .min()
-            .expect("non-empty overlays have an animation start");
         Some(SpineTreeUpdateCell {
             snapshot,
             display_mode: SpineTreeDisplayMode::Pretty,
             spawn_overlays: self.overlays.clone(),
             animations_enabled: self.animations_enabled,
-            working_presentation: Some(SpineTreeWorkingPresentation::live_tail(started_at)),
         })
     }
 
@@ -254,21 +207,6 @@ impl SpineTreeViewState {
             display_mode: SpineTreeDisplayMode::Pretty,
             spawn_overlays: Vec::new(),
             animations_enabled: false,
-            working_presentation: None,
-        })
-    }
-
-    pub(crate) fn working_snapshot_cell(
-        &self,
-        presentation: SpineTreeWorkingPresentation,
-    ) -> Option<SpineTreeUpdateCell> {
-        let snapshot = self.snapshot.clone()?;
-        Some(SpineTreeUpdateCell {
-            snapshot,
-            display_mode: SpineTreeDisplayMode::Pretty,
-            spawn_overlays: Vec::new(),
-            animations_enabled: self.animations_enabled,
-            working_presentation: Some(presentation),
         })
     }
 
@@ -286,21 +224,12 @@ pub(crate) struct SpineTreeUpdateCell {
     display_mode: SpineTreeDisplayMode,
     spawn_overlays: Vec<SpineSpawnOverlay>,
     animations_enabled: bool,
-    working_presentation: Option<SpineTreeWorkingPresentation>,
 }
 
 #[derive(Debug, Clone)]
 enum SpineTreeDisplayMode {
     Pretty,
     Debug(Option<String>),
-}
-
-impl SpineTreeUpdateCell {
-    fn active_working_started_at(&self) -> Option<std::time::Instant> {
-        self.working_presentation
-            .as_ref()
-            .and_then(SpineTreeWorkingPresentation::started_at_if_active)
-    }
 }
 
 impl HistoryCell for SpineTreeUpdateCell {
@@ -311,7 +240,6 @@ impl HistoryCell for SpineTreeUpdateCell {
                 &self.spawn_overlays,
                 width,
                 self.animations_enabled,
-                self.active_working_started_at(),
             ),
             SpineTreeDisplayMode::Debug(node_id) => {
                 debug::display_lines(&self.snapshot, width, node_id.as_deref())
@@ -332,13 +260,12 @@ impl HistoryCell for SpineTreeUpdateCell {
         if !self.animations_enabled {
             return None;
         }
-        let started_at = self.active_working_started_at()?;
+        let started_at = self
+            .spawn_overlays
+            .iter()
+            .map(SpineSpawnOverlay::animation_start)
+            .min()?;
         Some(started_at.elapsed().as_millis() as u64 / 50)
-    }
-
-    fn finalize_for_history(&mut self) {
-        self.animations_enabled = false;
-        self.working_presentation = None;
     }
 }
 
@@ -347,7 +274,6 @@ fn pretty_display_lines(
     overlays: &[SpineSpawnOverlay],
     width: u16,
     animations_enabled: bool,
-    active_working_started_at: Option<std::time::Instant>,
 ) -> Vec<Line<'static>> {
     let mut lines = vec![pretty_header(snapshot)];
     if let Err(error) = validate_spine_tree_snapshot(snapshot) {
@@ -389,7 +315,6 @@ fn pretty_display_lines(
         &mut lines,
         overlays_at_root && !overlays.is_empty(),
         animations_enabled,
-        active_working_started_at,
     );
     if overlays_at_root {
         for (index, overlay) in overlays.iter().enumerate() {
@@ -435,35 +360,15 @@ fn render_pretty_node(
     width: u16,
     out: &mut Vec<Line<'static>>,
     animations_enabled: bool,
-    active_working_started_at: Option<std::time::Instant>,
 ) {
     let children = child_nodes(snapshot, Some(node.node_id.as_str()));
     let active = node.node_id == snapshot.active_node_id;
     let line_prefix = format!("{}{}", prefix, pretty_branch(is_last));
     let child_prefix = format!("{}{}", prefix, pretty_child_prefix(is_last));
-    let node_is_working = active && active_working_started_at.is_some();
     let mut spans = vec![Span::from(line_prefix).dim()];
-    spans.push(if node_is_working {
-        blue_breathing_marker(
-            active_working_started_at,
-            MotionMode::from_animations_enabled(animations_enabled),
-            "◉",
-            "◌",
-        )
-    } else {
-        pretty_marker(node, active, !children.is_empty())
-    });
+    spans.push(pretty_marker(node, active, !children.is_empty()));
     spans.push(" ".into());
-    let label = pretty_node_label_text(node, active);
-    if node_is_working {
-        spans.extend(white_shimmer_text(
-            &label,
-            active_working_started_at.expect("working node has a presentation start"),
-            MotionMode::from_animations_enabled(animations_enabled),
-        ));
-    } else {
-        spans.push(Span::from(label));
-    }
+    spans.push(Span::from(pretty_node_label_text(node, active)));
 
     let line = Line::from(spans);
     let wrapped = adaptive_wrap_line(
@@ -472,6 +377,10 @@ fn render_pretty_node(
             .subsequent_indent(Span::from(format!("{child_prefix}  ")).dim().into()),
     );
     push_owned_lines(&wrapped, out);
+
+    if should_collapse_pretty_subtree(node, !children.is_empty(), active_path) {
+        return;
+    }
 
     let node_overlays = if active { overlays } else { &[] };
     render_pretty_nodes(
@@ -484,7 +393,6 @@ fn render_pretty_node(
         out,
         !node_overlays.is_empty(),
         animations_enabled,
-        active_working_started_at,
     );
     for (index, overlay) in node_overlays.iter().enumerate() {
         out.extend(overlay.display_lines(
@@ -506,7 +414,6 @@ fn render_pretty_nodes(
     out: &mut Vec<Line<'static>>,
     has_trailing_overlay: bool,
     animations_enabled: bool,
-    active_working_started_at: Option<std::time::Instant>,
 ) {
     let items = pretty_render_items(snapshot, nodes, active_path);
     let item_count = items.len();
@@ -527,7 +434,6 @@ fn render_pretty_nodes(
                     width,
                     out,
                     animations_enabled,
-                    active_working_started_at,
                 );
             }
         }
@@ -563,6 +469,9 @@ fn append_pretty_raw_nodes(
                     marker,
                     pretty_node_label_text(node, active)
                 )));
+                if should_collapse_pretty_subtree(node, !children.is_empty(), active_path) {
+                    continue;
+                }
                 let child_prefix = format!("{}{}", prefix, pretty_child_prefix(is_last));
                 append_pretty_raw_nodes(snapshot, &children, active_path, &child_prefix, out);
             }
@@ -651,11 +560,24 @@ fn pretty_sibling_items<'a>(
 }
 
 fn bucketable_history_node(node: &SpineTreeNode, active_path: &HashSet<&str>) -> bool {
+    is_completed_history_node(node)
+        && trimmed_summary(node).is_none()
+        && !active_path.contains(node.node_id.as_str())
+}
+
+fn should_collapse_pretty_subtree(
+    node: &SpineTreeNode,
+    has_children: bool,
+    active_path: &HashSet<&str>,
+) -> bool {
+    has_children && is_completed_history_node(node) && !active_path.contains(node.node_id.as_str())
+}
+
+fn is_completed_history_node(node: &SpineTreeNode) -> bool {
     matches!(
         node.status,
         SpineTreeNodeStatus::Closed | SpineTreeNodeStatus::Compacted
-    ) && trimmed_summary(node).is_none()
-        && !active_path.contains(node.node_id.as_str())
+    )
 }
 
 fn pretty_sibling_item_history_count(item: &PrettySiblingItem<'_>) -> usize {
@@ -779,7 +701,10 @@ fn trimmed_summary(node: &SpineTreeNode) -> Option<&str> {
 
 fn should_elide_pretty_node(node: &SpineTreeNode, has_children: bool, active: bool) -> bool {
     node.kind == SpineTreeNodeKind::RootEpoch
-        || (has_children && !active && trimmed_summary(node).is_none())
+        || (has_children
+            && !active
+            && trimmed_summary(node).is_none()
+            && !is_completed_history_node(node))
 }
 
 fn pretty_default_node_label(node: &SpineTreeNode, active: bool) -> &'static str {
@@ -1050,6 +975,93 @@ mod tests {
     }
 
     #[test]
+    fn collapses_completed_parent_subtrees_after_root_epoch_promotion() {
+        let snapshot = snapshot(
+            "2.1",
+            vec![
+                root_epoch("1", Some("root"), SpineTreeNodeStatus::Compacted),
+                node(
+                    "1.1",
+                    Some("1"),
+                    Some("compacted parent"),
+                    SpineTreeNodeStatus::Compacted,
+                ),
+                node(
+                    "1.1.1",
+                    Some("1.1"),
+                    Some("hidden compacted child"),
+                    SpineTreeNodeStatus::Closed,
+                ),
+                node(
+                    "1.2",
+                    Some("1"),
+                    Some("closed parent"),
+                    SpineTreeNodeStatus::Closed,
+                ),
+                node(
+                    "1.2.1",
+                    Some("1.2"),
+                    Some("hidden closed child"),
+                    SpineTreeNodeStatus::Closed,
+                ),
+                root_epoch("2", Some("root"), SpineTreeNodeStatus::Opened),
+                node(
+                    "2.1",
+                    Some("2"),
+                    Some("active task"),
+                    SpineTreeNodeStatus::Live,
+                ),
+            ],
+        );
+        let pretty = new_spine_tree_snapshot(snapshot.clone());
+
+        insta::assert_snapshot!(render(&pretty.display_lines(80)), @r###"
+        • Spine Tree
+          ├ ◌ compacted parent
+          ├ ✓ closed parent
+          └ ◉ active task
+        "###);
+        let raw = render(&pretty.raw_lines());
+        assert!(!raw.contains("hidden compacted child"), "{raw}");
+        assert!(!raw.contains("hidden closed child"), "{raw}");
+
+        let debug = render(&new_debug_spine_tree_snapshot(snapshot).display_lines(80));
+        assert!(debug.contains("hidden compacted child"), "{debug}");
+        assert!(debug.contains("hidden closed child"), "{debug}");
+    }
+
+    #[test]
+    fn folds_anonymous_completed_parent_as_one_previous_task() {
+        let cell = new_spine_tree_snapshot(snapshot(
+            "2.1",
+            vec![
+                root_epoch("1", Some("root"), SpineTreeNodeStatus::Compacted),
+                node("1.1", Some("1"), None, SpineTreeNodeStatus::Compacted),
+                node(
+                    "1.1.1",
+                    Some("1.1"),
+                    Some("hidden historical child"),
+                    SpineTreeNodeStatus::Closed,
+                ),
+                root_epoch("2", Some("root"), SpineTreeNodeStatus::Opened),
+                node(
+                    "2.1",
+                    Some("2"),
+                    Some("active task"),
+                    SpineTreeNodeStatus::Live,
+                ),
+            ],
+        ));
+
+        insta::assert_snapshot!(render(&cell.display_lines(80)), @r###"
+        • Spine Tree
+          ├ ◌ 1 previous task
+          └ ◉ active task
+        "###);
+        assert!(!render(&cell.raw_lines()).contains("hidden historical child"));
+    }
+
+    #[test]
     fn hides_root_epochs_and_promotes_their_tasks_in_display_and_raw() {
         let cell = new_spine_tree_snapshot(snapshot(
             "3.2",
@@ -1280,8 +1292,8 @@ mod tests {
     }
 
     #[test]
-    fn live_tail_highlights_only_the_active_node() {
-        let mut state = SpineTreeViewState::new(false);
+    fn live_tail_keeps_tree_static_while_spawn_overlay_animates() {
+        let mut state = SpineTreeViewState::new(true);
         state.apply_tree_update(snapshot(
             "1.1",
             vec![
@@ -1313,6 +1325,7 @@ mod tests {
         });
 
         let live = state.render_cell().expect("live tree should render");
+        assert!(live.transcript_animation_tick().is_some());
         let lines = live.display_lines(80);
         let active_line = lines
             .iter()
@@ -1335,7 +1348,7 @@ mod tests {
 
         assert_eq!(marker.style.fg, Some(Color::Cyan));
         assert!(marker.style.add_modifier.contains(Modifier::BOLD));
-        assert_eq!(summary.style.fg, None);
+        assert_eq!(summary.style, Style::default());
 
         let snapshot = state.snapshot_cell().expect("snapshot should render");
         let static_lines = snapshot.display_lines(80);
@@ -1367,46 +1380,6 @@ mod tests {
 
         assert!(state.render_cell().is_none());
         assert!(state.snapshot_cell().is_some());
-    }
-
-    #[test]
-    fn working_snapshot_animates_while_active_and_freezes_for_history() {
-        let mut state = SpineTreeViewState::new(true);
-        state.apply_tree_update(snapshot(
-            "1",
-            vec![node(
-                "1",
-                None,
-                Some("working inspection"),
-                SpineTreeNodeStatus::Live,
-            )],
-        ));
-        let alive = Arc::new(AtomicBool::new(true));
-        let mut cell = state
-            .working_snapshot_cell(SpineTreeWorkingPresentation::current_turn(
-                Instant::now(),
-                Arc::clone(&alive),
-            ))
-            .expect("working snapshot should render");
-
-        assert!(state.render_cell().is_none());
-        assert!(cell.transcript_animation_tick().is_some());
-        assert!(
-            cell.display_lines(80)
-                .iter()
-                .any(|line| line.to_string().contains("working inspection"))
-        );
-
-        cell.finalize_for_history();
-
-        assert!(alive.load(Ordering::Relaxed));
-        assert_eq!(cell.transcript_animation_tick(), None);
-        assert!(state.render_cell().is_none());
-        assert!(
-            cell.display_lines(80)
-                .iter()
-                .any(|line| line.to_string().contains("working inspection"))
-        );
     }
 
     #[test]

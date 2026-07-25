@@ -145,7 +145,6 @@ pub(crate) use session::*;
 pub(crate) use spine_spawn_progress::spine_spawn_status;
 pub(crate) use spine_tree::SpineTreeUpdateCell;
 pub(crate) use spine_tree::SpineTreeViewState;
-pub(crate) use spine_tree::SpineTreeWorkingPresentation;
 pub(crate) use spine_tree::new_debug_spine_node_snapshot;
 pub(crate) use spine_tree::new_debug_spine_tree_snapshot;
 
@@ -292,12 +291,6 @@ pub(crate) trait HistoryCell: std::fmt::Debug + Send + Sync + Any {
     fn is_stream_continuation(&self) -> bool {
         false
     }
-
-    /// Freezes presentation-only state before this cell is committed to terminal history.
-    ///
-    /// Active cells may animate while they occupy the redrawable live viewport. Terminal
-    /// scrollback is immutable, so committed cells must render a stable final representation.
-    fn finalize_for_history(&mut self) {}
 
     /// Returns a coarse "animation tick" when transcript output is time-dependent.
     ///

@@ -9,16 +9,13 @@ use std::hash::Hasher;
 use std::time::Duration;
 use std::time::Instant;
 
-use ratatui::style::Color;
 use ratatui::style::Modifier;
-use ratatui::style::Style;
 use ratatui::style::Stylize;
 use ratatui::text::Span;
 
 use crate::shimmer::green_shimmer_spans;
 use crate::shimmer::motion_green_style;
 use crate::shimmer::shimmer_spans;
-use crate::shimmer::white_shimmer_spans;
 
 pub(crate) const ORGANIC_ACTIVITY_WORDS: &[&str] = &[
     "Germinating",
@@ -158,39 +155,6 @@ pub(crate) fn green_growth_marker(elapsed: Duration, motion_mode: MotionMode) ->
     }
 }
 
-pub(crate) fn blue_breathing_marker(
-    start_time: Option<Instant>,
-    motion_mode: MotionMode,
-    full_marker: &'static str,
-    quiet_marker: &'static str,
-) -> Span<'static> {
-    breathing_styled_marker(
-        start_time,
-        motion_mode,
-        full_marker,
-        quiet_marker,
-        Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD),
-    )
-}
-
-fn breathing_styled_marker(
-    start_time: Option<Instant>,
-    motion_mode: MotionMode,
-    full_marker: &'static str,
-    quiet_marker: &'static str,
-    style: Style,
-) -> Span<'static> {
-    match motion_mode {
-        MotionMode::Animated => {
-            let elapsed = start_time.map(|st| st.elapsed()).unwrap_or_default();
-            breathing_marker(elapsed, full_marker, quiet_marker, style)
-        }
-        MotionMode::Reduced => Span::styled(full_marker, style),
-    }
-}
-
 pub(crate) fn green_shimmer_text(text: &str, motion_mode: MotionMode) -> Vec<Span<'static>> {
     match motion_mode {
         MotionMode::Animated => green_shimmer_spans(text),
@@ -199,23 +163,6 @@ pub(crate) fn green_shimmer_text(text: &str, motion_mode: MotionMode) -> Vec<Spa
                 Vec::new()
             } else {
                 vec![Span::styled(text.to_string(), motion_green_style())]
-            }
-        }
-    }
-}
-
-pub(crate) fn white_shimmer_text(
-    text: &str,
-    started_at: Instant,
-    motion_mode: MotionMode,
-) -> Vec<Span<'static>> {
-    match motion_mode {
-        MotionMode::Animated => white_shimmer_spans(text, started_at),
-        MotionMode::Reduced => {
-            if text.is_empty() {
-                Vec::new()
-            } else {
-                vec![text.to_string().into()]
             }
         }
     }
@@ -260,24 +207,6 @@ fn animated_green_activity_indicator(start_time: Option<Instant>) -> Span<'stati
     }
 }
 
-fn breathing_marker(
-    elapsed: std::time::Duration,
-    full_marker: &'static str,
-    quiet_marker: &'static str,
-    style: Style,
-) -> Span<'static> {
-    if (elapsed.as_millis() / 600).is_multiple_of(2) {
-        Span::styled(full_marker, style)
-    } else {
-        let quiet_style = if style.add_modifier.contains(Modifier::BOLD) {
-            style.remove_modifier(Modifier::BOLD)
-        } else {
-            style
-        };
-        Span::styled(quiet_marker, quiet_style.add_modifier(Modifier::DIM))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -313,10 +242,6 @@ mod tests {
         assert_eq!(
             shimmer_text("Loading", MotionMode::Reduced),
             vec!["Loading".into()]
-        );
-        assert_eq!(
-            white_shimmer_text("Active node", Instant::now(), MotionMode::Reduced),
-            vec!["Active node".into()]
         );
         assert_eq!(
             shimmer_text("", MotionMode::Reduced),
@@ -377,38 +302,6 @@ mod tests {
         for glyph in [".", "ʏ", "Ү", "ϒ"] {
             assert_eq!(UnicodeWidthStr::width(glyph), 1, "{glyph}");
         }
-    }
-
-    #[test]
-    fn breathing_marker_alternates_glyph_weight() {
-        let green = motion_green_style();
-        assert_eq!(
-            breathing_marker(std::time::Duration::from_millis(0), "◉", "◌", green),
-            Span::styled("◉", green)
-        );
-        assert_eq!(
-            breathing_marker(std::time::Duration::from_millis(600), "◉", "◌", green),
-            Span::styled("◌", green.add_modifier(ratatui::style::Modifier::DIM))
-        );
-    }
-
-    #[test]
-    fn blue_breathing_marker_uses_the_original_active_node_color() {
-        let blue = Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD);
-        assert_eq!(
-            breathing_marker(std::time::Duration::from_millis(0), "◉", "◌", blue),
-            Span::styled("◉", blue)
-        );
-        assert_eq!(
-            breathing_marker(std::time::Duration::from_millis(600), "◉", "◌", blue),
-            Span::styled(
-                "◌",
-                blue.remove_modifier(Modifier::BOLD)
-                    .add_modifier(Modifier::DIM)
-            )
-        );
     }
 
     #[test]

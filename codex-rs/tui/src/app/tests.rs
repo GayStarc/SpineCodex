@@ -636,8 +636,7 @@ async fn inactive_thread_replay_restores_spawn_progress_projection() -> Result<(
 }
 
 #[tokio::test]
-async fn working_spine_tree_command_uses_an_active_snapshot_that_freezes_with_the_turn()
--> Result<()> {
+async fn working_spine_tree_command_inserts_a_static_snapshot_without_a_live_tail() -> Result<()> {
     let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
     let thread_id = ThreadId::new();
     let cwd = tempdir()?;
@@ -685,63 +684,20 @@ async fn working_spine_tree_command_uses_an_active_snapshot_that_freezes_with_th
     .await?;
 
     assert!(
-        app.transcript_cells.is_empty(),
-        "the working command snapshot should remain redrawable until it is committed"
-    );
-    assert!(
         app.spine_tree_views
             .get(&thread_id)
             .is_some_and(|state| state.render_cell().is_none()),
         "a command snapshot must not occupy the Spine live-tail slot"
     );
-    let active_lines = app
-        .chat_widget
-        .active_cell_transcript_lines(80)
-        .expect("working snapshot should use the active command-output cell");
-    assert!(
-        active_lines
-            .iter()
-            .any(|line| line.to_string().contains("working inspection"))
-    );
-    let animation_ticks = app
-        .chat_widget
-        .active_cell_transcript_key()
-        .expect("active command snapshot")
-        .animation_ticks;
-    assert!(animation_ticks[0].is_some());
     assert_eq!(
-        &animation_ticks[1..],
-        &[None, None],
-        "only the active command-output cell should own this animation"
-    );
-
-    app.chat_widget.handle_server_notification(
-        turn_completed_notification(thread_id, "turn-working", TurnStatus::Completed),
-        /*replay_kind*/ None,
+        app.chat_widget.active_cell_transcript_lines(80),
+        None,
+        "a static command snapshot must not occupy the active cell"
     );
     assert!(
-        app.chat_widget
-            .active_cell_transcript_lines(80)
-            .is_some_and(|lines| lines
-                .iter()
-                .any(|line| line.to_string().contains("working inspection"))),
-        "the command snapshot should freeze in place instead of disappearing"
+        app_event_rx.try_recv().is_err(),
+        "the command snapshot must not be requeued behind later app events"
     );
-    assert!(
-        app.chat_widget
-            .active_cell_transcript_key()
-            .expect("frozen command snapshot remains active")
-            .animation_ticks
-            .iter()
-            .all(Option::is_none),
-        "turn completion must stop the command snapshot animation"
-    );
-
-    app.chat_widget
-        .add_info_message("after snapshot".to_string(), None);
-    while let Ok(event) = app_event_rx.try_recv() {
-        app.handle_event(&mut tui, &mut app_server, event).await?;
-    }
     let committed_snapshot = app
         .transcript_cells
         .iter()
@@ -750,7 +706,7 @@ async fn working_spine_tree_command_uses_an_active_snapshot_that_freezes_with_th
                 .iter()
                 .any(|line| line.to_string().contains("working inspection"))
         })
-        .expect("working snapshot should commit at its command position");
+        .expect("command snapshot should commit at its command position");
     assert_eq!(committed_snapshot.transcript_animation_tick(), None);
 
     app_server.shutdown().await.expect("app server shutdown");

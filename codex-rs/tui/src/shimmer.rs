@@ -6,8 +6,6 @@ use ratatui::style::Color;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Span;
-use unicode_segmentation::UnicodeSegmentation;
-use unicode_width::UnicodeWidthStr;
 
 use crate::color::blend;
 use crate::terminal_palette::default_bg;
@@ -15,8 +13,6 @@ use crate::terminal_palette::default_fg;
 
 static PROCESS_START: OnceLock<Instant> = OnceLock::new();
 const MOTION_GREEN_RGB: (u8, u8, u8) = (32, 160, 80);
-const WHITE_SWEEP_COLUMNS_PER_SECOND: f64 = 20.0;
-const SWEEP_PADDING_COLUMNS: usize = 10;
 
 fn elapsed_since_start() -> Duration {
     let start = PROCESS_START.get_or_init(Instant::now);
@@ -40,17 +36,6 @@ pub(crate) fn green_shimmer_spans(text: &str) -> Vec<Span<'static>> {
         MOTION_GREEN_RGB,
         (160, 255, 190),
         ShimmerFallback::Solid(Color::Green),
-    )
-}
-
-pub(crate) fn white_shimmer_spans(text: &str, started_at: Instant) -> Vec<Span<'static>> {
-    white_shimmer_spans_at(
-        text,
-        fixed_speed_position(
-            started_at.elapsed(),
-            UnicodeWidthStr::width(text),
-            WHITE_SWEEP_COLUMNS_PER_SECOND,
-        ),
     )
 }
 
@@ -108,53 +93,6 @@ fn shimmer_spans_with_palette(
     spans
 }
 
-fn white_shimmer_spans_at(text: &str, pos: usize) -> Vec<Span<'static>> {
-    style_runs(text, |column| {
-        let intensity = band_intensity(column, pos, SWEEP_PADDING_COLUMNS);
-        if intensity < 0.4 {
-            Style::default()
-        } else {
-            Style::default().add_modifier(Modifier::BOLD)
-        }
-    })
-}
-
-fn style_runs(text: &str, style_at: impl Fn(usize) -> Style) -> Vec<Span<'static>> {
-    let mut spans = Vec::with_capacity(5);
-    let mut current_style = None;
-    let mut current_text = String::new();
-
-    let mut column = 0;
-    for grapheme in text.graphemes(true) {
-        let width = UnicodeWidthStr::width(grapheme);
-        let style = style_at(column + width / 2);
-        if current_style.is_some_and(|current| current != style) {
-            spans.push(Span::styled(
-                std::mem::take(&mut current_text),
-                current_style.expect("style exists"),
-            ));
-        }
-        if current_style != Some(style) {
-            current_style = Some(style);
-        }
-        current_text.push_str(grapheme);
-        column += width;
-    }
-
-    if let Some(style) = current_style {
-        spans.push(Span::styled(current_text, style));
-    }
-    spans
-}
-
-fn fixed_speed_position(elapsed: Duration, text_width: usize, columns_per_second: f64) -> usize {
-    let period = text_width + SWEEP_PADDING_COLUMNS * 2;
-    if period == 0 {
-        return 0;
-    }
-    ((elapsed.as_secs_f64() * columns_per_second).floor() as usize) % period
-}
-
 fn sweep_position(text_len: usize) -> usize {
     let padding = 10usize;
     let period = text_len + padding * 2;
@@ -190,62 +128,5 @@ fn color_for_level(intensity: f32) -> Style {
         Style::default()
     } else {
         Style::default().add_modifier(Modifier::BOLD)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn white_sweep_uses_bounded_style_runs() {
-        let text = "A long active summary remains white throughout its sweep";
-        let spans = white_shimmer_spans_at(text, 30);
-
-        assert_eq!(
-            spans
-                .iter()
-                .map(|span| span.content.as_ref())
-                .collect::<String>(),
-            text
-        );
-        assert!(spans.len() <= 3, "{spans:#?}");
-        assert!(spans.iter().any(|span| span.style == Style::default()));
-        assert!(spans.iter().all(|span| span.style.fg.is_none()));
-        assert!(
-            spans
-                .iter()
-                .any(|span| span.style.add_modifier.contains(Modifier::BOLD))
-        );
-    }
-
-    #[test]
-    fn white_sweep_preserves_grapheme_boundaries() {
-        let text = "A e\u{301} 👩‍💻 Z";
-        let spans = white_shimmer_spans_at(text, 14);
-        let grapheme_boundaries = text
-            .grapheme_indices(true)
-            .map(|(index, _)| index)
-            .chain(std::iter::once(text.len()))
-            .collect::<std::collections::HashSet<_>>();
-        let mut byte_offset = 0;
-
-        for span in &spans {
-            byte_offset += span.content.len();
-            assert!(
-                grapheme_boundaries.contains(&byte_offset),
-                "span boundary {byte_offset} splits a grapheme in {text:?}"
-            );
-        }
-        assert_eq!(byte_offset, text.len());
-        assert!(white_shimmer_spans_at("", 0).is_empty());
-    }
-
-    #[test]
-    fn white_sweep_uses_length_independent_column_speed() {
-        let elapsed = Duration::from_millis(750);
-        assert_eq!(fixed_speed_position(elapsed, 20, 20.0), 15);
-        assert_eq!(fixed_speed_position(elapsed, 200, 20.0), 15);
-        assert_eq!(fixed_speed_position(Duration::from_secs(3), 40, 20.0), 0);
     }
 }
