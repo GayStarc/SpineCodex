@@ -2335,6 +2335,35 @@ async fn spine_observer_delivery_follows_each_session_transition() {
 }
 
 #[tokio::test]
+async fn rollout_reconstruction_observer_waits_for_publish() {
+    let (session, turn_context, rx) = make_session_and_context_with_auth_and_config_and_rx(
+        CodexAuth::from_api_key("Test API Key"),
+        Vec::new(),
+        |config| {
+            let _ = config.features.enable(Feature::SpineJit);
+        },
+    )
+    .await;
+    let rollout = [RolloutItem::ResponseItem(user_message("replacement"))];
+
+    session
+        .install_rollout_reconstruction(turn_context.as_ref(), &rollout)
+        .await;
+    assert!(
+        rx.try_recv().is_err(),
+        "reconstruction must not publish before the rollback barrier"
+    );
+
+    session
+        .publish_rollout_reconstruction(turn_context.as_ref())
+        .await;
+    assert!(matches!(
+        rx.recv().await.expect("replacement tree event").msg,
+        EventMsg::SpineTreeUpdate(_)
+    ));
+}
+
+#[tokio::test]
 async fn prepares_image_failures_before_history_insertion() {
     let (session, turn_context, _rx) = make_session_and_context_with_auth_and_config_and_rx(
         CodexAuth::from_api_key("Test API Key"),

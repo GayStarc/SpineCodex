@@ -135,6 +135,18 @@ impl SessionState {
         spine.replay(rollout_items, &mut self.history);
     }
 
+    pub(crate) fn defer_spine_observer(&mut self) {
+        if let Some(spine) = &mut self.spine_runtime {
+            spine.defer_observer();
+        }
+    }
+
+    pub(crate) fn publish_deferred_spine_observer(&mut self) {
+        if let Some(spine) = &mut self.spine_runtime {
+            spine.publish_deferred_observer();
+        }
+    }
+
     pub(crate) fn replace_history(
         &mut self,
         items: Vec<ResponseItem>,

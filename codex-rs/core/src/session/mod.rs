@@ -1523,6 +1523,7 @@ impl Session {
         prepare_response_items(&mut history);
         {
             let mut state = self.state.lock().await;
+            state.defer_spine_observer();
             state.replace_history_from_rollout(history, reference_context_item, rollout_items);
             if let Some(world_state) = world_state_baseline {
                 state.history.set_world_state_baseline(world_state);
@@ -1556,12 +1557,9 @@ impl Session {
         previous_turn_settings
     }
 
-    async fn publish_rollout_reconstruction(&self, turn_context: &TurnContext) {
-        let observer_effect = {
-            let mut state = self.state.lock().await;
-            state.take_spine_observer_effect()
-        };
-        crate::spine::session_observer::dispatch(self, &turn_context.sub_id, observer_effect).await;
+    async fn publish_rollout_reconstruction(&self, _turn_context: &TurnContext) {
+        let mut state = self.state.lock().await;
+        state.publish_deferred_spine_observer();
     }
 
     async fn set_auto_compact_window_estimated_prefill_for_scope(

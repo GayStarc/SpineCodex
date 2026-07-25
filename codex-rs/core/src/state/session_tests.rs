@@ -1404,44 +1404,15 @@ async fn spine_tree_spawn_outcome_belongs_only_to_the_spawned_node() {
     let mut state = SessionState::new(session_configuration);
     let (spawn_call, spawn_output) = spawn_call_and_output();
 
-    state.append_spine_inputs(&[
-        RolloutItem::ResponseItem(ResponseItem::FunctionCall {
-            id: None,
-            name: "spine.open".to_string(),
-            namespace: None,
-            arguments: r#"{"summary":"parent"}"#.to_string(),
-            call_id: "open-parent".to_string(),
-            internal_chat_message_metadata_passthrough: None,
-        }),
-        RolloutItem::ResponseItem(ResponseItem::FunctionCallOutput {
-            id: None,
-            call_id: "open-parent".to_string(),
-            output: FunctionCallOutputPayload {
-                body: FunctionCallOutputBody::Text("Spine open accepted.".to_string()),
-                success: Some(true),
-            },
-            internal_chat_message_metadata_passthrough: None,
-        }),
-        RolloutItem::ResponseItem(spawn_call),
-        RolloutItem::ResponseItem(spawn_output),
-        RolloutItem::ResponseItem(ResponseItem::FunctionCall {
-            id: None,
-            name: "spine.close".to_string(),
-            namespace: None,
-            arguments: r#"{"memory":"parent completed normally"}"#.to_string(),
-            call_id: "close-parent".to_string(),
-            internal_chat_message_metadata_passthrough: None,
-        }),
-        RolloutItem::ResponseItem(ResponseItem::FunctionCallOutput {
-            id: None,
-            call_id: "close-parent".to_string(),
-            output: FunctionCallOutputPayload {
-                body: FunctionCallOutputBody::Text("Spine close accepted.".to_string()),
-                success: Some(true),
-            },
-            internal_chat_message_metadata_passthrough: None,
-        }),
-    ]);
+    let mut items = spine_open_items("parent", "open-parent");
+    items.extend([spawn_call, spawn_output]);
+    items.extend(spine_transition_items(
+        "spine.close",
+        serde_json::json!({"memory": "parent completed normally"}).to_string(),
+        "close-parent",
+        "Spine close accepted.",
+    ));
+    state.record_items(items.iter(), TruncationPolicy::Tokens(10_000));
 
     let snapshot = state.spine_tree_update().expect("tree enabled");
     let parent = snapshot

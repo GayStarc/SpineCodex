@@ -216,6 +216,14 @@ impl SessionSpineRuntime {
             .replace_last_turn_images(placeholder);
     }
 
+    pub(crate) fn defer_observer(&mut self) {
+        self.runtime.observer_mut().defer();
+    }
+
+    pub(crate) fn publish_deferred_observer(&mut self) {
+        self.runtime.observer_mut().publish_deferred();
+    }
+
     #[cfg(test)]
     pub(crate) fn tree_update(&self) -> Option<codex_protocol::protocol::SpineTreeUpdateEvent> {
         self.jit_enabled
