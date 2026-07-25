@@ -435,7 +435,7 @@ impl App {
             })?;
             let close_overlay = t.is_done();
             if !close_overlay
-                && active_key.is_some_and(|key| key.animation_tick.is_some())
+                && active_key.is_some_and(|key| key.animation_ticks.iter().any(Option::is_some))
                 && t.is_scrolled_to_bottom()
             {
                 tui.frame_requester()

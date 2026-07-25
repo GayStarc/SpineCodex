@@ -774,12 +774,12 @@ pub(crate) struct ActiveCellTranscriptKey {
     /// Whether the active cell continues the prior stream, which affects
     /// spacing between transcript blocks.
     pub(crate) is_stream_continuation: bool,
-    /// Optional animation tick for time-dependent transcript output.
+    /// Animation ticks for time-dependent transcript output.
     ///
-    /// When this changes, the overlay recomputes the cached tail even if the revision and width
-    /// are unchanged, which is how shimmer/spinner visuals can animate in the overlay without any
-    /// underlying data change.
-    pub(crate) animation_tick: Option<u64>,
+    /// A separate slot is retained for each independently rendered live cell so a slower source
+    /// cannot mask a faster one. When any slot changes, the overlay recomputes the cached tail even
+    /// if the revision and width are unchanged.
+    pub(crate) animation_ticks: [Option<u64>; 3],
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -1945,15 +1945,12 @@ impl ChatWidget {
             is_stream_continuation: cell
                 .map(|cell| cell.is_stream_continuation())
                 .unwrap_or(false),
-            animation_tick: cell
-                .and_then(|cell| cell.transcript_animation_tick())
-                .or_else(|| {
-                    hook_cell.and_then(super::history_cell::HistoryCell::transcript_animation_tick)
-                })
-                .or_else(|| {
-                    spine_tree_cell
-                        .and_then(super::history_cell::HistoryCell::transcript_animation_tick)
-                }),
+            animation_ticks: [
+                cell.and_then(|cell| cell.transcript_animation_tick()),
+                hook_cell.and_then(super::history_cell::HistoryCell::transcript_animation_tick),
+                spine_tree_cell
+                    .and_then(super::history_cell::HistoryCell::transcript_animation_tick),
+            ],
         })
     }
 

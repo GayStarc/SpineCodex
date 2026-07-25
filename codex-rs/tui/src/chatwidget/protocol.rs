@@ -65,6 +65,17 @@ impl ChatWidget {
                 }
             }
             ServerNotification::TurnCompleted(notification) => {
+                if matches!(
+                    notification.turn.status,
+                    TurnStatus::Interrupted | TurnStatus::Failed
+                ) && let Ok(parent_thread_id) = ThreadId::from_string(&notification.thread_id)
+                {
+                    self.app_event_tx
+                        .send(AppEvent::ClearIncompleteSpineOverlays {
+                            parent_thread_id,
+                            turn_id: Some(notification.turn.id.clone()),
+                        });
+                }
                 self.handle_turn_completed_notification(notification, replay_kind);
             }
             ServerNotification::ItemStarted(notification) => {
@@ -196,7 +207,14 @@ impl ChatWidget {
                     notification.action,
                 );
             }
-            ServerNotification::ThreadClosed(_) => {
+            ServerNotification::ThreadClosed(notification) => {
+                if let Ok(parent_thread_id) = ThreadId::from_string(&notification.thread_id) {
+                    self.app_event_tx
+                        .send(AppEvent::ClearIncompleteSpineOverlays {
+                            parent_thread_id,
+                            turn_id: None,
+                        });
+                }
                 if !from_replay {
                     self.on_shutdown_complete();
                 }

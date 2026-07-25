@@ -221,12 +221,8 @@ impl SpineSpawnOverlay {
         lines
     }
 
-    pub(crate) fn running_animation_start(&self) -> Option<Instant> {
-        self.notification
-            .tasks
-            .iter()
-            .any(|task| task.status == CollabAgentStatus::Running)
-            .then_some(self.started_at)
+    pub(crate) fn animation_start(&self) -> Instant {
+        self.started_at
     }
 
     #[cfg(test)]

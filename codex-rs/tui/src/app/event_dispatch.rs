@@ -312,6 +312,25 @@ impl App {
                     tui.frame_requester().schedule_frame();
                 }
             }
+            AppEvent::ClearIncompleteSpineOverlays {
+                parent_thread_id,
+                turn_id,
+            } => {
+                let live = self
+                    .spine_tree_views
+                    .get_mut(&parent_thread_id)
+                    .and_then(|state| {
+                        state
+                            .clear_incomplete_spawn_overlays(turn_id.as_deref())
+                            .then(|| (state.snapshot().cloned(), state.render_cell()))
+                    });
+                if self.chat_widget.thread_id() == Some(parent_thread_id)
+                    && let Some((snapshot, live_cell)) = live
+                {
+                    self.chat_widget.set_spine_tree_view(snapshot, live_cell);
+                    tui.frame_requester().schedule_frame();
+                }
+            }
             AppEvent::InvalidateSpineTreeView { thread_id } => {
                 self.spine_tree_views.remove(&thread_id);
                 if self.chat_widget.thread_id() == Some(thread_id) {

@@ -12,7 +12,9 @@ use ratatui::style::Stylize;
 use ratatui::text::Span;
 
 use crate::shimmer::green_shimmer_spans;
+use crate::shimmer::motion_green_style;
 use crate::shimmer::shimmer_spans;
+use crate::shimmer::white_green_shimmer_spans;
 
 pub(crate) const ORGANIC_ACTIVITY_WORDS: &[&str] = &[
     "Germinating",
@@ -121,8 +123,23 @@ pub(crate) fn green_activity_indicator(
         MotionMode::Animated => Some(animated_green_activity_indicator(start_time)),
         MotionMode::Reduced => match reduced_motion_indicator {
             ReducedMotionIndicator::Hidden => None,
-            ReducedMotionIndicator::StaticBullet => Some("•".green()),
+            ReducedMotionIndicator::StaticBullet => Some(Span::styled("•", motion_green_style())),
         },
+    }
+}
+
+pub(crate) fn green_breathing_marker(
+    start_time: Option<Instant>,
+    motion_mode: MotionMode,
+    full_marker: &'static str,
+    quiet_marker: &'static str,
+) -> Span<'static> {
+    match motion_mode {
+        MotionMode::Animated => {
+            let elapsed = start_time.map(|st| st.elapsed()).unwrap_or_default();
+            breathing_marker(elapsed, full_marker, quiet_marker)
+        }
+        MotionMode::Reduced => Span::styled(full_marker, motion_green_style()),
     }
 }
 
@@ -133,7 +150,20 @@ pub(crate) fn green_shimmer_text(text: &str, motion_mode: MotionMode) -> Vec<Spa
             if text.is_empty() {
                 Vec::new()
             } else {
-                vec![text.to_string().green()]
+                vec![Span::styled(text.to_string(), motion_green_style())]
+            }
+        }
+    }
+}
+
+pub(crate) fn white_green_shimmer_text(text: &str, motion_mode: MotionMode) -> Vec<Span<'static>> {
+    match motion_mode {
+        MotionMode::Animated => white_green_shimmer_spans(text),
+        MotionMode::Reduced => {
+            if text.is_empty() {
+                Vec::new()
+            } else {
+                vec![text.to_string().into()]
             }
         }
     }
@@ -164,14 +194,33 @@ fn animated_green_activity_indicator(start_time: Option<Instant>) -> Span<'stati
         green_shimmer_spans("•")
             .into_iter()
             .next()
-            .unwrap_or_else(|| "•".green())
+            .unwrap_or_else(|| Span::styled("•", motion_green_style()))
     } else {
         let blink_on = (elapsed.as_millis() / 600).is_multiple_of(2);
         if blink_on {
-            "•".green()
+            Span::styled("•", motion_green_style())
         } else {
-            "◦".green().dim()
+            Span::styled(
+                "◦",
+                motion_green_style().add_modifier(ratatui::style::Modifier::DIM),
+            )
         }
+    }
+}
+
+fn breathing_marker(
+    elapsed: std::time::Duration,
+    full_marker: &'static str,
+    quiet_marker: &'static str,
+) -> Span<'static> {
+    let green = motion_green_style();
+    if (elapsed.as_millis() / 600).is_multiple_of(2) {
+        Span::styled(full_marker, green)
+    } else {
+        Span::styled(
+            quiet_marker,
+            green.add_modifier(ratatui::style::Modifier::DIM),
+        )
     }
 }
 
@@ -212,8 +261,25 @@ mod tests {
             vec!["Loading".into()]
         );
         assert_eq!(
+            white_green_shimmer_text("Active node", MotionMode::Reduced),
+            vec!["Active node".into()]
+        );
+        assert_eq!(
             shimmer_text("", MotionMode::Reduced),
             Vec::<Span<'static>>::new()
+        );
+    }
+
+    #[test]
+    fn green_breathing_marker_alternates_glyph_weight() {
+        let green = motion_green_style();
+        assert_eq!(
+            breathing_marker(std::time::Duration::from_millis(0), "◉", "◌"),
+            Span::styled("◉", green)
+        );
+        assert_eq!(
+            breathing_marker(std::time::Duration::from_millis(600), "◉", "◌"),
+            Span::styled("◌", green.add_modifier(ratatui::style::Modifier::DIM))
         );
     }
 

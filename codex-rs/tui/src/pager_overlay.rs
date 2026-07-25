@@ -457,8 +457,8 @@ struct LiveTailKey {
     revision: u64,
     /// Whether the tail should be treated as a continuation for spacing.
     is_stream_continuation: bool,
-    /// Optional animation tick to refresh spinners/progress indicators.
-    animation_tick: Option<u64>,
+    /// Independent animation ticks to refresh all live spinners/progress indicators.
+    animation_ticks: [Option<u64>; 3],
 }
 
 impl TranscriptOverlay {
@@ -644,7 +644,7 @@ impl TranscriptOverlay {
             width,
             revision: key.revision,
             is_stream_continuation: key.is_stream_continuation,
-            animation_tick: key.animation_tick,
+            animation_ticks: key.animation_ticks,
         });
 
         if self.live_tail_key == next_key {
@@ -1098,7 +1098,7 @@ mod tests {
             Some(ActiveCellTranscriptKey {
                 revision: 1,
                 is_stream_continuation: false,
-                animation_tick: None,
+                animation_ticks: [None; 3],
             }),
             |_| Some(vec![HyperlinkLine::from("tail")]),
         );
@@ -1127,7 +1127,7 @@ mod tests {
             Some(ActiveCellTranscriptKey {
                 revision: 1,
                 is_stream_continuation: false,
-                animation_tick: None,
+                animation_ticks: [None; 3],
             }),
             |width| Some(cell.transcript_hyperlink_lines(width)),
         );
@@ -1150,7 +1150,7 @@ mod tests {
         let key = ActiveCellTranscriptKey {
             revision: 1,
             is_stream_continuation: false,
-            animation_tick: None,
+            animation_ticks: [None; 3],
         };
 
         overlay.sync_live_tail(/*width*/ 40, Some(key), |_| {
@@ -1163,6 +1163,20 @@ mod tests {
         });
 
         assert_eq!(calls.get(), 1);
+
+        overlay.sync_live_tail(
+            /*width*/ 40,
+            Some(ActiveCellTranscriptKey {
+                animation_ticks: [None, None, Some(1)],
+                ..key
+            }),
+            |_| {
+                calls.set(calls.get() + 1);
+                Some(vec![HyperlinkLine::from("animated tail")])
+            },
+        );
+
+        assert_eq!(calls.get(), 2);
     }
 
     fn buffer_to_text(buf: &Buffer, area: Rect) -> String {

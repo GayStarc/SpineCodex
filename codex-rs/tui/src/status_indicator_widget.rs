@@ -25,7 +25,7 @@ use crate::line_truncation::truncate_line_with_ellipsis_if_overflow;
 use crate::motion::MotionMode;
 use crate::motion::ReducedMotionIndicator;
 use crate::motion::activity_indicator;
-use crate::motion::green_activity_indicator;
+use crate::motion::green_breathing_marker;
 use crate::motion::green_shimmer_text;
 use crate::motion::shimmer_text;
 use crate::render::renderable::Renderable;
@@ -269,14 +269,10 @@ impl Renderable for StatusIndicatorWidget {
         if self.header == "Working"
             && let Some(activity_word) = self.organic_working_word
         {
-            if let Some(indicator) = green_activity_indicator(
-                Some(self.last_resume_at),
-                motion_mode,
-                ReducedMotionIndicator::StaticBullet,
-            ) {
-                spans.push(indicator);
-                spans.push(" ".into());
-            }
+            let indicator =
+                green_breathing_marker(Some(self.last_resume_at), motion_mode, "•", "◦");
+            spans.push(indicator);
+            spans.push(" ".into());
             spans.extend(green_shimmer_text(activity_word, motion_mode));
         } else {
             if let Some(indicator) = activity_indicator(

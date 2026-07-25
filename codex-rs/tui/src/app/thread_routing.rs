@@ -912,11 +912,6 @@ impl App {
         };
         self.route_spine_activity(thread_id, &notification, activity_status)
             .await;
-        if self.clear_incomplete_spine_overlays(thread_id, &notification) {
-            self.app_event_tx.send(AppEvent::SpineTreeViewChanged {
-                parent_thread_id: thread_id,
-            });
-        }
         let notification_status_change = SideParentStatusChange::for_notification(&notification);
 
         if should_send {
@@ -941,28 +936,6 @@ impl App {
         }
         self.refresh_pending_thread_approvals().await;
         Ok(())
-    }
-
-    fn clear_incomplete_spine_overlays(
-        &mut self,
-        parent_thread_id: ThreadId,
-        notification: &ServerNotification,
-    ) -> bool {
-        let turn_id = match notification {
-            ServerNotification::TurnCompleted(notification)
-                if matches!(
-                    notification.turn.status,
-                    TurnStatus::Interrupted | TurnStatus::Failed
-                ) =>
-            {
-                Some(notification.turn.id.as_str())
-            }
-            ServerNotification::ThreadClosed(_) => None,
-            _ => return false,
-        };
-        self.spine_tree_views
-            .get_mut(&parent_thread_id)
-            .is_some_and(|state| state.clear_incomplete_spawn_overlays(turn_id))
     }
 
     async fn route_spine_activity(

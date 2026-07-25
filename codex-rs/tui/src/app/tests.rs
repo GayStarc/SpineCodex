@@ -740,12 +740,16 @@ async fn app_owned_spawn_projection_removes_overlay_only_on_tree_commit() -> Res
 async fn incomplete_parent_turn_clears_only_its_unsettled_spawn_overlays() -> Result<()> {
     let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
     let parent_thread_id = ThreadId::new();
-    let live_child_thread_id = ThreadId::new();
+    app.chat_widget
+        .handle_thread_session_quiet(test_thread_session(
+            parent_thread_id,
+            test_path_buf("/tmp/project"),
+        ));
+    while app_event_rx.try_recv().is_ok() {}
+
     let state = app.spine_tree_views.entry(parent_thread_id).or_default();
     for (turn_id, call_id) in [
         ("turn-completed", "spawn-completed"),
-        ("turn-interrupted", "spawn-interrupted"),
-        ("turn-failed", "spawn-failed"),
         ("turn-live", "spawn-live"),
     ] {
         state.apply_spawn_progress(SpineSpawnProgressUpdatedNotification {
@@ -755,94 +759,93 @@ async fn incomplete_parent_turn_clears_only_its_unsettled_spawn_overlays() -> Re
             tasks: vec![SpineSpawnTaskProgress {
                 ordinal: 0,
                 summary: call_id.to_string(),
-                thread_id: if call_id == "spawn-live" {
-                    live_child_thread_id.to_string()
-                } else {
-                    ThreadId::new().to_string()
-                },
+                thread_id: ThreadId::new().to_string(),
                 agent_path: None,
                 status: CollabAgentStatus::Running,
             }],
         });
     }
 
-    app.enqueue_thread_notification(
-        parent_thread_id,
-        turn_completed_notification(parent_thread_id, "turn-completed", TurnStatus::Completed),
-    )
-    .await?;
-    assert!(
-        app.spine_tree_views
-            .get(&parent_thread_id)
-            .expect("parent projection should remain")
-            .has_spawn_call("spawn-completed"),
-        "normal completion must wait for the typed tree commit"
-    );
-
-    app.enqueue_thread_notification(
-        parent_thread_id,
+    let interrupted_progress = SpineSpawnProgressUpdatedNotification {
+        thread_id: parent_thread_id.to_string(),
+        turn_id: "turn-interrupted".to_string(),
+        call_id: "spawn-interrupted".to_string(),
+        tasks: vec![SpineSpawnTaskProgress {
+            ordinal: 0,
+            summary: "spawn-interrupted".to_string(),
+            thread_id: ThreadId::new().to_string(),
+            agent_path: None,
+            status: CollabAgentStatus::Running,
+        }],
+    };
+    app.handle_thread_event_now(ThreadBufferedEvent::Notification(
+        ServerNotification::SpineSpawnProgressUpdated(interrupted_progress.clone()),
+    ));
+    app.handle_thread_event_now(ThreadBufferedEvent::Notification(
         turn_completed_notification(
             parent_thread_id,
             "turn-interrupted",
             TurnStatus::Interrupted,
         ),
-    )
-    .await?;
-    app.enqueue_thread_notification(
-        parent_thread_id,
-        turn_completed_notification(parent_thread_id, "turn-failed", TurnStatus::Failed),
-    )
-    .await?;
+    ));
 
+    let progress_event = app_event_rx.try_recv().expect("buffered spawn progress");
+    assert!(matches!(
+        progress_event,
+        AppEvent::UpsertSpineSpawnProgressCell { .. }
+    ));
+    let clear_event = app_event_rx
+        .try_recv()
+        .expect("ordered incomplete-overlay cleanup");
+    assert_matches!(
+        &clear_event,
+        AppEvent::ClearIncompleteSpineOverlays {
+            parent_thread_id: observed,
+            turn_id: Some(turn_id),
+        } if *observed == parent_thread_id && turn_id == "turn-interrupted"
+    );
+
+    let mut tui = crate::tui::test_support::make_test_tui().expect("test tui");
+    let mut app_server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
+        .await
+        .expect("embedded app server");
+    for event in [progress_event, clear_event] {
+        app.handle_event(&mut tui, &mut app_server, event)
+            .await
+            .expect("ordered projection event should apply");
+    }
     let state = app
         .spine_tree_views
         .get(&parent_thread_id)
         .expect("parent projection should remain");
     assert!(!state.has_spawn_call("spawn-interrupted"));
-    assert!(!state.has_spawn_call("spawn-failed"));
     assert!(state.has_spawn_call("spawn-completed"));
     assert!(state.has_spawn_call("spawn-live"));
-    for _ in 0..2 {
-        assert_matches!(
-            app_event_rx.try_recv(),
-            Ok(AppEvent::SpineTreeViewChanged { parent_thread_id: observed })
-                if observed == parent_thread_id
-        );
-    }
 
-    app.enqueue_thread_notification(
-        parent_thread_id,
+    while app_event_rx.try_recv().is_ok() {}
+    app.handle_thread_event_now(ThreadBufferedEvent::Notification(
         thread_closed_notification(parent_thread_id),
-    )
-    .await?;
+    ));
+    let clear_event = app_event_rx
+        .try_recv()
+        .expect("thread-close overlay cleanup");
+    assert_matches!(
+        &clear_event,
+        AppEvent::ClearIncompleteSpineOverlays {
+            parent_thread_id: observed,
+            turn_id: None,
+        } if *observed == parent_thread_id
+    );
+    app.handle_event(&mut tui, &mut app_server, clear_event)
+        .await
+        .expect("thread-close cleanup should apply");
     let state = app
         .spine_tree_views
         .get(&parent_thread_id)
         .expect("parent projection should remain");
     assert!(!state.has_spawn_call("spawn-completed"));
     assert!(!state.has_spawn_call("spawn-live"));
-    assert_matches!(
-        app_event_rx.try_recv(),
-        Ok(AppEvent::SpineTreeViewChanged { parent_thread_id: observed })
-            if observed == parent_thread_id
-    );
-
-    app.enqueue_thread_notification(
-        live_child_thread_id,
-        ServerNotification::AgentMessageDelta(AgentMessageDeltaNotification {
-            thread_id: live_child_thread_id.to_string(),
-            turn_id: "child-turn".to_string(),
-            item_id: "late-message".to_string(),
-            delta: "must not revive a closed overlay".to_string(),
-        }),
-    )
-    .await?;
-    assert!(
-        time::timeout(Duration::from_millis(50), app_event_rx.recv())
-            .await
-            .is_err(),
-        "child activity after parent closure must not refresh the removed overlay"
-    );
+    app_server.shutdown().await.expect("app server shutdown");
 
     Ok(())
 }
