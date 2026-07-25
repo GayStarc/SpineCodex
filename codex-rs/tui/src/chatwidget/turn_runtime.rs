@@ -523,17 +523,35 @@ impl ChatWidget {
         self.request_redraw();
     }
 
+    pub(crate) fn show_spine_tree_snapshot(&mut self, cell: history_cell::SpineTreeUpdateCell) {
+        if self
+            .transcript
+            .active_cell
+            .as_ref()
+            .is_some_and(|active| active.as_any().is::<history_cell::SpineTreeUpdateCell>())
+        {
+            self.flush_active_cell();
+        }
+        if self.usage_history_insertion_blocked() {
+            self.app_event_tx
+                .send(AppEvent::InsertHistoryCell(Box::new(cell)));
+            return;
+        }
+        self.transcript.active_cell = Some(Box::new(cell));
+        self.bump_active_cell_revision();
+        self.request_redraw();
+    }
+
     pub(crate) fn spine_tree_working_presentation(
         &self,
     ) -> Option<history_cell::SpineTreeWorkingPresentation> {
         if !self.config.features.enabled(Feature::SpineJit) {
             return None;
         }
-        let turn_id = self.turn_lifecycle.last_turn_id.clone()?;
         let started_at = self.turn_lifecycle.agent_turn_started_at?;
         let alive = self.turn_lifecycle.presentation_alive()?;
         Some(history_cell::SpineTreeWorkingPresentation::current_turn(
-            turn_id, started_at, alive,
+            started_at, alive,
         ))
     }
 

@@ -96,6 +96,16 @@ impl AgentActivityPreview {
         }
         lines
     }
+
+    pub(crate) fn flow_text(&self) -> String {
+        self.activity.join("\n")
+    }
+
+    pub(crate) fn from_flow_text(text: &str) -> Self {
+        Self {
+            activity: text.lines().map(str::to_string).collect(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]

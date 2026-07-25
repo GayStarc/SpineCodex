@@ -293,6 +293,12 @@ pub(crate) trait HistoryCell: std::fmt::Debug + Send + Sync + Any {
         false
     }
 
+    /// Freezes presentation-only state before this cell is committed to terminal history.
+    ///
+    /// Active cells may animate while they occupy the redrawable live viewport. Terminal
+    /// scrollback is immutable, so committed cells must render a stable final representation.
+    fn finalize_for_history(&mut self) {}
+
     /// Returns a coarse "animation tick" when transcript output is time-dependent.
     ///
     /// The transcript overlay caches the rendered output of the in-flight active cell, so cells

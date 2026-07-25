@@ -25,7 +25,6 @@ const INVALID_SPINE_TREE_SNAPSHOT_LABEL: &str = "invalid Spine tree snapshot";
 
 #[derive(Debug, Clone)]
 pub(crate) struct SpineTreeWorkingPresentation {
-    turn_id: Option<String>,
     started_at: Instant,
     alive: Option<Arc<AtomicBool>>,
 }
@@ -33,19 +32,13 @@ pub(crate) struct SpineTreeWorkingPresentation {
 impl SpineTreeWorkingPresentation {
     fn live_tail(started_at: Instant) -> Self {
         Self {
-            turn_id: None,
             started_at,
             alive: None,
         }
     }
 
-    pub(crate) fn current_turn(
-        turn_id: String,
-        started_at: Instant,
-        alive: Arc<AtomicBool>,
-    ) -> Self {
+    pub(crate) fn current_turn(started_at: Instant, alive: Arc<AtomicBool>) -> Self {
         Self {
-            turn_id: Some(turn_id),
             started_at,
             alive: Some(alive),
         }
@@ -56,10 +49,6 @@ impl SpineTreeWorkingPresentation {
             .as_ref()
             .is_none_or(|alive| alive.load(Ordering::Relaxed))
             .then_some(self.started_at)
-    }
-
-    fn belongs_to_same_turn(&self, other: &Self) -> bool {
-        self.turn_id.is_some() && self.turn_id == other.turn_id
     }
 }
 
@@ -73,7 +62,6 @@ pub(crate) fn new_spine_tree_snapshot(
         spawn_overlays: Vec::new(),
         animations_enabled: false,
         working_presentation: None,
-        hide_when_working_ends: false,
     }
 }
 
@@ -86,7 +74,6 @@ pub(crate) fn new_debug_spine_tree_snapshot(
         spawn_overlays: Vec::new(),
         animations_enabled: false,
         working_presentation: None,
-        hide_when_working_ends: false,
     }
 }
 
@@ -100,7 +87,6 @@ pub(crate) fn new_debug_spine_node_snapshot(
         spawn_overlays: Vec::new(),
         animations_enabled: false,
         working_presentation: None,
-        hide_when_working_ends: false,
     }
 }
 
@@ -110,7 +96,6 @@ pub(crate) struct SpineTreeViewState {
     overlays: Vec<SpineSpawnOverlay>,
     settled_spawn_call_ids: HashSet<String>,
     animations_enabled: bool,
-    inspection: Option<SpineTreeWorkingPresentation>,
 }
 
 impl Default for SpineTreeViewState {
@@ -126,7 +111,6 @@ impl SpineTreeViewState {
             overlays: Vec::new(),
             settled_spawn_call_ids: HashSet::new(),
             animations_enabled,
-            inspection: None,
         }
     }
 
@@ -244,33 +228,22 @@ impl SpineTreeViewState {
     }
 
     pub(crate) fn render_cell(&self) -> Option<SpineTreeUpdateCell> {
+        if self.overlays.is_empty() {
+            return None;
+        }
         let snapshot = self.snapshot.clone()?;
-        let (working_presentation, hide_when_working_ends) = if let Some(started_at) = self
+        let started_at = self
             .overlays
             .iter()
             .map(SpineSpawnOverlay::animation_start)
             .min()
-        {
-            (
-                Some(SpineTreeWorkingPresentation::live_tail(started_at)),
-                false,
-            )
-        } else if let Some(inspection) = self
-            .inspection
-            .as_ref()
-            .filter(|inspection| inspection.started_at_if_active().is_some())
-        {
-            (Some(inspection.clone()), true)
-        } else {
-            return None;
-        };
+            .expect("non-empty overlays have an animation start");
         Some(SpineTreeUpdateCell {
             snapshot,
             display_mode: SpineTreeDisplayMode::Pretty,
             spawn_overlays: self.overlays.clone(),
             animations_enabled: self.animations_enabled,
-            working_presentation,
-            hide_when_working_ends,
+            working_presentation: Some(SpineTreeWorkingPresentation::live_tail(started_at)),
         })
     }
 
@@ -282,28 +255,21 @@ impl SpineTreeViewState {
             spawn_overlays: Vec::new(),
             animations_enabled: false,
             working_presentation: None,
-            hide_when_working_ends: false,
         })
     }
 
-    pub(crate) fn show_working_inspection(&mut self, presentation: SpineTreeWorkingPresentation) {
-        self.inspection = Some(presentation);
-    }
-
-    pub(crate) fn rebind_working_inspection(&mut self, presentation: SpineTreeWorkingPresentation) {
-        if self
-            .inspection
-            .as_ref()
-            .is_some_and(|inspection| inspection.belongs_to_same_turn(&presentation))
-        {
-            self.inspection = Some(presentation);
-        } else {
-            self.inspection = None;
-        }
-    }
-
-    pub(crate) fn has_working_inspection(&self) -> bool {
-        self.inspection.is_some()
+    pub(crate) fn working_snapshot_cell(
+        &self,
+        presentation: SpineTreeWorkingPresentation,
+    ) -> Option<SpineTreeUpdateCell> {
+        let snapshot = self.snapshot.clone()?;
+        Some(SpineTreeUpdateCell {
+            snapshot,
+            display_mode: SpineTreeDisplayMode::Pretty,
+            spawn_overlays: Vec::new(),
+            animations_enabled: self.animations_enabled,
+            working_presentation: Some(presentation),
+        })
     }
 
     #[cfg(test)]
@@ -321,7 +287,6 @@ pub(crate) struct SpineTreeUpdateCell {
     spawn_overlays: Vec<SpineSpawnOverlay>,
     animations_enabled: bool,
     working_presentation: Option<SpineTreeWorkingPresentation>,
-    hide_when_working_ends: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -336,17 +301,10 @@ impl SpineTreeUpdateCell {
             .as_ref()
             .and_then(SpineTreeWorkingPresentation::started_at_if_active)
     }
-
-    fn should_hide(&self) -> bool {
-        self.hide_when_working_ends && self.active_working_started_at().is_none()
-    }
 }
 
 impl HistoryCell for SpineTreeUpdateCell {
     fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
-        if self.should_hide() {
-            return Vec::new();
-        }
         match &self.display_mode {
             SpineTreeDisplayMode::Pretty => pretty_display_lines(
                 &self.snapshot,
@@ -362,9 +320,6 @@ impl HistoryCell for SpineTreeUpdateCell {
     }
 
     fn raw_lines(&self) -> Vec<Line<'static>> {
-        if self.should_hide() {
-            return Vec::new();
-        }
         match &self.display_mode {
             SpineTreeDisplayMode::Pretty => pretty_raw_lines(&self.snapshot),
             SpineTreeDisplayMode::Debug(node_id) => {
@@ -379,6 +334,11 @@ impl HistoryCell for SpineTreeUpdateCell {
         }
         let started_at = self.active_working_started_at()?;
         Some(started_at.elapsed().as_millis() as u64 / 50)
+    }
+
+    fn finalize_for_history(&mut self) {
+        self.animations_enabled = false;
+        self.working_presentation = None;
     }
 }
 
@@ -498,6 +458,7 @@ fn render_pretty_node(
     if node_is_working {
         spans.extend(white_shimmer_text(
             &label,
+            active_working_started_at.expect("working node has a presentation start"),
             MotionMode::from_animations_enabled(animations_enabled),
         ));
     } else {
@@ -1409,7 +1370,7 @@ mod tests {
     }
 
     #[test]
-    fn working_inspection_is_live_only_for_the_current_turn() {
+    fn working_snapshot_animates_while_active_and_freezes_for_history() {
         let mut state = SpineTreeViewState::new(true);
         state.apply_tree_update(snapshot(
             "1",
@@ -1421,31 +1382,28 @@ mod tests {
             )],
         ));
         let alive = Arc::new(AtomicBool::new(true));
-        state.show_working_inspection(SpineTreeWorkingPresentation::current_turn(
-            "turn".to_string(),
-            Instant::now(),
-            Arc::clone(&alive),
-        ));
+        let mut cell = state
+            .working_snapshot_cell(SpineTreeWorkingPresentation::current_turn(
+                Instant::now(),
+                Arc::clone(&alive),
+            ))
+            .expect("working snapshot should render");
 
-        let live = state
-            .render_cell()
-            .expect("working inspection should render");
-        assert!(live.transcript_animation_tick().is_some());
+        assert!(state.render_cell().is_none());
+        assert!(cell.transcript_animation_tick().is_some());
         assert!(
-            live.display_lines(80)
+            cell.display_lines(80)
                 .iter()
                 .any(|line| line.to_string().contains("working inspection"))
         );
 
-        alive.store(false, Ordering::Relaxed);
+        cell.finalize_for_history();
 
-        assert!(live.display_lines(80).is_empty());
-        assert_eq!(live.transcript_animation_tick(), None);
+        assert!(alive.load(Ordering::Relaxed));
+        assert_eq!(cell.transcript_animation_tick(), None);
         assert!(state.render_cell().is_none());
-        let snapshot = state.snapshot_cell().expect("semantic snapshot remains");
         assert!(
-            snapshot
-                .display_lines(80)
+            cell.display_lines(80)
                 .iter()
                 .any(|line| line.to_string().contains("working inspection"))
         );

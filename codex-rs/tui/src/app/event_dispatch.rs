@@ -356,16 +356,10 @@ impl App {
                     return Ok(AppRunControl::Continue);
                 };
                 if let Some(working_presentation) = working_presentation {
-                    let (snapshot, live_cell) = {
-                        let state = self
-                            .spine_tree_views
-                            .get_mut(&thread_id)
-                            .expect("state was checked immediately above");
-                        state.show_working_inspection(working_presentation);
-                        (state.snapshot().cloned(), state.render_cell())
-                    };
-                    self.chat_widget.set_spine_tree_view(snapshot, live_cell);
-                    tui.frame_requester().schedule_frame();
+                    let cell = state
+                        .working_snapshot_cell(working_presentation)
+                        .expect("snapshot was checked immediately above");
+                    self.chat_widget.show_spine_tree_snapshot(cell);
                     return Ok(AppRunControl::Continue);
                 }
                 let cell = if debug {

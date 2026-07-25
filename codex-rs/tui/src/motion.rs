@@ -204,9 +204,13 @@ pub(crate) fn green_shimmer_text(text: &str, motion_mode: MotionMode) -> Vec<Spa
     }
 }
 
-pub(crate) fn white_shimmer_text(text: &str, motion_mode: MotionMode) -> Vec<Span<'static>> {
+pub(crate) fn white_shimmer_text(
+    text: &str,
+    started_at: Instant,
+    motion_mode: MotionMode,
+) -> Vec<Span<'static>> {
     match motion_mode {
-        MotionMode::Animated => white_shimmer_spans(text),
+        MotionMode::Animated => white_shimmer_spans(text, started_at),
         MotionMode::Reduced => {
             if text.is_empty() {
                 Vec::new()
@@ -311,7 +315,7 @@ mod tests {
             vec!["Loading".into()]
         );
         assert_eq!(
-            white_shimmer_text("Active node", MotionMode::Reduced),
+            white_shimmer_text("Active node", Instant::now(), MotionMode::Reduced),
             vec!["Active node".into()]
         );
         assert_eq!(

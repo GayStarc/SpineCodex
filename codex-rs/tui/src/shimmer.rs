@@ -7,6 +7,7 @@ use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Span;
 use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 use crate::color::blend;
 use crate::terminal_palette::default_bg;
@@ -14,6 +15,8 @@ use crate::terminal_palette::default_fg;
 
 static PROCESS_START: OnceLock<Instant> = OnceLock::new();
 const MOTION_GREEN_RGB: (u8, u8, u8) = (32, 160, 80);
+const WHITE_SWEEP_COLUMNS_PER_SECOND: f64 = 20.0;
+const SWEEP_PADDING_COLUMNS: usize = 10;
 
 fn elapsed_since_start() -> Duration {
     let start = PROCESS_START.get_or_init(Instant::now);
@@ -40,9 +43,15 @@ pub(crate) fn green_shimmer_spans(text: &str) -> Vec<Span<'static>> {
     )
 }
 
-pub(crate) fn white_shimmer_spans(text: &str) -> Vec<Span<'static>> {
-    let grapheme_count = text.graphemes(true).count();
-    white_shimmer_spans_at(text, sweep_position(grapheme_count))
+pub(crate) fn white_shimmer_spans(text: &str, started_at: Instant) -> Vec<Span<'static>> {
+    white_shimmer_spans_at(
+        text,
+        fixed_speed_position(
+            started_at.elapsed(),
+            UnicodeWidthStr::width(text),
+            WHITE_SWEEP_COLUMNS_PER_SECOND,
+        ),
+    )
 }
 
 pub(crate) fn motion_green_style() -> Style {
@@ -100,9 +109,8 @@ fn shimmer_spans_with_palette(
 }
 
 fn white_shimmer_spans_at(text: &str, pos: usize) -> Vec<Span<'static>> {
-    let padding = 10usize;
-    style_runs(text, |index| {
-        let intensity = band_intensity(index, pos, padding);
+    style_runs(text, |column| {
+        let intensity = band_intensity(column, pos, SWEEP_PADDING_COLUMNS);
         if intensity < 0.4 {
             Style::default()
         } else {
@@ -116,8 +124,10 @@ fn style_runs(text: &str, style_at: impl Fn(usize) -> Style) -> Vec<Span<'static
     let mut current_style = None;
     let mut current_text = String::new();
 
-    for (index, grapheme) in text.graphemes(true).enumerate() {
-        let style = style_at(index);
+    let mut column = 0;
+    for grapheme in text.graphemes(true) {
+        let width = UnicodeWidthStr::width(grapheme);
+        let style = style_at(column + width / 2);
         if current_style.is_some_and(|current| current != style) {
             spans.push(Span::styled(
                 std::mem::take(&mut current_text),
@@ -128,12 +138,21 @@ fn style_runs(text: &str, style_at: impl Fn(usize) -> Style) -> Vec<Span<'static
             current_style = Some(style);
         }
         current_text.push_str(grapheme);
+        column += width;
     }
 
     if let Some(style) = current_style {
         spans.push(Span::styled(current_text, style));
     }
     spans
+}
+
+fn fixed_speed_position(elapsed: Duration, text_width: usize, columns_per_second: f64) -> usize {
+    let period = text_width + SWEEP_PADDING_COLUMNS * 2;
+    if period == 0 {
+        return 0;
+    }
+    ((elapsed.as_secs_f64() * columns_per_second).floor() as usize) % period
 }
 
 fn sweep_position(text_len: usize) -> usize {
@@ -220,5 +239,13 @@ mod tests {
         }
         assert_eq!(byte_offset, text.len());
         assert!(white_shimmer_spans_at("", 0).is_empty());
+    }
+
+    #[test]
+    fn white_sweep_uses_length_independent_column_speed() {
+        let elapsed = Duration::from_millis(750);
+        assert_eq!(fixed_speed_position(elapsed, 20, 20.0), 15);
+        assert_eq!(fixed_speed_position(elapsed, 200, 20.0), 15);
+        assert_eq!(fixed_speed_position(Duration::from_secs(3), 40, 20.0), 0);
     }
 }

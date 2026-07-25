@@ -25,7 +25,6 @@ use crate::history_cell::AgentMessageCell;
 use crate::history_cell::HistoryCell;
 use crate::history_cell::PlainHistoryCell;
 use crate::history_cell::SpineTreeViewState;
-use crate::history_cell::SpineTreeWorkingPresentation;
 use crate::history_cell::UserHistoryCell;
 use crate::history_cell::new_session_info;
 use crate::multi_agents::AgentPickerThreadEntry;
@@ -637,7 +636,8 @@ async fn inactive_thread_replay_restores_spawn_progress_projection() -> Result<(
 }
 
 #[tokio::test]
-async fn working_spine_tree_command_uses_turn_scoped_live_inspection() -> Result<()> {
+async fn working_spine_tree_command_uses_an_active_snapshot_that_freezes_with_the_turn()
+-> Result<()> {
     let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
     let thread_id = ThreadId::new();
     let cwd = tempdir()?;
@@ -686,16 +686,33 @@ async fn working_spine_tree_command_uses_turn_scoped_live_inspection() -> Result
 
     assert!(
         app.transcript_cells.is_empty(),
-        "working inspection must not commit a permanently animated history cell"
+        "the working command snapshot should remain redrawable until it is committed"
     );
-    let live_lines = app
+    assert!(
+        app.spine_tree_views
+            .get(&thread_id)
+            .is_some_and(|state| state.render_cell().is_none()),
+        "a command snapshot must not occupy the Spine live-tail slot"
+    );
+    let active_lines = app
         .chat_widget
         .active_cell_transcript_lines(80)
-        .expect("working inspection should use the live surface");
+        .expect("working snapshot should use the active command-output cell");
     assert!(
-        live_lines
+        active_lines
             .iter()
             .any(|line| line.to_string().contains("working inspection"))
+    );
+    let animation_ticks = app
+        .chat_widget
+        .active_cell_transcript_key()
+        .expect("active command snapshot")
+        .animation_ticks;
+    assert!(animation_ticks[0].is_some());
+    assert_eq!(
+        &animation_ticks[1..],
+        &[None, None],
+        "only the active command-output cell should own this animation"
     );
 
     app.chat_widget.handle_server_notification(
@@ -703,99 +720,40 @@ async fn working_spine_tree_command_uses_turn_scoped_live_inspection() -> Result
         /*replay_kind*/ None,
     );
     assert!(
-        app.chat_widget.active_cell_transcript_lines(80).is_none(),
-        "inspection must disappear when its turn presentation ends"
+        app.chat_widget
+            .active_cell_transcript_lines(80)
+            .is_some_and(|lines| lines
+                .iter()
+                .any(|line| line.to_string().contains("working inspection"))),
+        "the command snapshot should freeze in place instead of disappearing"
+    );
+    assert!(
+        app.chat_widget
+            .active_cell_transcript_key()
+            .expect("frozen command snapshot remains active")
+            .animation_ticks
+            .iter()
+            .all(Option::is_none),
+        "turn completion must stop the command snapshot animation"
     );
 
-    while app_event_rx.try_recv().is_ok() {}
-    app.handle_event(
-        &mut tui,
-        &mut app_server,
-        AppEvent::ShowSpineTreeSnapshot { debug: false },
-    )
-    .await?;
-    assert!(matches!(
-        app_event_rx.try_recv(),
-        Ok(AppEvent::InsertHistoryCell(_))
-    ));
+    app.chat_widget
+        .add_info_message("after snapshot".to_string(), None);
+    while let Ok(event) = app_event_rx.try_recv() {
+        app.handle_event(&mut tui, &mut app_server, event).await?;
+    }
+    let committed_snapshot = app
+        .transcript_cells
+        .iter()
+        .find(|cell| {
+            cell.display_lines(80)
+                .iter()
+                .any(|line| line.to_string().contains("working inspection"))
+        })
+        .expect("working snapshot should commit at its command position");
+    assert_eq!(committed_snapshot.transcript_animation_tick(), None);
 
     app_server.shutdown().await.expect("app server shutdown");
-    Ok(())
-}
-
-#[tokio::test]
-async fn restored_running_turn_rebinds_stale_spine_tree_inspection() -> Result<()> {
-    let (mut app, _app_event_rx, _op_rx) = make_test_app_with_channels().await;
-    let thread_id = ThreadId::new();
-    let cwd = tempdir()?;
-    app.chat_widget
-        .handle_thread_session_quiet(test_thread_session(thread_id, cwd.path().to_path_buf()));
-    app.chat_widget
-        .set_feature_enabled(Feature::SpineJit, /*enabled*/ true);
-
-    let mut state = SpineTreeViewState::new(/*animations_enabled*/ true);
-    state.apply_tree_update(SpineTreeUpdatedNotification {
-        thread_id: thread_id.to_string(),
-        turn_id: "turn-restored".to_string(),
-        snapshot_seq: 1,
-        active_node_id: "1".to_string(),
-        settled_spawn_call_ids: Vec::new(),
-        nodes: vec![SpineTreeNode {
-            node_id: "1".to_string(),
-            parent_id: None,
-            kind: SpineTreeNodeKind::Task,
-            status: SpineTreeNodeStatus::Live,
-            summary: Some("restored inspection".to_string()),
-            memory_summary: None,
-            start: 0,
-            end: None,
-            context_pressure: None,
-            spawn_outcome: None,
-        }],
-    });
-    state.show_working_inspection(SpineTreeWorkingPresentation::current_turn(
-        "turn-restored".to_string(),
-        Instant::now(),
-        Arc::new(AtomicBool::new(false)),
-    ));
-    app.spine_tree_views.insert(thread_id, state);
-
-    app.chat_widget.handle_server_notification(
-        turn_started_notification(thread_id, "turn-restored"),
-        Some(ReplayKind::ThreadSnapshot),
-    );
-    app.refresh_spine_tree_view_for_chat_widget();
-
-    let lines = app
-        .chat_widget
-        .active_cell_transcript_lines(80)
-        .expect("restored running turn should rebind the inspection");
-    assert!(
-        lines
-            .iter()
-            .any(|line| line.to_string().contains("restored inspection"))
-    );
-
-    app.chat_widget.handle_server_notification(
-        turn_completed_notification(thread_id, "turn-restored", TurnStatus::Completed),
-        Some(ReplayKind::ThreadSnapshot),
-    );
-    app.chat_widget.handle_server_notification(
-        turn_started_notification(thread_id, "turn-next"),
-        Some(ReplayKind::ThreadSnapshot),
-    );
-    app.refresh_spine_tree_view_for_chat_widget();
-    assert!(
-        app.chat_widget.active_cell_transcript_lines(80).is_none(),
-        "a later turn must not revive an earlier inspection"
-    );
-    assert!(
-        !app.spine_tree_views
-            .get(&thread_id)
-            .expect("projection should remain")
-            .has_working_inspection()
-    );
-
     Ok(())
 }
 

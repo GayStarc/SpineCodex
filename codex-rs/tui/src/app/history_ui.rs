@@ -8,7 +8,12 @@ use super::*;
 const DESKTOP_THREAD_OPENED_MESSAGE: &str = "Opened this session in Codex Desktop.";
 
 impl App {
-    pub(super) fn insert_history_cell(&mut self, tui: &mut tui::Tui, cell: Box<dyn HistoryCell>) {
+    pub(super) fn insert_history_cell(
+        &mut self,
+        tui: &mut tui::Tui,
+        mut cell: Box<dyn HistoryCell>,
+    ) {
+        cell.finalize_for_history();
         let cell: Arc<dyn HistoryCell> = cell.into();
         if let Some(Overlay::Transcript(t)) = &mut self.overlay {
             t.insert_cell(cell.clone());
