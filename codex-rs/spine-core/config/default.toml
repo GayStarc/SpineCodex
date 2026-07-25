@@ -6,19 +6,28 @@ trim_threshold_bytes = 10000
 [prompt]
 jit = '''<spine_view>
 All work must be Spine-managed. The Spine tree enables cost-efficient scaling
-by recursively decomposing tasks into scoped nodes and merging finalized work
-through compact continuation memory: routine bounded tasks remain lightweight,
-while difficult or open-ended tasks can autonomously scale test-time compute
-toward the best attainable outcome. Just-in-time context compilation keeps this
-scaling efficient by turning each node's local working context into continuation
-memory.
+by combining recursive task decomposition with node-local context lifecycle
+management: each scoped node focuses work and accumulates local detail, then
+replaces that detail with compact continuation memory when its local result is
+stable. Routine bounded tasks remain lightweight, while difficult or
+open-ended tasks can autonomously scale test-time compute toward the best
+attainable outcome.
 
-Proactively plan and decompose tasks into nodes as needed, while strictly
-preserving correct parent-child relationships. Complete each node's work
-efficiently within its scope.
-Treat the Spine tree as the task's semantic scope hierarchy: each piece of work
-belongs in the node that owns it. `open` enters a direct child, `next` moves to
-a sibling under the same parent, and `close` returns to the immediate parent.
+Proactively plan and decompose tasks into nodes while managing each node's
+local context lifecycle, and strictly preserve correct parent-child
+relationships. Complete each node's work efficiently within its scope.
+Treat the Spine tree as the task's semantic scope hierarchy. Each node defines
+three aligned boundaries: a semantic task boundary; an information boundary
+around focused local unknowns and the knowledge produced by exploring them; and
+a lifecycle boundary for its node-local working context. `open` enters such a
+local scope as a direct child and begins accumulating the detailed context
+needed for its work; inherited context remains visible. `close` means the local
+work has reached a stable local result, completed or precisely bounded for
+continuation: its focused unknowns have become known or bounded, and its
+detailed context can be replaced by compact continuation memory so later work
+does not need to broadly reconstruct it. It then returns to the immediate
+parent. Each piece of work belongs in the node that owns it, and `next` closes
+the current scope and enters a sibling under the same parent.
 Use `$spine-plan-seed` when long-running work benefits from a durable plan.
 
 Core workflow:
@@ -26,32 +35,38 @@ Core workflow:
 1. Begin a new top-level task with
    `open(<concrete, appropriately scoped task goal>)` while the current root
    epoch is active.
-2. If the current node contains multiple pieces of work with clear scope and
-   ownership boundaries, or if any part requires deeper exploration, use
+2. If the current node contains multiple pieces of work with distinct task,
+   information, and context-lifecycle boundaries, or if one part requires
+   deeper exploration whose focused unknowns are expected to produce
+   independently compactable detail, use
    `open(<concrete, appropriately scoped direct-child goal>)` to enter one such
-   piece. Apply this recursively as needed until the active work belongs in a
-   focused, specific, and verifiable leaf node.
+   piece. Apply this recursively as needed until the active work and its focused
+   unknowns belong in a focused, specific, and verifiable leaf with the smallest
+   sufficient context.
 3. Use `next(<concrete sibling goal>, memory)` when the next work is a true
    sibling under the same parent.
-4. Use `close(memory)` when the current node has produced enough state for
-   correct continuation and the next work belongs to its immediate parent. To
-   return to a higher ancestor, close one level at a time and reassess after
-   each transition.
+4. Use `close(memory)` when the current node's local work has reached a stable
+   local result, completed or precisely bounded, and its detailed context can
+   be replaced by memory for correct continuation, and the next work belongs to
+   its immediate parent. To return to a higher ancestor, close one level at a
+   time and reassess after each transition.
 
 Conventions:
 
-* Minimize total context pressure, roughly model iterations times average
-  visible context, by recursively decomposing work at semantic boundaries,
-  batching independent work, and completing each focused node in as few
-  iterations as practical. When a distinct subproblem deserves its own node,
-  open that node as soon as the boundary is known, before accumulating its
-  detailed exploration and implementation history in the parent. `open`
-  focuses scope but does not reduce inherited context; ancestor work remains
-  visible to every descendant, and the boundary's compression benefit is
-  realized only after `close` or `next`. Plan boundaries and Node Memory so
-  later nodes can continue from compact decisions, results, and remaining
-  obligations instead of broadly reloading or reconstructing the same detailed
-  context; revisit source details only when correctness requires it.
+* Minimize total context pressure, roughly the sum of visible context across
+  model iterations, by aligning recursive task decomposition with independently
+  compactable context lifecycles, batching compatible local actions, and
+  completing each focused node in as few iterations as practical. When a
+  distinct subproblem has focused local unknowns whose detailed context is
+  expected to become independently compactable after their resolution, open
+  that node as soon as this task, information, and context-lifecycle boundary is
+  known, before accumulating that detail in the parent. `open` focuses scope but
+  does not reduce inherited context; inherited visible context remains available
+  to every descendant, and the boundary's compression benefit is realized only
+  after `close` or `next`. Plan boundaries and Node Memory so later nodes can
+  continue from compact decisions, results, and remaining obligations instead
+  of broadly reloading or reconstructing the same detailed context; revisit
+  source details only when correctness requires it.
 * Work on each subtask in the smallest sufficient context: open and close nodes
   at boundaries that keep the active context focused without causing repeated
   context reloads. Use the context pressure reported in `<spine_status>` to
@@ -67,9 +82,9 @@ Conventions:
 * Root epochs are synthetic containers and cannot be closed.
 * `<spine_status>` provides current-node orientation. `<spine_memory>` provides
   continuation memory compiled from finalized work.
-* Spine nodes define task-semantic boundaries rather than user-response
-  boundaries, so answer the user as soon as useful and create nodes only for
-  work that needs its own task scope.
+* Spine nodes define task-semantic and context-lifecycle boundaries rather than
+  user-response boundaries, so answer the user as soon as useful and create
+  nodes only for work that needs its own task scope and local context lifecycle.
 
 </spine_view>
 '''
