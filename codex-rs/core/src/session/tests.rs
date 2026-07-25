@@ -2335,35 +2335,6 @@ async fn spine_observer_delivery_follows_each_session_transition() {
 }
 
 #[tokio::test]
-async fn rollout_reconstruction_observer_waits_for_publish() {
-    let (session, turn_context, rx) = make_session_and_context_with_auth_and_config_and_rx(
-        CodexAuth::from_api_key("Test API Key"),
-        Vec::new(),
-        |config| {
-            let _ = config.features.enable(Feature::SpineJit);
-        },
-    )
-    .await;
-    let rollout = [RolloutItem::ResponseItem(user_message("replacement"))];
-
-    session
-        .install_rollout_reconstruction(turn_context.as_ref(), &rollout)
-        .await;
-    assert!(
-        rx.try_recv().is_err(),
-        "reconstruction must not publish before the rollback barrier"
-    );
-
-    session
-        .publish_rollout_reconstruction(turn_context.as_ref())
-        .await;
-    assert!(matches!(
-        rx.recv().await.expect("replacement tree event").msg,
-        EventMsg::SpineTreeUpdate(_)
-    ));
-}
-
-#[tokio::test]
 async fn prepares_image_failures_before_history_insertion() {
     let (session, turn_context, _rx) = make_session_and_context_with_auth_and_config_and_rx(
         CodexAuth::from_api_key("Test API Key"),
@@ -4118,6 +4089,59 @@ async fn thread_rollback_drops_last_turn_from_history() {
             if rollback.num_turns == 1
         )
     }));
+}
+
+#[tokio::test]
+async fn thread_rollback_publishes_reconstructed_tree_after_rollback_event() {
+    let (mut sess, tc, rx) = make_session_and_context_with_auth_and_config_and_rx(
+        CodexAuth::from_api_key("Test API Key"),
+        Vec::new(),
+        |config| {
+            let _ = config.features.enable(Feature::SpineJit);
+        },
+    )
+    .await;
+    attach_thread_persistence(
+        Arc::get_mut(&mut sess).expect("session should not have additional references"),
+    )
+    .await;
+
+    let history = vec![
+        user_message("turn 1 user"),
+        assistant_message("turn 1 assistant"),
+        user_message("turn 2 user"),
+        assistant_message("turn 2 assistant"),
+    ];
+    sess.replace_history(history.clone(), Some(tc.to_turn_context_item()))
+        .await;
+    let rollout_items = history
+        .into_iter()
+        .map(RolloutItem::ResponseItem)
+        .collect::<Vec<_>>();
+    sess.persist_rollout_items(&rollout_items).await;
+    while rx.try_recv().is_ok() {}
+
+    handlers::thread_rollback(&sess, "sub-1".to_string(), /*num_turns*/ 1).await;
+
+    tokio::time::timeout(StdDuration::from_secs(2), async {
+        let mut rollback_delivered = false;
+        loop {
+            let event = rx.recv().await.expect("rollback event");
+            match event.msg {
+                EventMsg::ThreadRolledBack(_) => rollback_delivered = true,
+                EventMsg::SpineTreeUpdate(_) => {
+                    assert!(
+                        rollback_delivered,
+                        "the rollback event must invalidate the old tree before the rebuilt tree arrives"
+                    );
+                    break;
+                }
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("timeout waiting for rollback tree update");
 }
 
 #[tokio::test]

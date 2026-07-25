@@ -1491,18 +1491,6 @@ impl Session {
         turn_context: &TurnContext,
         rollout_items: &[RolloutItem],
     ) -> Option<PreviousTurnSettings> {
-        let previous_turn_settings = self
-            .install_rollout_reconstruction(turn_context, rollout_items)
-            .await;
-        self.publish_rollout_reconstruction(turn_context).await;
-        previous_turn_settings
-    }
-
-    async fn install_rollout_reconstruction(
-        &self,
-        turn_context: &TurnContext,
-        rollout_items: &[RolloutItem],
-    ) -> Option<PreviousTurnSettings> {
         let rollout_reconstruction::RolloutReconstruction {
             mut history,
             previous_turn_settings,
@@ -1522,7 +1510,6 @@ impl Session {
         prepare_response_items(&mut history);
         {
             let mut state = self.state.lock().await;
-            state.defer_spine_observer();
             state.replace_history_from_rollout(history, reference_context_item, rollout_items);
             if let Some(world_state) = world_state_baseline {
                 state.history.set_world_state_baseline(world_state);
@@ -1554,11 +1541,6 @@ impl Session {
                 .await;
         }
         previous_turn_settings
-    }
-
-    async fn publish_rollout_reconstruction(&self, _turn_context: &TurnContext) {
-        let mut state = self.state.lock().await;
-        state.publish_deferred_spine_observer();
     }
 
     async fn set_auto_compact_window_estimated_prefill_for_scope(

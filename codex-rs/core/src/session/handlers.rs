@@ -545,7 +545,9 @@ pub async fn thread_rollback(sess: &Arc<Session>, sub_id: String, num_turns: u32
         .into_iter()
         .chain(std::iter::once(RolloutItem::EventMsg(rollback_msg.clone())))
         .collect::<Vec<_>>();
-    sess.install_rollout_reconstruction(turn_context.as_ref(), replay_items.as_slice())
+    // Publish the rebuilt tree after ThreadRolledBack invalidates the old projection.
+    sess.state.lock().await.defer_spine_observer();
+    sess.apply_rollout_reconstruction(turn_context.as_ref(), replay_items.as_slice())
         .await;
     sess.services
         .agent_control
@@ -572,8 +574,7 @@ pub async fn thread_rollback(sess: &Arc<Session>, sub_id: String, num_turns: u32
         msg: rollback_msg,
     })
     .await;
-    sess.publish_rollout_reconstruction(turn_context.as_ref())
-        .await;
+    sess.state.lock().await.publish_deferred_spine_observer();
 }
 
 pub(super) async fn persist_thread_memory_mode_update(
