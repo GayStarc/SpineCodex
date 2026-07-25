@@ -1591,6 +1591,9 @@ async fn refresh_runtime_config_updates_runtime_refreshable_fields_and_keeps_ses
 enabled = false
 destructive_enabled = false
 
+[features]
+spine_spawn = false
+
 [tool_suggest]
 disabled_tools = [
   { type = "connector", id = " calendar " },
@@ -1604,6 +1607,8 @@ disabled_tools = [
     let mut next_config = load_latest_config_for_session(&session).await;
     next_config.model = Some("gpt-5.4".to_string());
     next_config.notify = Some(vec!["echo".to_string()]);
+    assert!(original.features.enabled(Feature::SpineSpawn));
+    assert!(!next_config.features.enabled(Feature::SpineSpawn));
 
     session.refresh_runtime_config(next_config).await;
 
@@ -1626,6 +1631,7 @@ disabled_tools = [
     assert_eq!(app.destructive_enabled, Some(false));
     assert_eq!(config.model, original.model);
     assert_eq!(config.notify, original.notify);
+    assert!(config.features.enabled(Feature::SpineSpawn));
     assert_eq!(
         config.tool_suggest.disabled_tools,
         vec![
