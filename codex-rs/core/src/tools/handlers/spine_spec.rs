@@ -12,10 +12,10 @@ pub(crate) const SPINE_NEXT: &str = "next";
 pub(crate) const SPINE_SPAWN: &str = "spawn";
 pub(crate) const SPINE_TRIM: &str = "trim";
 
-const NODE_MEMORY_DESCRIPTION: &str = "Compiled continuation state for the node being finalized. This memory replaces the node's local working content for future continuation. Preserve only continuation-relevant state: completed or confirmed progress, key decisions and constraints, confirmed findings, validation results, unresolved factual gaps or risks, remaining work, and the logic linking evidence and findings to decisions and next steps. Use compact supporting evidence or precise, recoverable references wherever they clarify that logic. For source code, cite the precise path and line or line range; for commands or outputs, cite the exact command and decisive output or result, so later work can continue without replaying completed investigation or reloading the same context. Treat inherited ancestor context as already available. Runtime preserves user messages and child memories; use this memory for the additional state required for continuation. Preserve the continuation-relevant evolution of user intent by using [U#] anchors to resolve approvals, corrections, rejections, clarifications, and elliptical replies to their concrete referents, and record the resulting semantic deltas in task scope, decisions, constraints, progress, and remaining obligations.";
+const NODE_MEMORY_DESCRIPTION: &str = "Compiled continuation state for the node being finalized. This memory replaces the node's local working content for future continuation. Preserve only continuation-relevant state: completed or confirmed progress, key decisions and constraints, confirmed findings, validation results, bounded unresolved factual gaps or risks, remaining work that can proceed from this memory and inherited context without reconstructing the replaced local detail, and the logic linking evidence and findings to decisions and next steps. Use compact supporting evidence or precise, recoverable references wherever they clarify that logic. For source code, cite the precise path and line or line range; for commands or outputs, cite the exact command and decisive output or result, so later work can continue without replaying completed investigation or reloading the same context. Treat inherited ancestor context as already available. Runtime preserves user messages and child memories; use this memory for the additional state required for continuation. Preserve the continuation-relevant evolution of user intent by using [U#] anchors to resolve approvals, corrections, rejections, clarifications, and elliptical replies to their concrete referents, and record the resulting semantic deltas in task scope, decisions, constraints, progress, and remaining obligations.";
 
-const OPEN_SUMMARY_DESCRIPTION: &str = "Concise, actionable, completable goal for the child node being opened. The transition call carrying this goal is retained in the child node's context.";
-const NEXT_SUMMARY_DESCRIPTION: &str = "Concise goal for the next sibling node. Make it actionable and completable. The transition call carrying this goal is retained in the sibling's context; continuation state from the node being finalized belongs in memory.";
+const OPEN_SUMMARY_DESCRIPTION: &str = "Concise, actionable, completable goal for the child node's aligned task, information, and context-lifecycle boundary. The transition call carrying this goal is retained in the child node's context.";
+const NEXT_SUMMARY_DESCRIPTION: &str = "Concise, actionable, completable goal for the next sibling's distinct task, information, and context-lifecycle boundary. The transition call carrying this goal is retained in the sibling's context; continuation state from the node being finalized belongs in memory.";
 const TRIM_DESCRIPTION: &str = "Conservatively clean up one tagged tool-response projection; this never changes the Spine tree or creates memory. A TRIM_ID is live only for the immediately previous tool-result batch, and only in your next assistant tool request. After any later tool request it expires; if trim misses, treat the id as expired and continue. Use slice for needed visible evidence, snip only when useful facts are preserved elsewhere, and leave untrimmed if the original may still be needed.";
 const SPAWN_DESCRIPTION: &str = "Run a fission transaction over two or more self-contained tasks. Each task inherits the current context through native full-history child creation, runs concurrently in an independent session, needs no parent follow-up, and returns one terminal final memory. The parent waits for every child, then imports all closed child nodes atomically in input order. Use this proactively when the current node has two or more independent, self-contained workstreams and concurrent execution would materially improve speed or result quality. Child workspace and external effects are not transactional; only dispatch tasks whose writes are non-conflicting or explicitly coordinated.";
 
@@ -23,7 +23,7 @@ pub(crate) fn create_spine_tool(name: &str) -> ToolSpec {
     let function = match name {
         SPINE_OPEN => ResponsesApiTool {
             name: SPINE_OPEN.to_string(),
-            description: "Open a concrete child node for one appropriately scoped goal under the current Spine cursor. Ordinary task tools issued alongside it belong to the child; the transition applies to the current node's prior ReAct history.".to_string(),
+            description: "Open a concrete child node for one scoped local task whose focused unknowns are expected to produce independently compactable detail, beginning its node-local context lifecycle under the current Spine cursor. Ordinary task tools issued alongside it belong to the child; the transition applies to the current node's prior ReAct history.".to_string(),
             strict: false,
             defer_loading: None,
             parameters: JsonSchema::object(
@@ -38,7 +38,7 @@ pub(crate) fn create_spine_tool(name: &str) -> ToolSpec {
         },
         SPINE_CLOSE => ResponsesApiTool {
             name: SPINE_CLOSE.to_string(),
-            description: "Finalize the current Spine node with the supplied continuation memory and resume its immediate parent. Ordinary task tools issued alongside it belong to the parent; the transition applies to the current node's prior ReAct history. Root-epoch nodes cannot be closed.".to_string(),
+            description: "Finalize the current Spine node after it has reached a stable local result, completed or precisely bounded, and replace its local working detail with the supplied continuation memory before resuming its immediate parent. Ordinary task tools issued alongside it belong to the parent; the transition applies to the current node's prior ReAct history. Root-epoch nodes cannot be closed.".to_string(),
             strict: false,
             defer_loading: None,
             parameters: JsonSchema::object(
@@ -53,7 +53,7 @@ pub(crate) fn create_spine_tool(name: &str) -> ToolSpec {
         },
         SPINE_NEXT => ResponsesApiTool {
             name: SPINE_NEXT.to_string(),
-            description: "Finalize the current Spine node with the supplied continuation memory and continue in a fresh sibling under the same parent. Ordinary task tools issued alongside it belong to the sibling; the transition applies to the current node's prior ReAct history.".to_string(),
+            description: "Finalize the current Spine node after it has reached a stable local result, completed or precisely bounded, replace its local working detail with the supplied continuation memory, and begin a distinct sibling context lifecycle under the same parent. Ordinary task tools issued alongside it belong to the sibling; the transition applies to the current node's prior ReAct history.".to_string(),
             strict: false,
             defer_loading: None,
             parameters: JsonSchema::object(
