@@ -65,17 +65,6 @@ impl ChatWidget {
                 }
             }
             ServerNotification::TurnCompleted(notification) => {
-                if matches!(
-                    notification.turn.status,
-                    TurnStatus::Interrupted | TurnStatus::Failed
-                ) && let Ok(parent_thread_id) = ThreadId::from_string(&notification.thread_id)
-                {
-                    self.app_event_tx
-                        .send(AppEvent::ClearIncompleteSpineOverlays {
-                            parent_thread_id,
-                            turn_id: Some(notification.turn.id.clone()),
-                        });
-                }
                 self.handle_turn_completed_notification(notification, replay_kind);
             }
             ServerNotification::ItemStarted(notification) => {
@@ -126,16 +115,8 @@ impl ChatWidget {
                         .collect(),
                 })
             }
-            ServerNotification::SpineTreeUpdated(notification) => {
-                self.on_spine_tree_update(notification);
-            }
-            ServerNotification::SpineSpawnProgressUpdated(notification) => {
-                // Spawn progress is a transient current-view projection, not replayable history.
-                if replay_kind.is_none() {
-                    self.app_event_tx
-                        .send(AppEvent::UpsertSpineSpawnProgressCell { notification });
-                }
-            }
+            ServerNotification::SpineTreeUpdated(_)
+            | ServerNotification::SpineSpawnProgressUpdated(_) => {}
             ServerNotification::HookStarted(notification) => {
                 self.on_hook_started(notification.run);
             }
@@ -207,24 +188,12 @@ impl ChatWidget {
                     notification.action,
                 );
             }
-            ServerNotification::ThreadClosed(notification) => {
-                if let Ok(parent_thread_id) = ThreadId::from_string(&notification.thread_id) {
-                    self.app_event_tx
-                        .send(AppEvent::ClearIncompleteSpineOverlays {
-                            parent_thread_id,
-                            turn_id: None,
-                        });
-                }
+            ServerNotification::ThreadClosed(_) => {
                 if !from_replay {
                     self.on_shutdown_complete();
                 }
             }
-            ServerNotification::ThreadRolledBack(notification) => {
-                if let Ok(thread_id) = ThreadId::from_string(&notification.thread_id) {
-                    self.app_event_tx
-                        .send(AppEvent::InvalidateSpineTreeView { thread_id });
-                }
-            }
+            ServerNotification::ThreadRolledBack(_) => {}
             ServerNotification::ServerRequestResolved(_)
             | ServerNotification::AccountUpdated(_)
             | ServerNotification::AccountRateLimitsUpdated(_)

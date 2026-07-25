@@ -910,6 +910,7 @@ impl App {
             guard.push_notification(notification.clone());
             (guard.active, guard.side_parent_pending_status())
         };
+        self.route_spine_projection_notification(thread_id, &notification);
         self.route_spine_activity(thread_id, &notification, activity_status)
             .await;
         let notification_status_change = SideParentStatusChange::for_notification(&notification);
@@ -936,6 +937,45 @@ impl App {
         }
         self.refresh_pending_thread_approvals().await;
         Ok(())
+    }
+
+    fn route_spine_projection_notification(
+        &self,
+        thread_id: ThreadId,
+        notification: &ServerNotification,
+    ) {
+        let event = match notification {
+            ServerNotification::SpineTreeUpdated(snapshot) => Some(AppEvent::UpsertSpineTreeCell {
+                snapshot: snapshot.clone(),
+            }),
+            ServerNotification::SpineSpawnProgressUpdated(notification) => {
+                Some(AppEvent::UpsertSpineSpawnProgressCell {
+                    notification: notification.clone(),
+                })
+            }
+            ServerNotification::ThreadRolledBack(_) => {
+                Some(AppEvent::InvalidateSpineTreeView { thread_id })
+            }
+            ServerNotification::TurnCompleted(notification)
+                if matches!(
+                    notification.turn.status,
+                    TurnStatus::Interrupted | TurnStatus::Failed
+                ) =>
+            {
+                Some(AppEvent::ClearIncompleteSpineOverlays {
+                    parent_thread_id: thread_id,
+                    turn_id: Some(notification.turn.id.clone()),
+                })
+            }
+            ServerNotification::ThreadClosed(_) => Some(AppEvent::ClearIncompleteSpineOverlays {
+                parent_thread_id: thread_id,
+                turn_id: None,
+            }),
+            _ => None,
+        };
+        if let Some(event) = event {
+            self.app_event_tx.send(event);
+        }
     }
 
     async fn route_spine_activity(
@@ -1459,6 +1499,7 @@ impl App {
         if resume_restored_queue {
             self.chat_widget.maybe_send_next_queued_input();
         }
+        self.refresh_spine_tree_view_for_chat_widget();
         self.refresh_status_line();
     }
 

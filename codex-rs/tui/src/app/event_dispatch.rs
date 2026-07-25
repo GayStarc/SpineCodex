@@ -342,6 +342,9 @@ impl App {
                 let Some(thread_id) = self.chat_widget.thread_id() else {
                     return Ok(AppRunControl::Continue);
                 };
+                let working_presentation = (!debug)
+                    .then(|| self.chat_widget.spine_tree_working_presentation())
+                    .flatten();
                 let Some(state) = self.spine_tree_views.get(&thread_id) else {
                     self.chat_widget
                         .add_info_message("Spine Tree is not available yet.".to_string(), None);
@@ -352,6 +355,19 @@ impl App {
                         .add_info_message("Spine Tree is not available yet.".to_string(), None);
                     return Ok(AppRunControl::Continue);
                 };
+                if let Some(working_presentation) = working_presentation {
+                    let (snapshot, live_cell) = {
+                        let state = self
+                            .spine_tree_views
+                            .get_mut(&thread_id)
+                            .expect("state was checked immediately above");
+                        state.show_working_inspection(working_presentation);
+                        (state.snapshot().cloned(), state.render_cell())
+                    };
+                    self.chat_widget.set_spine_tree_view(snapshot, live_cell);
+                    tui.frame_requester().schedule_frame();
+                    return Ok(AppRunControl::Continue);
+                }
                 let cell = if debug {
                     history_cell::new_debug_spine_tree_snapshot(snapshot)
                 } else {

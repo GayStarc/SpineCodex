@@ -25,6 +25,7 @@ use crate::history_cell::AgentMessageCell;
 use crate::history_cell::HistoryCell;
 use crate::history_cell::PlainHistoryCell;
 use crate::history_cell::SpineTreeViewState;
+use crate::history_cell::SpineTreeWorkingPresentation;
 use crate::history_cell::UserHistoryCell;
 use crate::history_cell::new_session_info;
 use crate::multi_agents::AgentPickerThreadEntry;
@@ -472,6 +473,53 @@ async fn history_lookup_response_is_routed_to_requesting_thread() -> Result<()> 
 }
 
 #[tokio::test]
+async fn spine_projection_fifo_is_independent_of_full_thread_channel() -> Result<()> {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let thread_id = ThreadId::new();
+    app.thread_event_channels
+        .insert(thread_id, ThreadEventChannel::new(/*capacity*/ 1));
+    app.set_thread_active(thread_id, /*active*/ true).await;
+
+    app.enqueue_thread_notification(
+        thread_id,
+        ServerNotification::SpineSpawnProgressUpdated(SpineSpawnProgressUpdatedNotification {
+            thread_id: thread_id.to_string(),
+            turn_id: "turn-1".to_string(),
+            call_id: "spawn-1".to_string(),
+            tasks: Vec::new(),
+        }),
+    )
+    .await?;
+    app.enqueue_thread_notification(
+        thread_id,
+        turn_completed_notification(thread_id, "turn-1", TurnStatus::Failed),
+    )
+    .await?;
+    app.enqueue_thread_notification(
+        thread_id,
+        ServerNotification::ThreadRolledBack(ThreadRolledBackNotification {
+            thread_id: thread_id.to_string(),
+        }),
+    )
+    .await?;
+
+    assert!(matches!(
+        app_event_rx.try_recv(),
+        Ok(AppEvent::UpsertSpineSpawnProgressCell { .. })
+    ));
+    assert!(matches!(
+        app_event_rx.try_recv(),
+        Ok(AppEvent::ClearIncompleteSpineOverlays { .. })
+    ));
+    assert!(matches!(
+        app_event_rx.try_recv(),
+        Ok(AppEvent::InvalidateSpineTreeView { .. })
+    ));
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn enqueue_thread_event_does_not_block_when_channel_full() -> Result<()> {
     let mut app = make_test_app().await;
     let thread_id = ThreadId::new();
@@ -506,6 +554,247 @@ async fn enqueue_thread_event_does_not_block_when_channel_full() -> Result<()> {
         .await
         .expect("timed out waiting for second event")
         .expect("channel closed unexpectedly");
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn inactive_thread_replay_restores_spawn_progress_projection() -> Result<()> {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let parent_thread_id = ThreadId::new();
+    let child_thread_id = ThreadId::new();
+    app.ensure_thread_channel(parent_thread_id);
+    while app_event_rx.try_recv().is_ok() {}
+
+    app.enqueue_thread_notification(
+        parent_thread_id,
+        ServerNotification::SpineTreeUpdated(SpineTreeUpdatedNotification {
+            thread_id: parent_thread_id.to_string(),
+            turn_id: "turn-inactive".to_string(),
+            snapshot_seq: 1,
+            active_node_id: "1".to_string(),
+            settled_spawn_call_ids: Vec::new(),
+            nodes: vec![SpineTreeNode {
+                node_id: "1".to_string(),
+                parent_id: None,
+                kind: SpineTreeNodeKind::Task,
+                status: SpineTreeNodeStatus::Live,
+                summary: Some("inactive parent".to_string()),
+                memory_summary: None,
+                start: 0,
+                end: None,
+                context_pressure: None,
+                spawn_outcome: None,
+            }],
+        }),
+    )
+    .await?;
+    app.enqueue_thread_notification(
+        parent_thread_id,
+        ServerNotification::SpineSpawnProgressUpdated(SpineSpawnProgressUpdatedNotification {
+            thread_id: parent_thread_id.to_string(),
+            turn_id: "turn-inactive".to_string(),
+            call_id: "spawn-inactive".to_string(),
+            tasks: vec![SpineSpawnTaskProgress {
+                ordinal: 0,
+                summary: "inactive child".to_string(),
+                thread_id: child_thread_id.to_string(),
+                agent_path: Some("/root/inactive-child".to_string()),
+                status: CollabAgentStatus::Running,
+            }],
+        }),
+    )
+    .await?;
+
+    assert!(matches!(
+        app_event_rx.try_recv(),
+        Ok(AppEvent::UpsertSpineTreeCell { .. })
+    ));
+    assert!(matches!(
+        app_event_rx.try_recv(),
+        Ok(AppEvent::UpsertSpineSpawnProgressCell { .. })
+    ));
+    let snapshot = app
+        .thread_event_channels
+        .get(&parent_thread_id)
+        .expect("missing inactive thread channel")
+        .store
+        .lock()
+        .await
+        .snapshot();
+    app.replay_thread_snapshot(snapshot, /*resume_restored_queue*/ false);
+
+    let replay_events = std::iter::from_fn(|| app_event_rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(
+        replay_events.iter().all(|event| !matches!(
+            event,
+            AppEvent::UpsertSpineTreeCell { .. } | AppEvent::UpsertSpineSpawnProgressCell { .. }
+        )),
+        "thread replay must not duplicate the already applied host projection: {replay_events:#?}"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn working_spine_tree_command_uses_turn_scoped_live_inspection() -> Result<()> {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let thread_id = ThreadId::new();
+    let cwd = tempdir()?;
+    app.chat_widget
+        .handle_thread_session_quiet(test_thread_session(thread_id, cwd.path().to_path_buf()));
+    app.chat_widget
+        .set_feature_enabled(Feature::SpineJit, /*enabled*/ true);
+    app.chat_widget.handle_server_notification(
+        turn_started_notification(thread_id, "turn-working"),
+        /*replay_kind*/ None,
+    );
+    while app_event_rx.try_recv().is_ok() {}
+
+    let mut state = SpineTreeViewState::new(/*animations_enabled*/ true);
+    state.apply_tree_update(SpineTreeUpdatedNotification {
+        thread_id: thread_id.to_string(),
+        turn_id: "turn-working".to_string(),
+        snapshot_seq: 1,
+        active_node_id: "1".to_string(),
+        settled_spawn_call_ids: Vec::new(),
+        nodes: vec![SpineTreeNode {
+            node_id: "1".to_string(),
+            parent_id: None,
+            kind: SpineTreeNodeKind::Task,
+            status: SpineTreeNodeStatus::Live,
+            summary: Some("working inspection".to_string()),
+            memory_summary: None,
+            start: 0,
+            end: None,
+            context_pressure: None,
+            spawn_outcome: None,
+        }],
+    });
+    app.spine_tree_views.insert(thread_id, state);
+
+    let mut tui = crate::tui::test_support::make_test_tui().expect("test tui");
+    let mut app_server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
+        .await
+        .expect("embedded app server");
+    app.handle_event(
+        &mut tui,
+        &mut app_server,
+        AppEvent::ShowSpineTreeSnapshot { debug: false },
+    )
+    .await?;
+
+    assert!(
+        app.transcript_cells.is_empty(),
+        "working inspection must not commit a permanently animated history cell"
+    );
+    let live_lines = app
+        .chat_widget
+        .active_cell_transcript_lines(80)
+        .expect("working inspection should use the live surface");
+    assert!(
+        live_lines
+            .iter()
+            .any(|line| line.to_string().contains("working inspection"))
+    );
+
+    app.chat_widget.handle_server_notification(
+        turn_completed_notification(thread_id, "turn-working", TurnStatus::Completed),
+        /*replay_kind*/ None,
+    );
+    assert!(
+        app.chat_widget.active_cell_transcript_lines(80).is_none(),
+        "inspection must disappear when its turn presentation ends"
+    );
+
+    while app_event_rx.try_recv().is_ok() {}
+    app.handle_event(
+        &mut tui,
+        &mut app_server,
+        AppEvent::ShowSpineTreeSnapshot { debug: false },
+    )
+    .await?;
+    assert!(matches!(
+        app_event_rx.try_recv(),
+        Ok(AppEvent::InsertHistoryCell(_))
+    ));
+
+    app_server.shutdown().await.expect("app server shutdown");
+    Ok(())
+}
+
+#[tokio::test]
+async fn restored_running_turn_rebinds_stale_spine_tree_inspection() -> Result<()> {
+    let (mut app, _app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let thread_id = ThreadId::new();
+    let cwd = tempdir()?;
+    app.chat_widget
+        .handle_thread_session_quiet(test_thread_session(thread_id, cwd.path().to_path_buf()));
+    app.chat_widget
+        .set_feature_enabled(Feature::SpineJit, /*enabled*/ true);
+
+    let mut state = SpineTreeViewState::new(/*animations_enabled*/ true);
+    state.apply_tree_update(SpineTreeUpdatedNotification {
+        thread_id: thread_id.to_string(),
+        turn_id: "turn-restored".to_string(),
+        snapshot_seq: 1,
+        active_node_id: "1".to_string(),
+        settled_spawn_call_ids: Vec::new(),
+        nodes: vec![SpineTreeNode {
+            node_id: "1".to_string(),
+            parent_id: None,
+            kind: SpineTreeNodeKind::Task,
+            status: SpineTreeNodeStatus::Live,
+            summary: Some("restored inspection".to_string()),
+            memory_summary: None,
+            start: 0,
+            end: None,
+            context_pressure: None,
+            spawn_outcome: None,
+        }],
+    });
+    state.show_working_inspection(SpineTreeWorkingPresentation::current_turn(
+        "turn-restored".to_string(),
+        Instant::now(),
+        Arc::new(AtomicBool::new(false)),
+    ));
+    app.spine_tree_views.insert(thread_id, state);
+
+    app.chat_widget.handle_server_notification(
+        turn_started_notification(thread_id, "turn-restored"),
+        Some(ReplayKind::ThreadSnapshot),
+    );
+    app.refresh_spine_tree_view_for_chat_widget();
+
+    let lines = app
+        .chat_widget
+        .active_cell_transcript_lines(80)
+        .expect("restored running turn should rebind the inspection");
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.to_string().contains("restored inspection"))
+    );
+
+    app.chat_widget.handle_server_notification(
+        turn_completed_notification(thread_id, "turn-restored", TurnStatus::Completed),
+        Some(ReplayKind::ThreadSnapshot),
+    );
+    app.chat_widget.handle_server_notification(
+        turn_started_notification(thread_id, "turn-next"),
+        Some(ReplayKind::ThreadSnapshot),
+    );
+    app.refresh_spine_tree_view_for_chat_widget();
+    assert!(
+        app.chat_widget.active_cell_transcript_lines(80).is_none(),
+        "a later turn must not revive an earlier inspection"
+    );
+    assert!(
+        !app.spine_tree_views
+            .get(&thread_id)
+            .expect("projection should remain")
+            .has_working_inspection()
+    );
 
     Ok(())
 }
@@ -778,16 +1067,20 @@ async fn incomplete_parent_turn_clears_only_its_unsettled_spawn_overlays() -> Re
             status: CollabAgentStatus::Running,
         }],
     };
-    app.handle_thread_event_now(ThreadBufferedEvent::Notification(
+    app.enqueue_thread_notification(
+        parent_thread_id,
         ServerNotification::SpineSpawnProgressUpdated(interrupted_progress.clone()),
-    ));
-    app.handle_thread_event_now(ThreadBufferedEvent::Notification(
+    )
+    .await?;
+    app.enqueue_thread_notification(
+        parent_thread_id,
         turn_completed_notification(
             parent_thread_id,
             "turn-interrupted",
             TurnStatus::Interrupted,
         ),
-    ));
+    )
+    .await?;
 
     let progress_event = app_event_rx.try_recv().expect("buffered spawn progress");
     assert!(matches!(
@@ -823,9 +1116,11 @@ async fn incomplete_parent_turn_clears_only_its_unsettled_spawn_overlays() -> Re
     assert!(state.has_spawn_call("spawn-live"));
 
     while app_event_rx.try_recv().is_ok() {}
-    app.handle_thread_event_now(ThreadBufferedEvent::Notification(
+    app.enqueue_thread_notification(
+        parent_thread_id,
         thread_closed_notification(parent_thread_id),
-    ));
+    )
+    .await?;
     let clear_event = app_event_rx
         .try_recv()
         .expect("thread-close overlay cleanup");
@@ -6092,21 +6387,30 @@ async fn thread_rollback_response_discards_queued_events_and_invalidates_spine_p
     assert!(app.chat_widget.active_cell_transcript_key().is_some());
     while app_event_rx.try_recv().is_ok() {}
 
-    app.handle_thread_event_now(ThreadBufferedEvent::Notification(
+    app.enqueue_thread_notification(
+        thread_id,
         ServerNotification::SpineTreeUpdated(snapshot(
             thread_id,
             11,
             "queued before rollback barrier",
         )),
-    ));
-    app.handle_thread_event_now(ThreadBufferedEvent::Notification(
+    )
+    .await
+    .expect("old tree update should route");
+    app.enqueue_thread_notification(
+        thread_id,
         ServerNotification::ThreadRolledBack(ThreadRolledBackNotification {
             thread_id: thread_id.to_string(),
         }),
-    ));
-    app.handle_thread_event_now(ThreadBufferedEvent::Notification(
+    )
+    .await
+    .expect("rollback barrier should route");
+    app.enqueue_thread_notification(
+        thread_id,
         ServerNotification::SpineTreeUpdated(snapshot(thread_id, 4, "after rollback")),
-    ));
+    )
+    .await
+    .expect("replacement tree should route");
 
     let events = [
         app_event_rx.try_recv().expect("queued old tree update"),

@@ -60,7 +60,7 @@ fn submit_current_composer(chat: &mut ChatWidget) {
 }
 
 #[tokio::test]
-async fn spine_tree_notification_is_forwarded_to_app_projection_owner() {
+async fn spine_tree_notification_does_not_create_a_second_chatwidget_projection_owner() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     let snapshot = codex_app_server_protocol::SpineTreeUpdatedNotification {
         thread_id: "thread-1".to_string(),
@@ -87,11 +87,7 @@ async fn spine_tree_notification_is_forwarded_to_app_projection_owner() {
         /*replay_kind*/ None,
     );
     assert_eq!(chat.last_spine_tree_snapshot, None);
-    assert_matches!(
-        rx.try_recv(),
-        Ok(AppEvent::UpsertSpineTreeCell { snapshot: actual })
-            if actual == snapshot
-    );
+    assert!(rx.try_recv().is_err());
 }
 
 #[tokio::test]

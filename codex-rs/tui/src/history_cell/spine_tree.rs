@@ -8,16 +8,60 @@ use codex_app_server_protocol::SpineTreeNodeKind;
 use codex_app_server_protocol::SpineTreeNodeStatus;
 use codex_app_server_protocol::SpineTreeUpdatedNotification;
 use std::collections::HashSet;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
+use std::time::Instant;
 
 use crate::motion::MotionMode;
-use crate::motion::green_breathing_marker;
-use crate::motion::white_green_shimmer_text;
+use crate::motion::blue_breathing_marker;
+use crate::motion::white_shimmer_text;
 
 #[path = "spine_tree_debug.rs"]
 mod debug;
 
 const PRETTY_MAX_VISIBLE_SIBLINGS: usize = 3;
 const INVALID_SPINE_TREE_SNAPSHOT_LABEL: &str = "invalid Spine tree snapshot";
+
+#[derive(Debug, Clone)]
+pub(crate) struct SpineTreeWorkingPresentation {
+    turn_id: Option<String>,
+    started_at: Instant,
+    alive: Option<Arc<AtomicBool>>,
+}
+
+impl SpineTreeWorkingPresentation {
+    fn live_tail(started_at: Instant) -> Self {
+        Self {
+            turn_id: None,
+            started_at,
+            alive: None,
+        }
+    }
+
+    pub(crate) fn current_turn(
+        turn_id: String,
+        started_at: Instant,
+        alive: Arc<AtomicBool>,
+    ) -> Self {
+        Self {
+            turn_id: Some(turn_id),
+            started_at,
+            alive: Some(alive),
+        }
+    }
+
+    fn started_at_if_active(&self) -> Option<Instant> {
+        self.alive
+            .as_ref()
+            .is_none_or(|alive| alive.load(Ordering::Relaxed))
+            .then_some(self.started_at)
+    }
+
+    fn belongs_to_same_turn(&self, other: &Self) -> bool {
+        self.turn_id.is_some() && self.turn_id == other.turn_id
+    }
+}
 
 #[cfg(test)]
 pub(crate) fn new_spine_tree_snapshot(
@@ -28,7 +72,8 @@ pub(crate) fn new_spine_tree_snapshot(
         display_mode: SpineTreeDisplayMode::Pretty,
         spawn_overlays: Vec::new(),
         animations_enabled: false,
-        active_working: false,
+        working_presentation: None,
+        hide_when_working_ends: false,
     }
 }
 
@@ -40,7 +85,8 @@ pub(crate) fn new_debug_spine_tree_snapshot(
         display_mode: SpineTreeDisplayMode::Debug(None),
         spawn_overlays: Vec::new(),
         animations_enabled: false,
-        active_working: false,
+        working_presentation: None,
+        hide_when_working_ends: false,
     }
 }
 
@@ -53,7 +99,8 @@ pub(crate) fn new_debug_spine_node_snapshot(
         display_mode: SpineTreeDisplayMode::Debug(Some(node_id)),
         spawn_overlays: Vec::new(),
         animations_enabled: false,
-        active_working: false,
+        working_presentation: None,
+        hide_when_working_ends: false,
     }
 }
 
@@ -63,6 +110,7 @@ pub(crate) struct SpineTreeViewState {
     overlays: Vec<SpineSpawnOverlay>,
     settled_spawn_call_ids: HashSet<String>,
     animations_enabled: bool,
+    inspection: Option<SpineTreeWorkingPresentation>,
 }
 
 impl Default for SpineTreeViewState {
@@ -78,6 +126,7 @@ impl SpineTreeViewState {
             overlays: Vec::new(),
             settled_spawn_call_ids: HashSet::new(),
             animations_enabled,
+            inspection: None,
         }
     }
 
@@ -195,16 +244,33 @@ impl SpineTreeViewState {
     }
 
     pub(crate) fn render_cell(&self) -> Option<SpineTreeUpdateCell> {
-        if self.overlays.is_empty() {
-            return None;
-        }
         let snapshot = self.snapshot.clone()?;
+        let (working_presentation, hide_when_working_ends) = if let Some(started_at) = self
+            .overlays
+            .iter()
+            .map(SpineSpawnOverlay::animation_start)
+            .min()
+        {
+            (
+                Some(SpineTreeWorkingPresentation::live_tail(started_at)),
+                false,
+            )
+        } else if let Some(inspection) = self
+            .inspection
+            .as_ref()
+            .filter(|inspection| inspection.started_at_if_active().is_some())
+        {
+            (Some(inspection.clone()), true)
+        } else {
+            return None;
+        };
         Some(SpineTreeUpdateCell {
             snapshot,
             display_mode: SpineTreeDisplayMode::Pretty,
             spawn_overlays: self.overlays.clone(),
             animations_enabled: self.animations_enabled,
-            active_working: true,
+            working_presentation,
+            hide_when_working_ends,
         })
     }
 
@@ -215,8 +281,29 @@ impl SpineTreeViewState {
             display_mode: SpineTreeDisplayMode::Pretty,
             spawn_overlays: Vec::new(),
             animations_enabled: false,
-            active_working: false,
+            working_presentation: None,
+            hide_when_working_ends: false,
         })
+    }
+
+    pub(crate) fn show_working_inspection(&mut self, presentation: SpineTreeWorkingPresentation) {
+        self.inspection = Some(presentation);
+    }
+
+    pub(crate) fn rebind_working_inspection(&mut self, presentation: SpineTreeWorkingPresentation) {
+        if self
+            .inspection
+            .as_ref()
+            .is_some_and(|inspection| inspection.belongs_to_same_turn(&presentation))
+        {
+            self.inspection = Some(presentation);
+        } else {
+            self.inspection = None;
+        }
+    }
+
+    pub(crate) fn has_working_inspection(&self) -> bool {
+        self.inspection.is_some()
     }
 
     #[cfg(test)]
@@ -233,7 +320,8 @@ pub(crate) struct SpineTreeUpdateCell {
     display_mode: SpineTreeDisplayMode,
     spawn_overlays: Vec<SpineSpawnOverlay>,
     animations_enabled: bool,
-    active_working: bool,
+    working_presentation: Option<SpineTreeWorkingPresentation>,
+    hide_when_working_ends: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -244,18 +332,21 @@ enum SpineTreeDisplayMode {
 
 impl SpineTreeUpdateCell {
     fn active_working_started_at(&self) -> Option<std::time::Instant> {
-        if !self.active_working {
-            return None;
-        }
-        self.spawn_overlays
-            .iter()
-            .map(SpineSpawnOverlay::animation_start)
-            .min()
+        self.working_presentation
+            .as_ref()
+            .and_then(SpineTreeWorkingPresentation::started_at_if_active)
+    }
+
+    fn should_hide(&self) -> bool {
+        self.hide_when_working_ends && self.active_working_started_at().is_none()
     }
 }
 
 impl HistoryCell for SpineTreeUpdateCell {
     fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
+        if self.should_hide() {
+            return Vec::new();
+        }
         match &self.display_mode {
             SpineTreeDisplayMode::Pretty => pretty_display_lines(
                 &self.snapshot,
@@ -271,6 +362,9 @@ impl HistoryCell for SpineTreeUpdateCell {
     }
 
     fn raw_lines(&self) -> Vec<Line<'static>> {
+        if self.should_hide() {
+            return Vec::new();
+        }
         match &self.display_mode {
             SpineTreeDisplayMode::Pretty => pretty_raw_lines(&self.snapshot),
             SpineTreeDisplayMode::Debug(node_id) => {
@@ -390,7 +484,7 @@ fn render_pretty_node(
     let node_is_working = active && active_working_started_at.is_some();
     let mut spans = vec![Span::from(line_prefix).dim()];
     spans.push(if node_is_working {
-        green_breathing_marker(
+        blue_breathing_marker(
             active_working_started_at,
             MotionMode::from_animations_enabled(animations_enabled),
             "◉",
@@ -402,7 +496,7 @@ fn render_pretty_node(
     spans.push(" ".into());
     let label = pretty_node_label_text(node, active);
     if node_is_working {
-        spans.extend(white_green_shimmer_text(
+        spans.extend(white_shimmer_text(
             &label,
             MotionMode::from_animations_enabled(animations_enabled),
         ));
@@ -1278,8 +1372,8 @@ mod tests {
             .find(|span| span.content.contains("working summary"))
             .expect("active summary");
 
-        assert_eq!(marker.style.fg, Some(Color::Green));
-        assert!(!marker.style.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(marker.style.fg, Some(Color::Cyan));
+        assert!(marker.style.add_modifier.contains(Modifier::BOLD));
         assert_eq!(summary.style.fg, None);
 
         let snapshot = state.snapshot_cell().expect("snapshot should render");
@@ -1312,6 +1406,49 @@ mod tests {
 
         assert!(state.render_cell().is_none());
         assert!(state.snapshot_cell().is_some());
+    }
+
+    #[test]
+    fn working_inspection_is_live_only_for_the_current_turn() {
+        let mut state = SpineTreeViewState::new(true);
+        state.apply_tree_update(snapshot(
+            "1",
+            vec![node(
+                "1",
+                None,
+                Some("working inspection"),
+                SpineTreeNodeStatus::Live,
+            )],
+        ));
+        let alive = Arc::new(AtomicBool::new(true));
+        state.show_working_inspection(SpineTreeWorkingPresentation::current_turn(
+            "turn".to_string(),
+            Instant::now(),
+            Arc::clone(&alive),
+        ));
+
+        let live = state
+            .render_cell()
+            .expect("working inspection should render");
+        assert!(live.transcript_animation_tick().is_some());
+        assert!(
+            live.display_lines(80)
+                .iter()
+                .any(|line| line.to_string().contains("working inspection"))
+        );
+
+        alive.store(false, Ordering::Relaxed);
+
+        assert!(live.display_lines(80).is_empty());
+        assert_eq!(live.transcript_animation_tick(), None);
+        assert!(state.render_cell().is_none());
+        let snapshot = state.snapshot_cell().expect("semantic snapshot remains");
+        assert!(
+            snapshot
+                .display_lines(80)
+                .iter()
+                .any(|line| line.to_string().contains("working inspection"))
+        );
     }
 
     #[test]

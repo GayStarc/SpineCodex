@@ -97,6 +97,7 @@ impl ChatWidget {
             }
         }
         if feature == Feature::SpineJit {
+            self.turn_lifecycle.set_presentation_enabled(enabled);
             self.sync_spine_tree_enabled();
             self.update_task_running_state();
         }

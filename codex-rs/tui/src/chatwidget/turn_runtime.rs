@@ -511,12 +511,6 @@ impl ChatWidget {
         self.add_to_history(history_cell::new_plan_update(update));
     }
 
-    pub(super) fn on_spine_tree_update(&mut self, notification: SpineTreeUpdatedNotification) {
-        self.app_event_tx.send(AppEvent::UpsertSpineTreeCell {
-            snapshot: notification,
-        });
-    }
-
     pub(crate) fn set_spine_tree_view(
         &mut self,
         snapshot: Option<SpineTreeUpdatedNotification>,
@@ -527,6 +521,20 @@ impl ChatWidget {
         self.refresh_status_surfaces();
         self.bump_active_cell_revision();
         self.request_redraw();
+    }
+
+    pub(crate) fn spine_tree_working_presentation(
+        &self,
+    ) -> Option<history_cell::SpineTreeWorkingPresentation> {
+        if !self.config.features.enabled(Feature::SpineJit) {
+            return None;
+        }
+        let turn_id = self.turn_lifecycle.last_turn_id.clone()?;
+        let started_at = self.turn_lifecycle.agent_turn_started_at?;
+        let alive = self.turn_lifecycle.presentation_alive()?;
+        Some(history_cell::SpineTreeWorkingPresentation::current_turn(
+            turn_id, started_at, alive,
+        ))
     }
 
     pub(super) fn interrupted_turn_message(&self, reason: TurnAbortReason) -> String {

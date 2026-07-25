@@ -145,6 +145,7 @@ pub(crate) use session::*;
 pub(crate) use spine_spawn_progress::spine_spawn_status;
 pub(crate) use spine_tree::SpineTreeUpdateCell;
 pub(crate) use spine_tree::SpineTreeViewState;
+pub(crate) use spine_tree::SpineTreeWorkingPresentation;
 pub(crate) use spine_tree::new_debug_spine_node_snapshot;
 pub(crate) use spine_tree::new_debug_spine_tree_snapshot;
 

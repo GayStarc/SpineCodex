@@ -343,19 +343,32 @@ impl App {
         }
         let selected_thread_id = chat_widget.thread_id();
         self.chat_widget = chat_widget;
-        if let Some(thread_id) = selected_thread_id {
-            let live = self
-                .spine_tree_views
-                .get(&thread_id)
-                .map(|state| (state.snapshot().cloned(), state.render_cell()));
-            self.chat_widget.set_spine_tree_view(
-                live.as_ref().and_then(|live| live.0.clone()),
-                live.and_then(|live| live.1),
-            );
+        if selected_thread_id.is_some() {
+            self.refresh_spine_tree_view_for_chat_widget();
         } else {
             self.chat_widget.set_spine_tree_view(None, None);
         }
         self.sync_active_agent_label();
+    }
+
+    pub(super) fn refresh_spine_tree_view_for_chat_widget(&mut self) {
+        let Some(thread_id) = self.chat_widget.thread_id() else {
+            self.chat_widget.set_spine_tree_view(None, None);
+            return;
+        };
+        let replacement_presentation = self.chat_widget.spine_tree_working_presentation();
+        let live = self.spine_tree_views.get_mut(&thread_id).map(|state| {
+            if state.has_working_inspection()
+                && let Some(presentation) = replacement_presentation
+            {
+                state.rebind_working_inspection(presentation);
+            }
+            (state.snapshot().cloned(), state.render_cell())
+        });
+        self.chat_widget.set_spine_tree_view(
+            live.as_ref().and_then(|live| live.0.clone()),
+            live.and_then(|live| live.1),
+        );
     }
 
     pub(super) async fn select_agent_thread(

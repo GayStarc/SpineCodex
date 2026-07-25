@@ -40,9 +40,9 @@ pub(crate) fn green_shimmer_spans(text: &str) -> Vec<Span<'static>> {
     )
 }
 
-pub(crate) fn white_green_shimmer_spans(text: &str) -> Vec<Span<'static>> {
+pub(crate) fn white_shimmer_spans(text: &str) -> Vec<Span<'static>> {
     let grapheme_count = text.graphemes(true).count();
-    white_green_shimmer_spans_at(text, sweep_position(grapheme_count), motion_green_style())
+    white_shimmer_spans_at(text, sweep_position(grapheme_count))
 }
 
 pub(crate) fn motion_green_style() -> Style {
@@ -99,16 +99,14 @@ fn shimmer_spans_with_palette(
     spans
 }
 
-fn white_green_shimmer_spans_at(text: &str, pos: usize, green_style: Style) -> Vec<Span<'static>> {
+fn white_shimmer_spans_at(text: &str, pos: usize) -> Vec<Span<'static>> {
     let padding = 10usize;
     style_runs(text, |index| {
         let intensity = band_intensity(index, pos, padding);
-        if intensity < 0.2 {
+        if intensity < 0.4 {
             Style::default()
-        } else if intensity < 0.6 {
-            green_style
         } else {
-            green_style.add_modifier(Modifier::BOLD)
+            Style::default().add_modifier(Modifier::BOLD)
         }
     })
 }
@@ -181,14 +179,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn white_green_sweep_uses_bounded_style_runs() {
-        let text = "A long active summary remains white outside its green sweep";
-        let green = Style::default().fg(Color::Rgb(
-            MOTION_GREEN_RGB.0,
-            MOTION_GREEN_RGB.1,
-            MOTION_GREEN_RGB.2,
-        ));
-        let spans = white_green_shimmer_spans_at(text, 30, green);
+    fn white_sweep_uses_bounded_style_runs() {
+        let text = "A long active summary remains white throughout its sweep";
+        let spans = white_shimmer_spans_at(text, 30);
 
         assert_eq!(
             spans
@@ -197,9 +190,9 @@ mod tests {
                 .collect::<String>(),
             text
         );
-        assert!(spans.len() <= 5, "{spans:#?}");
+        assert!(spans.len() <= 3, "{spans:#?}");
         assert!(spans.iter().any(|span| span.style == Style::default()));
-        assert!(spans.iter().any(|span| span.style.fg == green.fg));
+        assert!(spans.iter().all(|span| span.style.fg.is_none()));
         assert!(
             spans
                 .iter()
@@ -208,10 +201,9 @@ mod tests {
     }
 
     #[test]
-    fn white_green_sweep_preserves_grapheme_boundaries() {
+    fn white_sweep_preserves_grapheme_boundaries() {
         let text = "A e\u{301} 👩‍💻 Z";
-        let green = Style::default().fg(Color::Green);
-        let spans = white_green_shimmer_spans_at(text, 14, green);
+        let spans = white_shimmer_spans_at(text, 14);
         let grapheme_boundaries = text
             .grapheme_indices(true)
             .map(|(index, _)| index)
@@ -227,6 +219,6 @@ mod tests {
             );
         }
         assert_eq!(byte_offset, text.len());
-        assert!(white_green_shimmer_spans_at("", 0, green).is_empty());
+        assert!(white_shimmer_spans_at("", 0).is_empty());
     }
 }
