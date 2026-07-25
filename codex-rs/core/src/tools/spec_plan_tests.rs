@@ -227,6 +227,21 @@ fn set_features(turn: &mut TurnContext, features: &[Feature]) {
 }
 
 #[tokio::test]
+async fn spine_spawn_is_enabled_by_default_for_direct_non_plan_calls() {
+    let defaults = probe(|_| {}).await;
+
+    assert!(
+        defaults
+            .namespace_function_names("spine")
+            .contains(&"spawn".to_string())
+    );
+    assert_eq!(
+        defaults.exposure(&ToolName::namespaced("spine", "spawn").to_string()),
+        ToolExposure::DirectModelOnly
+    );
+}
+
+#[tokio::test]
 async fn spine_spawn_is_independent_from_multi_agent_v2() {
     let baseline_without_spawn = probe(|turn| {
         set_feature(turn, Feature::SpineJit, /*enabled*/ true);

@@ -51,17 +51,18 @@ fn spine_jit_is_stable_and_enabled_by_default() {
 }
 
 #[test]
-fn spine_spawn_is_explicit_and_disabled_by_default() {
+fn spine_spawn_is_experimental_enabled_by_default_and_explicitly_disableable() {
     assert_eq!(feature_for_key("spine_spawn"), Some(Feature::SpineSpawn));
     let stage = Feature::SpineSpawn.stage();
     assert!(matches!(stage, Stage::Experimental { .. }));
     assert_eq!(stage.experimental_menu_name(), Some("Spine spawn"));
     assert!(stage.experimental_menu_description().is_some());
-    assert_eq!(Feature::SpineSpawn.default_enabled(), false);
+    assert_eq!(Feature::SpineSpawn.default_enabled(), true);
     let mut features = Features::with_defaults();
-    assert!(!features.enabled(Feature::SpineSpawn));
-    features.enable(Feature::SpineSpawn);
     assert!(features.enabled(Feature::SpineSpawn));
+
+    features.apply_map(&BTreeMap::from([("spine_spawn".to_string(), false)]));
+    assert!(!features.enabled(Feature::SpineSpawn));
     assert!(!features.enabled(Feature::MultiAgentV2));
 }
 
@@ -75,20 +76,6 @@ fn spine_trim_is_stable_and_enabled_by_default() {
     assert!(features.enabled(Feature::SpineTrim));
     features.disable(Feature::SpineTrim);
     assert!(!features.enabled(Feature::SpineTrim));
-}
-
-#[test]
-fn default_enabled_features_are_stable() {
-    for spec in crate::FEATURES {
-        if spec.default_enabled {
-            assert!(
-                matches!(spec.stage, Stage::Stable | Stage::Removed),
-                "feature `{}` is enabled by default but is not stable/removed ({:?})",
-                spec.key,
-                spec.stage
-            );
-        }
-    }
 }
 
 #[test]

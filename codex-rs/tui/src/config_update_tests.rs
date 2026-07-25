@@ -38,3 +38,15 @@ fn format_config_error_preserves_server_validation_message() {
          features.fast_mode=true violates managed requirements; allowed set [fast_mode=false]"
     );
 }
+
+#[test]
+fn disabling_default_enabled_spine_spawn_persists_explicit_false() {
+    assert_eq!(
+        build_feature_enabled_edit("spine_spawn", /*enabled*/ false),
+        ConfigEdit {
+            key_path: "features.spine_spawn".to_string(),
+            value: serde_json::json!(false),
+            merge_strategy: MergeStrategy::Replace,
+        }
+    );
+}

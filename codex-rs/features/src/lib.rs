@@ -1273,10 +1273,10 @@ pub const FEATURES: &[FeatureSpec] = &[
         key: "spine_spawn",
         stage: Stage::Experimental {
             name: "Spine spawn",
-            menu_description: "Run independent child tasks concurrently and import their results into the Spine tree.",
-            announcement: "NEW: Spine spawn is now available in /experimental.",
+            menu_description: "Run independent child tasks concurrently and import their results into the Spine tree. Enabled by default; changes apply to new sessions.",
+            announcement: "NEW: Spine spawn is enabled by default and can be disabled in /experimental.",
         },
-        default_enabled: false,
+        default_enabled: true,
     },
     FeatureSpec {
         id: Feature::SpineTrim,
