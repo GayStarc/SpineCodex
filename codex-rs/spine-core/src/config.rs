@@ -12,6 +12,12 @@ pub enum Feature {
     Spawn,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpawnPromptMode {
+    ExplicitRequestOnly,
+    Proactive,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SpineConfig {
     schema_version: u32,
@@ -19,6 +25,8 @@ pub struct SpineConfig {
     jit_prompt: String,
     trim_prompt: String,
     spawn_prompt: String,
+    spawn_explicit_request_only_prompt: String,
+    spawn_proactive_prompt: String,
     tool_descriptions: ToolDescriptions,
     features: BTreeSet<Feature>,
 }
@@ -66,6 +74,10 @@ struct FilePrompt {
     trim: Option<String>,
     #[serde(default)]
     spawn: Option<String>,
+    #[serde(default)]
+    spawn_explicit_request_only: Option<String>,
+    #[serde(default)]
+    spawn_proactive: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -120,6 +132,11 @@ impl SpineConfig {
             jit_prompt: parsed.prompt.jit.unwrap_or_default(),
             trim_prompt: parsed.prompt.trim.unwrap_or_default(),
             spawn_prompt: parsed.prompt.spawn.unwrap_or_default(),
+            spawn_explicit_request_only_prompt: parsed
+                .prompt
+                .spawn_explicit_request_only
+                .unwrap_or_default(),
+            spawn_proactive_prompt: parsed.prompt.spawn_proactive.unwrap_or_default(),
             tool_descriptions: ToolDescriptions {
                 open: parsed.tools.open.map(|tool| tool.description),
                 close: parsed.tools.close.map(|tool| tool.description),
@@ -166,6 +183,17 @@ impl SpineConfig {
         crate::prompt::extend(base.to_owned(), self)
     }
 
+    pub fn spawn_prompt(&self, mode: SpawnPromptMode) -> Option<&str> {
+        if !self.is_enabled(Feature::Spawn) {
+            return None;
+        }
+        let prompt = match mode {
+            SpawnPromptMode::ExplicitRequestOnly => &self.spawn_explicit_request_only_prompt,
+            SpawnPromptMode::Proactive => &self.spawn_proactive_prompt,
+        };
+        (!prompt.trim().is_empty()).then_some(prompt.as_str())
+    }
+
     pub(crate) fn prompt(&self, feature: crate::Feature) -> &str {
         match feature {
             crate::Feature::Jit => &self.jit_prompt,
@@ -208,6 +236,14 @@ impl SpineConfig {
             if !self.is_enabled(Feature::Jit) {
                 return Err(crate::InitError::SpawnRequiresJit);
             }
+            require_spawn_prompt(
+                self.spawn_prompt(SpawnPromptMode::ExplicitRequestOnly),
+                Feature::Spawn,
+            )?;
+            require_spawn_prompt(
+                self.spawn_prompt(SpawnPromptMode::Proactive),
+                Feature::Spawn,
+            )?;
             require_tool(self.tool_description("spawn"), "spawn")?;
         }
         Ok(())
@@ -216,6 +252,16 @@ impl SpineConfig {
 
 fn require_prompt(value: &str, feature: crate::Feature) -> Result<(), crate::InitError> {
     if value.trim().is_empty() {
+        return Err(crate::InitError::MissingPrompt(feature));
+    }
+    Ok(())
+}
+
+fn require_spawn_prompt(
+    value: Option<&str>,
+    feature: crate::Feature,
+) -> Result<(), crate::InitError> {
+    if value.is_none() {
         return Err(crate::InitError::MissingPrompt(feature));
     }
     Ok(())
@@ -266,6 +312,8 @@ trim_threshold_bytes = 2048
 jit = "jit prompt"
 trim = ""
 spawn = "spawn prompt"
+spawn_explicit_request_only = "spawn explicit request only prompt"
+spawn_proactive = "spawn proactive prompt"
 [tools.open]
 description = "open"
 [tools.close]
@@ -284,7 +332,22 @@ description = "spawn"
         assert_eq!(config.schema_version(), 1);
         assert_eq!(config.trim_threshold_bytes(), 2048);
         assert_eq!(config.prompt(crate::Feature::Jit), "jit prompt");
+        assert_eq!(
+            config.spawn_prompt(SpawnPromptMode::ExplicitRequestOnly),
+            None
+        );
         assert_eq!(config.tool_description("open"), Some("open"));
+        let config = config
+            .with_features([crate::Feature::Jit, crate::Feature::Spawn])
+            .unwrap();
+        assert_eq!(
+            config.spawn_prompt(SpawnPromptMode::ExplicitRequestOnly),
+            Some("spawn explicit request only prompt")
+        );
+        assert_eq!(
+            config.spawn_prompt(SpawnPromptMode::Proactive),
+            Some("spawn proactive prompt")
+        );
     }
 
     #[test]
@@ -300,9 +363,11 @@ description = "spawn"
     }
 
     #[test]
-    fn default_v1_satisfies_jit_registration() {
+    fn default_v1_satisfies_jit_and_spawn_registration() {
         let config = SpineConfig::v1();
-        let config = config.with_feature(Feature::Jit).unwrap();
+        let config = config
+            .with_features([Feature::Jit, Feature::Spawn])
+            .unwrap();
         config.validate().unwrap();
     }
 }

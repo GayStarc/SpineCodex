@@ -72,6 +72,7 @@ pub(crate) use realtime_start_with_instructions::RealtimeStartWithInstructions;
 pub(crate) use recommended_plugins_instructions::RecommendedPluginsInstructions;
 pub(crate) use rollout_budget::RolloutBudgetContext;
 pub(crate) use spine_context::SpineMemoryFragment;
+pub(crate) use spine_context::SpineMultiAgentModeInstructions;
 pub(crate) use spine_context::SpineNodeFragment;
 pub(crate) use spine_context::SpineSpawnEvidenceFragment;
 pub(crate) use spine_context::SpineStatusFragment;

@@ -22,6 +22,7 @@ pub use compiler::SpineError;
 pub use config::ConfigError;
 pub use config::DEFAULT_CONFIG_TOML;
 pub use config::Feature;
+pub use config::SpawnPromptMode;
 pub use config::SpineConfig;
 pub use context_char::CellId;
 pub use context_char::CharParseError;

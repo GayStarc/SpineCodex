@@ -1,6 +1,10 @@
 use crate::config::ManagedFeatures;
+use crate::context::MultiAgentModeInstructions;
+use crate::context::SpineMultiAgentModeInstructions;
 use codex_features::Feature as CodexFeature;
+use codex_protocol::config_types::MultiAgentMode;
 use codex_utils_absolute_path::AbsolutePathBuf;
+use spine_core::SpawnPromptMode;
 use spine_core::SpineConfig;
 use spine_core::ToolCatalog;
 
@@ -43,3 +47,24 @@ pub(crate) fn load(
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
     Ok((config, tools))
 }
+
+pub(crate) fn multi_agent_mode_instructions(
+    config: &SpineConfig,
+    mode: MultiAgentMode,
+) -> SpineMultiAgentModeInstructions {
+    let prompt = match &mode {
+        MultiAgentMode::ExplicitRequestOnly => {
+            config.spawn_prompt(SpawnPromptMode::ExplicitRequestOnly)
+        }
+        MultiAgentMode::Proactive => config.spawn_prompt(SpawnPromptMode::Proactive),
+        MultiAgentMode::Custom(_) => None,
+    };
+    prompt.map_or_else(
+        || SpineMultiAgentModeInstructions::Native(MultiAgentModeInstructions::new(mode)),
+        |prompt| SpineMultiAgentModeInstructions::Configured(prompt.to_string()),
+    )
+}
+
+#[cfg(test)]
+#[path = "config_tests.rs"]
+mod tests;

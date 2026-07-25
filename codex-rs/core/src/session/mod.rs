@@ -26,7 +26,6 @@ use crate::context::ApprovedCommandPrefixSaved;
 use crate::context::AvailableSkillsInstructions;
 use crate::context::CollaborationModeInstructions;
 use crate::context::ContextualUserFragment;
-use crate::context::MultiAgentModeInstructions;
 use crate::context::NetworkRuleSaved;
 use crate::context::PermissionsInstructions;
 use crate::context::PersonalitySpecInstructions;
@@ -3662,7 +3661,10 @@ impl Session {
         }
         if let Some(multi_agent_mode) = multi_agents::effective_multi_agent_mode(turn_context) {
             items.push(ContextualUserFragment::into(
-                MultiAgentModeInstructions::new(multi_agent_mode),
+                crate::spine::config::multi_agent_mode_instructions(
+                    &turn_context.config.spine_config,
+                    multi_agent_mode,
+                ),
             ));
         }
         if let Some(contextual_user_message) =

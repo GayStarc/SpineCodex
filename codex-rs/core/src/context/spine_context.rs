@@ -1,7 +1,10 @@
 use super::ContextualUserFragment;
+use super::MultiAgentModeInstructions;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::num_format::format_si_suffix;
+use codex_protocol::protocol::MULTI_AGENT_MODE_CLOSE_TAG;
+use codex_protocol::protocol::MULTI_AGENT_MODE_OPEN_TAG;
 use spine_core::NodeId;
 use spine_core::NodeStatus;
 use spine_core::SpawnOutcome;
@@ -9,6 +12,32 @@ use spine_core::SpawnTask;
 use spine_core::StatusSignal;
 
 pub(crate) const MAX_SPINE_FRAGMENT_BYTES: usize = 40 * 1024;
+
+pub(crate) enum SpineMultiAgentModeInstructions {
+    Native(MultiAgentModeInstructions),
+    Configured(String),
+}
+
+impl ContextualUserFragment for SpineMultiAgentModeInstructions {
+    fn role(&self) -> &'static str {
+        "developer"
+    }
+
+    fn markers(&self) -> (&'static str, &'static str) {
+        Self::type_markers()
+    }
+
+    fn type_markers() -> (&'static str, &'static str) {
+        (MULTI_AGENT_MODE_OPEN_TAG, MULTI_AGENT_MODE_CLOSE_TAG)
+    }
+
+    fn body(&self) -> String {
+        match self {
+            Self::Native(instructions) => instructions.body(),
+            Self::Configured(body) => body.clone(),
+        }
+    }
+}
 
 macro_rules! impl_fragment {
     ($name:ident, $role:literal, $start:literal, $end:literal) => {
