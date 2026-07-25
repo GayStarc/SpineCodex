@@ -367,10 +367,6 @@ where
         &mut self.handler
     }
 
-    pub fn observer_mut(&mut self) -> &mut O {
-        &mut self.observer
-    }
-
     pub fn tools(&self) -> &ToolCatalog {
         &self.tools
     }

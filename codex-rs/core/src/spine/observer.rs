@@ -33,9 +33,6 @@ pub(crate) struct CodexSpineObserverHandler {
     fallback_event_id: String,
     memory_projection_tx: Option<watch::Sender<Option<CodexSpineMemoryProjection>>>,
     jit_enabled: bool,
-    deferred: bool,
-    deferred_tree_update: Option<Event>,
-    deferred_memory_projection: Option<CodexSpineMemoryProjection>,
 }
 
 impl CodexSpineObserverHandler {
@@ -50,35 +47,6 @@ impl CodexSpineObserverHandler {
             fallback_event_id,
             memory_projection_tx: memory_projection.map(start_memory_projection_worker),
             jit_enabled,
-            deferred: false,
-            deferred_tree_update: None,
-            deferred_memory_projection: None,
-        }
-    }
-
-    pub(crate) fn defer(&mut self) {
-        self.deferred = true;
-    }
-
-    pub(crate) fn publish_deferred(&mut self) {
-        self.deferred = false;
-        let tree_update = self.deferred_tree_update.take();
-        let memory_projection = self.deferred_memory_projection.take();
-        self.publish(tree_update, memory_projection);
-    }
-
-    fn publish(
-        &self,
-        tree_update: Option<Event>,
-        memory_projection: Option<CodexSpineMemoryProjection>,
-    ) {
-        if let (Some(tx_event), Some(event)) = (&self.tx_event, tree_update)
-            && let Err(err) = tx_event.try_send(event)
-        {
-            warn!("failed to publish Spine tree update: {err}");
-        }
-        if let (Some(tx), Some(memory)) = (&self.memory_projection_tx, memory_projection) {
-            tx.send_replace(Some(memory));
         }
     }
 }
@@ -88,32 +56,29 @@ impl SpineObserverEffectHandler<CodexContextHandler> for CodexSpineObserverHandl
         if !self.jit_enabled {
             return;
         }
-        let tree_update = self.tx_event.as_ref().map(|_| Event {
-            id: context_handler
-                .latest_turn_id()
-                .unwrap_or(&self.fallback_event_id)
-                .to_string(),
-            msg: EventMsg::SpineTreeUpdate(context_tree_update(effect.projection())),
-        });
-        let memory_projection = if effect.kind() == SpineObserverEffectKind::ContextCommitted
-            && self.memory_projection_tx.is_some()
-        {
-            Some(CodexSpineMemoryProjection {
-                entries: super::closed_memory_projection_entries(effect.projection().spine()),
-                user_messages: context_handler
-                    .user_message_projection_entries(effect.projection().stack()),
-            })
-        } else {
-            None
-        };
-        if self.deferred {
-            self.deferred_tree_update = tree_update;
-            if memory_projection.is_some() {
-                self.deferred_memory_projection = memory_projection;
+        if let Some(tx_event) = &self.tx_event {
+            let event = Event {
+                id: context_handler
+                    .latest_turn_id()
+                    .unwrap_or(&self.fallback_event_id)
+                    .to_string(),
+                msg: EventMsg::SpineTreeUpdate(context_tree_update(effect.projection())),
+            };
+            if let Err(err) = tx_event.try_send(event) {
+                warn!("failed to publish Spine tree update: {err}");
             }
+        }
+        if effect.kind() != SpineObserverEffectKind::ContextCommitted {
             return;
         }
-        self.publish(tree_update, memory_projection);
+        let Some(memory_projection_tx) = &self.memory_projection_tx else {
+            return;
+        };
+        memory_projection_tx.send_replace(Some(CodexSpineMemoryProjection {
+            entries: super::closed_memory_projection_entries(effect.projection().spine()),
+            user_messages: context_handler
+                .user_message_projection_entries(effect.projection().stack()),
+        }));
     }
 }
 
