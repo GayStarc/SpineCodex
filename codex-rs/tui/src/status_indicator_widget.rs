@@ -270,6 +270,7 @@ impl Renderable for StatusIndicatorWidget {
             && let Some(activity_word) = self.organic_working_word
         {
             let indicator = green_growth_marker(elapsed_duration, motion_mode);
+            spans.push("  ".into());
             spans.push(indicator);
             spans.push(" ".into());
             spans.extend(green_shimmer_text(activity_word, motion_mode));
@@ -575,7 +576,7 @@ mod tests {
             .draw(|f| w.render(f.area(), f.buffer_mut()))
             .expect("draw");
 
-        let marker = &terminal.backend().buffer().content()[0];
+        let marker = &terminal.backend().buffer().content()[2];
         assert_eq!(marker.symbol(), "ϒ");
         assert!(marker.modifier.contains(ratatui::style::Modifier::BOLD));
     }
