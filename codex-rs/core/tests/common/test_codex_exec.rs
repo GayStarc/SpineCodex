@@ -28,7 +28,9 @@ impl TestCodexExecBuilder {
             .arg("-c")
             .arg("features.spine_trim=false")
             .arg("-c")
-            .arg("features.spine_spawn=false");
+            .arg("features.spine_spawn=false")
+            .arg("-c")
+            .arg("features.spine_status=false");
         cmd
     }
     pub fn cmd_with_server(&self, server: &MockServer) -> assert_cmd::Command {

@@ -2965,6 +2965,10 @@ async fn experimental_popup_includes_spine_features() {
         "expected Spine spawn to be shown in the experimental popup, got:\n{popup}"
     );
     assert!(
+        popup.contains("Spine status"),
+        "expected Spine status to be shown in the experimental popup, got:\n{popup}"
+    );
+    assert!(
         popup.contains("Spinetree memory projection"),
         "expected Spinetree memory projection to be shown in the experimental popup, got:\n{popup}"
     );

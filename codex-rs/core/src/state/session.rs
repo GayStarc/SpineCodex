@@ -244,7 +244,7 @@ impl SessionState {
         &self,
         auto_compact_token_limit: Option<i64>,
     ) -> Option<ResponseItem> {
-        if !self.session_configuration.spine_jit_enabled() {
+        if !self.session_configuration.spine_status_enabled() {
             return None;
         }
         let rollout = self.spine_rollout.as_deref()?;

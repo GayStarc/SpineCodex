@@ -110,6 +110,14 @@ async fn experimental_feature_list_returns_feature_metadata_with_stage() -> Resu
     assert_eq!(spine_spawn.stage, ExperimentalFeatureStage::Beta);
     assert!(spine_spawn.enabled);
     assert!(spine_spawn.default_enabled);
+    let spine_status = actual
+        .data
+        .iter()
+        .find(|feature| feature.name == "spine_status")
+        .expect("Spine status feature should be present");
+    assert_eq!(spine_status.stage, ExperimentalFeatureStage::Beta);
+    assert!(spine_status.enabled);
+    assert!(spine_status.default_enabled);
     Ok(())
 }
 

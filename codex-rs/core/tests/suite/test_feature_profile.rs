@@ -8,7 +8,12 @@ async fn native_codex_test_profile_disables_spine_features() -> Result<()> {
     let server = start_mock_server().await;
     let test = test_codex().build(&server).await?;
 
-    for feature in [Feature::SpineJit, Feature::SpineTrim, Feature::SpineSpawn] {
+    for feature in [
+        Feature::SpineJit,
+        Feature::SpineTrim,
+        Feature::SpineSpawn,
+        Feature::SpineStatus,
+    ] {
         assert!(
             !test.config.features.enabled(feature),
             "native Codex test profile unexpectedly enabled {}",

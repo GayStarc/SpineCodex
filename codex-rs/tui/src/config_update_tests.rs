@@ -50,3 +50,15 @@ fn disabling_default_enabled_spine_spawn_persists_explicit_false() {
         }
     );
 }
+
+#[test]
+fn disabling_default_enabled_spine_status_persists_explicit_false() {
+    assert_eq!(
+        build_feature_enabled_edit("spine_status", /*enabled*/ false),
+        ConfigEdit {
+            key_path: "features.spine_status".to_string(),
+            value: serde_json::json!(false),
+            merge_strategy: MergeStrategy::Replace,
+        }
+    );
+}

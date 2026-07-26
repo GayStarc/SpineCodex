@@ -126,10 +126,40 @@ async fn spine_feature_off_clones_native_history_unchanged() {
 async fn spine_jit_is_enabled_in_default_session_state() {
     let session_configuration = make_session_configuration_for_tests().await;
     assert!(session_configuration.spine_jit_enabled());
+    assert!(session_configuration.spine_status_enabled());
     assert!(
         SessionState::new(session_configuration)
             .spine_tree_update()
             .is_some()
+    );
+}
+
+#[tokio::test]
+async fn spine_status_requires_both_spine_jit_and_spine_status() {
+    let enabled = make_session_configuration_for_tests().await;
+    assert!(enabled.spine_status_enabled());
+    assert!(
+        SessionState::new(enabled)
+            .spine_status_prompt_overlay(None)
+            .is_some()
+    );
+
+    let mut status_disabled = make_session_configuration_for_tests().await;
+    status_disabled.disable_spine_status_for_test();
+    assert!(!status_disabled.spine_status_enabled());
+    assert!(
+        SessionState::new(status_disabled)
+            .spine_status_prompt_overlay(None)
+            .is_none()
+    );
+
+    let mut jit_disabled = make_session_configuration_for_tests().await;
+    jit_disabled.disable_spine_jit_for_test();
+    assert!(!jit_disabled.spine_status_enabled());
+    assert!(
+        SessionState::new(jit_disabled)
+            .spine_status_prompt_overlay(None)
+            .is_none()
     );
 }
 

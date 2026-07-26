@@ -61,6 +61,38 @@ async fn spine_adapter_profile_projects_anchored_input_and_status() -> Result<()
 }
 
 #[tokio::test]
+async fn spine_adapter_omits_status_when_feature_is_disabled() -> Result<()> {
+    let server = start_mock_server().await;
+    let response_mock = mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("spine-status-disabled"),
+            ev_completed("spine-status-disabled"),
+        ]),
+    )
+    .await;
+    let mut builder = spine_test_codex().with_config(|config| {
+        config
+            .features
+            .disable(Feature::SpineStatus)
+            .expect("SpineStatus should be configurable in tests");
+    });
+    let test = builder.build(&server).await?;
+
+    test.submit_turn("status-off probe").await?;
+
+    let input = response_mock.single_request().input();
+    assert!(
+        input
+            .iter()
+            .all(|item| !item.to_string().contains("<spine_status ")),
+        "status-off request must not contain a Spine status developer tail"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn spine_adapter_item_ids_cover_projection_only_status() -> Result<()> {
     let server = start_mock_server().await;
     let response_mock = mount_sse_once(

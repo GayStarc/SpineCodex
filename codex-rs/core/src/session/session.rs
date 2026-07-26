@@ -144,10 +144,24 @@ impl SessionConfiguration {
         let _ = config.features.enable(Feature::SpineSpawn);
     }
 
+    #[cfg(test)]
+    pub(crate) fn disable_spine_status_for_test(&mut self) {
+        let config = Arc::make_mut(&mut self.original_config_do_not_use);
+        let _ = config.features.disable(Feature::SpineStatus);
+    }
+
     pub(crate) fn spine_jit_enabled(&self) -> bool {
         self.original_config_do_not_use
             .features
             .enabled(Feature::SpineJit)
+    }
+
+    pub(crate) fn spine_status_enabled(&self) -> bool {
+        self.spine_jit_enabled()
+            && self
+                .original_config_do_not_use
+                .features
+                .enabled(Feature::SpineStatus)
     }
 
     pub(crate) fn spine_trim_enabled(&self) -> bool {

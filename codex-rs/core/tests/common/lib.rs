@@ -227,10 +227,14 @@ pub enum TestFeatureProfile {
 
 impl TestFeatureProfile {
     /// Apply the profile after config loading and before a test runtime starts.
-    /// Keep SpineSpawn out of generic fixtures even though the product enables it by default;
-    /// spawn-focused tests opt in explicitly.
+    /// Keep default-on Spine features out of generic fixtures; focused tests opt in explicitly.
     pub fn apply(self, config: &mut Config) -> anyhow::Result<()> {
-        for feature in [Feature::SpineJit, Feature::SpineTrim, Feature::SpineSpawn] {
+        for feature in [
+            Feature::SpineJit,
+            Feature::SpineTrim,
+            Feature::SpineSpawn,
+            Feature::SpineStatus,
+        ] {
             config.features.disable(feature)?;
         }
         if matches!(self, Self::SpineJit) {
