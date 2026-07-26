@@ -165,17 +165,17 @@ mod tests {
                 .binary_search_by(|probe| probe.as_str().cmp("skill-creator/scripts/init_skill.py"))
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn system_bundle_excludes_retired_spine_plan_seed() {
+        let mut items = Vec::new();
+        collect_fingerprint_items(&SYSTEM_SKILLS_DIR, &mut items);
+
         assert!(
-            paths
-                .binary_search_by(|probe| probe.as_str().cmp("spine-plan-seed/SKILL.md"))
-                .is_ok()
-        );
-        assert!(
-            paths
-                .binary_search_by(|probe| {
-                    probe.as_str().cmp("spine-plan-seed/scripts/check_plan.py")
-                })
-                .is_ok()
+            items
+                .iter()
+                .all(|(path, _)| !path.starts_with("spine-plan-seed"))
         );
     }
 }
