@@ -22,7 +22,6 @@ detailed context can be replaced by compact continuation memory so later work
 does not need to broadly reconstruct it. It then returns to the immediate
 parent. Each piece of work belongs in the node that owns it, and `next` closes
 the current scope and enters a sibling under the same parent.
-Use `$spine-plan-seed` when long-running work benefits from a durable plan.
 
 Core workflow:
 
@@ -65,9 +64,13 @@ Conventions:
   at boundaries that keep the active context focused without causing repeated
   context reloads. Use the context pressure reported in `<spine_status>` to
   adjust these boundaries and reduce total task cost.
-* Use at most one Spine transition per assistant turn. Ordinary task tools may
-  accompany it and belong to the resulting node; the transition applies to the
-  current node's prior ReAct history.
+* Use at most one Spine transition (`next`, `open`, or `close`) per assistant
+  turn. Whenever ordinary tool calls are needed, batch as many compatible
+  calls as practical in the same turn, whether or not the turn includes a
+  transition, to minimize ReAct iterations and total context pressure. When a
+  transition is present, it applies to the current node's prior ReAct history;
+  ordinary tool calls issued alongside it execute in and belong to the resulting
+  node.
 * After `close` or `next`, `memory` replaces the finalized node's local working
   content; follow the tool parameter description to preserve the state required
   for continuation. Runtime preserves user messages and child memories, so use
