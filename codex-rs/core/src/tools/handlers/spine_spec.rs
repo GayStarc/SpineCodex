@@ -12,28 +12,34 @@ pub(crate) const SPINE_NEXT: &str = "next";
 pub(crate) const SPINE_SPAWN: &str = "spawn";
 pub(crate) const SPINE_TRIM: &str = "trim";
 
-const NODE_MEMORY_DESCRIPTION: &str = "Compiled continuation state for the node being finalized. This memory replaces the node's local working content for future continuation. Preserve only continuation-relevant state: completed or confirmed progress, key decisions and constraints, confirmed findings, validation results, bounded unresolved factual gaps or risks, remaining work that can proceed from this memory and inherited context without reconstructing the replaced local detail, and the logic linking evidence and findings to decisions and next steps. Use compact supporting evidence or precise, recoverable references wherever they clarify that logic. For source code, cite the precise path and line or line range; for commands or outputs, cite the exact command and decisive output or result, so later work can continue without replaying completed investigation or reloading the same context. Treat inherited ancestor context as already available. Runtime preserves user messages and child memories; use this memory for the additional state required for continuation. Preserve the continuation-relevant evolution of user intent by using [U#] anchors to resolve approvals, corrections, rejections, clarifications, and elliptical replies to their concrete referents, and record the resulting semantic deltas in task scope, decisions, constraints, progress, and remaining obligations.";
+const NODE_MEMORY_DESCRIPTION: &str = concat!(
+    "Continuation state replacing the finalized node's local working detail. ",
+    "Preserve only what later work needs beyond inherited context: completed or confirmed progress, confirmed findings, decisions and constraints, validation results, bounded unresolved factual gaps or risks, remaining work that can proceed from this memory and inherited context without reconstructing the replaced detail, and the logic linking evidence and findings to decisions and next steps. ",
+    "Include compact supporting evidence or precise, recoverable references when needed. ",
+    "For source code, cite exact paths and lines; for commands, cite the exact command and decisive output or result, so continuation need not replay the work. ",
+    "Runtime preserves user messages and child memories. ",
+    "Use existing `[U#]` anchors only to bind approvals, corrections, rejections, clarifications, and elliptical replies to their referents and record the resulting continuation-relevant semantic deltas in task scope, decisions, constraints, progress, and remaining obligations; the underlying user messages remain available independently of these references."
+);
 
-const OPEN_SUMMARY_DESCRIPTION: &str = "Concise, actionable, completable goal for the child node's aligned task, information, and context-lifecycle boundary. The transition call carrying this goal is retained in the child node's context.";
-const NEXT_SUMMARY_DESCRIPTION: &str = "Concise, actionable, completable goal for the next sibling's distinct task, information, and context-lifecycle boundary. The transition call carrying this goal is retained in the sibling's context; continuation state from the node being finalized belongs in memory.";
-const TRIM_DESCRIPTION: &str = "Conservatively clean up one tagged tool-response projection; this never changes the Spine tree or creates memory. A TRIM_ID is live only for the immediately previous tool-result batch, and only in your next assistant tool request. After any later tool request it expires; if trim misses, treat the id as expired and continue. Use slice for needed visible evidence, snip only when useful facts are preserved elsewhere, and leave untrimmed if the original may still be needed.";
+const OPEN_SUMMARY_DESCRIPTION: &str = "Concise, actionable, completable goal for a direct child within one aligned set of task, information, and context-lifecycle boundaries. The call carrying it remains in the child's context.";
+const NEXT_SUMMARY_DESCRIPTION: &str = "Concise, actionable, completable goal for a true sibling within its own aligned set of task, information, and context-lifecycle boundaries. The call carrying it remains in the sibling's context; finalized-node state belongs in memory.";
+const TRIM_DESCRIPTION: &str = "Conservatively trim one tagged tool-result projection without changing the Spine tree or creating memory. A TRIM_ID is valid only for the immediately preceding tool-result batch and expires after the next assistant tool request; after a miss, do not retry it. Use slice to retain needed evidence, use snip only after useful facts are preserved, and otherwise leave the result unchanged.";
 const SPAWN_DESCRIPTION: &str = concat!(
-    "Run a fission transaction over two or more self-contained tasks. ",
-    "Each task must own a semantically independent direction: either resolve a concrete uncertainty or produce an independently verifiable outcome, with an explicit scope, evidence boundary, and completion predicate. ",
-    "Each task inherits the current context through native full-history child creation, runs concurrently in an independent session, and returns one terminal final memory. ",
-    "Once launched, a child must be able to evolve its hypotheses and approach using its own primary evidence, without future parent or sibling input. ",
-    "For exploration and review, treat inherited analytical conclusions as hypotheses to verify, refine, or falsify against primary evidence. ",
-    "The parent waits for every child, then imports all closed child nodes atomically in input order. ",
-    "Use this proactively when the current node has two or more independent, self-contained workstreams and concurrent execution would materially improve speed or result quality. ",
-    "Do not spawn paraphrased workstreams over the same tightly coupled question unless they are intentionally assigned as independent replication or falsification. ",
-    "Child workspace and external effects are not transactional; only dispatch tasks whose writes are non-conflicting or explicitly coordinated."
+    "Run two or more self-contained tasks concurrently in independent child sessions created from the current full history. ",
+    "Each child must own a semantically independent direction: either resolve a concrete uncertainty or produce an independently verifiable outcome, with an explicit scope, evidence boundary, and completion predicate. ",
+    "It must evolve its hypotheses and approach using its own primary evidence, without later parent or sibling input, and return one terminal final memory. ",
+    "For exploration or review, treat inherited analytical conclusions as hypotheses to verify, refine, or falsify against primary evidence. ",
+    "The parent waits for all children and imports their terminal results as closed children atomically in input order. ",
+    "Use spawn proactively when the current node contains two or more independent, self-contained workstreams and parallel execution would materially improve speed or result quality. ",
+    "Do not spawn paraphrased workstreams over the same tightly coupled question unless they are deliberately assigned as independent replication or falsification. ",
+    "Child workspace and external effects are non-transactional, so only dispatch tasks whose writes are non-conflicting or explicitly coordinated."
 );
 
 pub(crate) fn create_spine_tool(name: &str) -> ToolSpec {
     let function = match name {
         SPINE_OPEN => ResponsesApiTool {
             name: SPINE_OPEN.to_string(),
-            description: "Open a concrete child node for one scoped local task whose focused unknowns are expected to produce independently compactable detail, beginning its node-local context lifecycle under the current Spine cursor. Ordinary task tools issued alongside it belong to the child; the transition applies to the current node's prior ReAct history.".to_string(),
+            description: "Enter a direct child under the current Spine cursor for one scoped task whose focused unknowns are expected to produce independently compactable local detail, beginning its local context lifecycle. Co-issued ordinary tools belong to the child; the transition applies to the current node's prior ReAct history.".to_string(),
             strict: false,
             defer_loading: None,
             parameters: JsonSchema::object(
@@ -48,7 +54,7 @@ pub(crate) fn create_spine_tool(name: &str) -> ToolSpec {
         },
         SPINE_CLOSE => ResponsesApiTool {
             name: SPINE_CLOSE.to_string(),
-            description: "Finalize the current Spine node after it has reached a stable local result, completed or precisely bounded, and replace its local working detail with the supplied continuation memory before resuming its immediate parent. Ordinary task tools issued alongside it belong to the parent; the transition applies to the current node's prior ReAct history. Root-epoch nodes cannot be closed.".to_string(),
+            description: "Finalize the current node after its local result is complete or precisely bounded for continuation, replace its local detail with the supplied continuation memory, and return to its immediate parent. Root epochs cannot be closed. Co-issued ordinary tools belong to the parent; the transition applies to the current node's prior ReAct history.".to_string(),
             strict: false,
             defer_loading: None,
             parameters: JsonSchema::object(
@@ -63,7 +69,7 @@ pub(crate) fn create_spine_tool(name: &str) -> ToolSpec {
         },
         SPINE_NEXT => ResponsesApiTool {
             name: SPINE_NEXT.to_string(),
-            description: "Finalize the current Spine node after it has reached a stable local result, completed or precisely bounded, replace its local working detail with the supplied continuation memory, and begin a distinct sibling context lifecycle under the same parent. Ordinary task tools issued alongside it belong to the sibling; the transition applies to the current node's prior ReAct history.".to_string(),
+            description: "Finalize the current node after its local result is complete or precisely bounded for continuation, replace its local detail with the supplied continuation memory, and enter a distinct sibling lifecycle under the same parent. Co-issued ordinary tools belong to the sibling; the transition applies to the current node's prior ReAct history.".to_string(),
             strict: false,
             defer_loading: None,
             parameters: JsonSchema::object(
