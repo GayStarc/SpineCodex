@@ -16,6 +16,7 @@ use ratatui::text::Span;
 use crate::shimmer::green_shimmer_spans;
 use crate::shimmer::motion_green_style;
 use crate::shimmer::shimmer_spans;
+use crate::shimmer::spine_tree_green_shimmer_spans;
 
 pub(crate) const ORGANIC_ACTIVITY_WORDS: &[&str] = &[
     "Germinating",
@@ -115,20 +116,6 @@ pub(crate) fn shimmer_text(text: &str, motion_mode: MotionMode) -> Vec<Span<'sta
     }
 }
 
-pub(crate) fn green_activity_indicator(
-    start_time: Option<Instant>,
-    motion_mode: MotionMode,
-    reduced_motion_indicator: ReducedMotionIndicator,
-) -> Option<Span<'static>> {
-    match motion_mode {
-        MotionMode::Animated => Some(animated_green_activity_indicator(start_time)),
-        MotionMode::Reduced => match reduced_motion_indicator {
-            ReducedMotionIndicator::Hidden => None,
-            ReducedMotionIndicator::StaticBullet => Some(Span::styled("•", motion_green_style())),
-        },
-    }
-}
-
 pub(crate) fn green_growth_marker(elapsed: Duration, motion_mode: MotionMode) -> Span<'static> {
     let green = motion_green_style();
     if motion_mode == MotionMode::Reduced {
@@ -168,6 +155,22 @@ pub(crate) fn green_shimmer_text(text: &str, motion_mode: MotionMode) -> Vec<Spa
     }
 }
 
+pub(crate) fn spine_tree_green_shimmer_text(
+    text: &str,
+    motion_mode: MotionMode,
+) -> Vec<Span<'static>> {
+    match motion_mode {
+        MotionMode::Animated => spine_tree_green_shimmer_spans(text),
+        MotionMode::Reduced => {
+            if text.is_empty() {
+                Vec::new()
+            } else {
+                vec![Span::from(text.to_string()).green()]
+            }
+        }
+    }
+}
+
 fn animated_activity_indicator(start_time: Option<Instant>) -> Span<'static> {
     let elapsed = start_time.map(|st| st.elapsed()).unwrap_or_default();
     if supports_color::on_cached(supports_color::Stream::Stdout)
@@ -181,29 +184,6 @@ fn animated_activity_indicator(start_time: Option<Instant>) -> Span<'static> {
     } else {
         let blink_on = (elapsed.as_millis() / 600).is_multiple_of(2);
         if blink_on { "•".into() } else { "◦".dim() }
-    }
-}
-
-fn animated_green_activity_indicator(start_time: Option<Instant>) -> Span<'static> {
-    let elapsed = start_time.map(|st| st.elapsed()).unwrap_or_default();
-    if supports_color::on_cached(supports_color::Stream::Stdout)
-        .map(|level| level.has_16m)
-        .unwrap_or(false)
-    {
-        green_shimmer_spans("•")
-            .into_iter()
-            .next()
-            .unwrap_or_else(|| Span::styled("•", motion_green_style()))
-    } else {
-        let blink_on = (elapsed.as_millis() / 600).is_multiple_of(2);
-        if blink_on {
-            Span::styled("•", motion_green_style())
-        } else {
-            Span::styled(
-                "◦",
-                motion_green_style().add_modifier(ratatui::style::Modifier::DIM),
-            )
-        }
     }
 }
 
@@ -247,6 +227,27 @@ mod tests {
             shimmer_text("", MotionMode::Reduced),
             Vec::<Span<'static>>::new()
         );
+    }
+
+    #[test]
+    fn spine_tree_green_shimmer_text_uses_tree_green() {
+        for motion_mode in [MotionMode::Animated, MotionMode::Reduced] {
+            let spans = spine_tree_green_shimmer_text("Growing", motion_mode);
+            assert_eq!(
+                spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>(),
+                "Growing"
+            );
+            assert!(
+                spans
+                    .iter()
+                    .all(|span| span.style.fg == Some(ratatui::style::Color::Green))
+            );
+        }
+        assert!(spine_tree_green_shimmer_text("", MotionMode::Animated).is_empty());
+        assert!(spine_tree_green_shimmer_text("", MotionMode::Reduced).is_empty());
     }
 
     #[test]

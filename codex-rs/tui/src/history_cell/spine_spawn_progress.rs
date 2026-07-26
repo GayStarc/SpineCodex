@@ -1,8 +1,6 @@
 use crate::motion::MotionMode;
 use crate::motion::ORGANIC_ACTIVITY_WORDS;
-use crate::motion::ReducedMotionIndicator;
-use crate::motion::green_activity_indicator;
-use crate::motion::green_shimmer_text;
+use crate::motion::spine_tree_green_shimmer_text;
 use crate::multi_agents::AgentActivityPreview;
 use crate::multi_agents::AgentActivityTracker;
 use crate::render::line_utils::push_owned_lines;
@@ -188,7 +186,6 @@ impl SpineSpawnOverlay {
             label_spans.extend(status_and_activity_word_spans(
                 &task.status,
                 activity_word,
-                self.started_at,
                 animations_enabled,
             ));
             label_spans.push(" ".into());
@@ -606,22 +603,11 @@ fn random_activity_words(
 fn status_and_activity_word_spans(
     status: &CollabAgentStatus,
     activity_word: &str,
-    started_at: Instant,
     animations_enabled: bool,
 ) -> Vec<Span<'static>> {
     if *status == CollabAgentStatus::Running {
         let motion_mode = MotionMode::from_animations_enabled(animations_enabled);
-        let mut spans = Vec::new();
-        if let Some(indicator) = green_activity_indicator(
-            Some(started_at),
-            motion_mode,
-            ReducedMotionIndicator::StaticBullet,
-        ) {
-            spans.push(indicator);
-            spans.push(" ".into());
-        }
-        spans.extend(green_shimmer_text(activity_word, motion_mode));
-        return spans;
+        return spine_tree_green_shimmer_text(activity_word, motion_mode);
     }
 
     vec![

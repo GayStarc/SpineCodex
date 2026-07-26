@@ -39,6 +39,12 @@ pub(crate) fn green_shimmer_spans(text: &str) -> Vec<Span<'static>> {
     )
 }
 
+pub(crate) fn spine_tree_green_shimmer_spans(text: &str) -> Vec<Span<'static>> {
+    shimmer_spans_with_style(text, |intensity| {
+        color_for_level(intensity).fg(Color::Green)
+    })
+}
+
 pub(crate) fn motion_green_style() -> Style {
     let color = if supports_color::on_cached(supports_color::Stream::Stdout)
         .map(|level| level.has_16m)
@@ -63,22 +69,13 @@ fn shimmer_spans_with_palette(
     highlight_color: (u8, u8, u8),
     fallback: ShimmerFallback,
 ) -> Vec<Span<'static>> {
-    let chars: Vec<char> = text.chars().collect();
-    if chars.is_empty() {
-        return Vec::new();
-    }
-    // Use time-based sweep synchronized to process start.
-    let padding = 10usize;
-    let pos = sweep_position(chars.len());
     let has_true_color = supports_color::on_cached(supports_color::Stream::Stdout)
         .map(|level| level.has_16m)
         .unwrap_or(false);
 
-    let mut spans: Vec<Span<'static>> = Vec::with_capacity(chars.len());
-    for (i, ch) in chars.iter().enumerate() {
-        let t = band_intensity(i, pos, padding);
-        let style = if has_true_color {
-            let highlight = t.clamp(0.0, 1.0);
+    shimmer_spans_with_style(text, |intensity| {
+        if has_true_color {
+            let highlight = intensity.clamp(0.0, 1.0);
             let (r, g, b) = blend(highlight_color, base_color, highlight * 0.9);
             // Allow custom RGB colors, as the implementation is thoughtfully
             // adjusting the level of the default foreground color.
@@ -86,9 +83,27 @@ fn shimmer_spans_with_palette(
             let style = Style::default().fg(Color::Rgb(r, g, b));
             style.add_modifier(Modifier::BOLD)
         } else {
-            fallback_style(t, fallback)
-        };
-        spans.push(Span::styled(ch.to_string(), style));
+            fallback_style(intensity, fallback)
+        }
+    })
+}
+
+fn shimmer_spans_with_style(
+    text: &str,
+    style_for_intensity: impl Fn(f32) -> Style,
+) -> Vec<Span<'static>> {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.is_empty() {
+        return Vec::new();
+    }
+    // Use time-based sweep synchronized to process start.
+    let padding = 10usize;
+    let pos = sweep_position(chars.len());
+
+    let mut spans: Vec<Span<'static>> = Vec::with_capacity(chars.len());
+    for (i, ch) in chars.iter().enumerate() {
+        let intensity = band_intensity(i, pos, padding);
+        spans.push(Span::styled(ch.to_string(), style_for_intensity(intensity)));
     }
     spans
 }

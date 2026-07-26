@@ -52,7 +52,9 @@ fn renders_live_mixed_child_statuses() {
         .join("\n");
     assert!(!rendered.contains("spine.spawn"), "{rendered}");
     assert!(rendered.contains(&format!("├ ✓ {completed_word} inspect native events")));
-    assert!(rendered.contains(&format!("└ • {running_word} verify cancellation")));
+    assert!(rendered.contains(&format!("└ {running_word} verify cancellation")));
+    assert!(!rendered.contains('•'), "{rendered}");
+    assert!(!rendered.contains('◦'), "{rendered}");
     assert!(rendered.contains("Waiting for activity..."));
     assert_eq!(cell.display_lines("  │  ", true, 80, false).len(), 7);
 
@@ -74,15 +76,13 @@ fn renders_live_mixed_child_statuses() {
             "task summary should use the normal foreground: {task_line:?}"
         );
     }
-    for span in &lines[1].spans[1..4] {
-        if !span.content.trim().is_empty() {
-            assert_eq!(
-                span.style.fg,
-                Some(Color::Green),
-                "running marker and activity word should be green: {lines:?}"
-            );
-        }
-    }
+    let running_activity_word = &lines[1].spans[1];
+    assert_eq!(running_activity_word.content.as_ref(), running_word);
+    assert_eq!(
+        running_activity_word.style.fg,
+        Some(Color::Green),
+        "running activity word should use the Spine Tree green: {lines:?}"
+    );
     for activity_line in &lines[2..6] {
         assert!(
             activity_line.spans[0]
@@ -251,7 +251,9 @@ fn first_safe_activity_promotes_pending_task_to_running() {
         .map(|line| line.to_string())
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(rendered.contains("•"), "{rendered}");
+    assert!(!rendered.contains('◌'), "{rendered}");
+    assert!(!rendered.contains('•'), "{rendered}");
+    assert!(!rendered.contains('◦'), "{rendered}");
     assert!(rendered.contains("child produced activity"), "{rendered}");
     assert!(!rendered.contains("Waiting to start..."), "{rendered}");
 
@@ -272,7 +274,9 @@ fn first_safe_activity_promotes_pending_task_to_running() {
         .map(|line| line.to_string())
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(refreshed.contains("•"), "{refreshed}");
+    assert!(!refreshed.contains('◌'), "{refreshed}");
+    assert!(!refreshed.contains('•'), "{refreshed}");
+    assert!(!refreshed.contains('◦'), "{refreshed}");
     assert!(refreshed.contains("child produced activity"), "{refreshed}");
 }
 

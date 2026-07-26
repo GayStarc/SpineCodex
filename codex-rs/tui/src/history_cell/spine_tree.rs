@@ -668,7 +668,8 @@ fn render_history_bucket(
         Span::from(line_prefix).dim(),
         "◌".dim(),
         " ".into(),
-        Span::from(history_bucket_label(count)).dim(),
+        Span::from(format!("{count} previous ")).dim(),
+        Span::from(history_bucket_noun(count)).green(),
     ]);
     let wrapped = adaptive_wrap_line(
         &line,
@@ -679,11 +680,11 @@ fn render_history_bucket(
 }
 
 fn history_bucket_label(count: usize) -> String {
-    if count == 1 {
-        "1 previous task".to_string()
-    } else {
-        format!("{count} previous tasks")
-    }
+    format!("{count} previous {}", history_bucket_noun(count))
+}
+
+fn history_bucket_noun(count: usize) -> &'static str {
+    if count == 1 { "leaf" } else { "leaves" }
 }
 
 fn pretty_node_label_text(node: &SpineTreeNode, active: bool) -> String {
@@ -959,17 +960,25 @@ mod tests {
         let rendered = render(&lines);
         insta::assert_snapshot!(rendered, @r###"
         • Spine Tree
-          ├ ◌ 2 previous tasks
+          ├ ◌ 2 previous leaves
           ├ ✓ child 1
           ├ ✓ child 2
           └ ◉ active child
         "###);
-        let history_label = lines[1]
+        let history_prefix = lines[1]
             .spans
             .iter()
-            .find(|span| span.content.contains("previous tasks"))
-            .expect("history bucket label");
-        assert!(history_label.style.add_modifier.contains(Modifier::DIM));
+            .find(|span| span.content == "2 previous ")
+            .expect("history bucket prefix");
+        assert!(history_prefix.style.add_modifier.contains(Modifier::DIM));
+        assert_ne!(history_prefix.style.fg, Some(Color::Green));
+        let history_noun = lines[1]
+            .spans
+            .iter()
+            .find(|span| span.content == "leaves")
+            .expect("history bucket noun");
+        assert_eq!(history_noun.style.fg, Some(Color::Green));
+        assert!(render(&cell.raw_lines()).contains("2 previous leaves"));
         assert!(!rendered.contains("old root"));
         assert!(!rendered.contains("3 "));
     }
@@ -1031,7 +1040,7 @@ mod tests {
     }
 
     #[test]
-    fn folds_anonymous_completed_parent_as_one_previous_task() {
+    fn folds_anonymous_completed_parent_as_one_previous_leaf() {
         let cell = new_spine_tree_snapshot(snapshot(
             "2.1",
             vec![
@@ -1053,12 +1062,21 @@ mod tests {
             ],
         ));
 
-        insta::assert_snapshot!(render(&cell.display_lines(80)), @r###"
+        let lines = cell.display_lines(80);
+        insta::assert_snapshot!(render(&lines), @r###"
         • Spine Tree
-          ├ ◌ 1 previous task
+          ├ ◌ 1 previous leaf
           └ ◉ active task
         "###);
-        assert!(!render(&cell.raw_lines()).contains("hidden historical child"));
+        let history_noun = lines[1]
+            .spans
+            .iter()
+            .find(|span| span.content == "leaf")
+            .expect("history bucket noun");
+        assert_eq!(history_noun.style.fg, Some(Color::Green));
+        let raw = render(&cell.raw_lines());
+        assert!(raw.contains("1 previous leaf"), "{raw}");
+        assert!(!raw.contains("hidden historical child"));
     }
 
     #[test]
@@ -1603,6 +1621,8 @@ mod tests {
             .find(|line| line.contains("inspect events"))
             .expect("spawn task line should render");
         assert!(task_line.starts_with("      └ "), "{rendered}");
+        assert!(!task_line.contains('•'), "{rendered}");
+        assert!(!task_line.contains('◦'), "{rendered}");
         assert!(!task_line.contains("leaf 0"), "{rendered}");
         assert!(!rendered.contains("spine.spawn"));
         assert!(!rendered.contains("/root/inspector"));
