@@ -17,7 +17,17 @@ const NODE_MEMORY_DESCRIPTION: &str = "Compiled continuation state for the node 
 const OPEN_SUMMARY_DESCRIPTION: &str = "Concise, actionable, completable goal for the child node's aligned task, information, and context-lifecycle boundary. The transition call carrying this goal is retained in the child node's context.";
 const NEXT_SUMMARY_DESCRIPTION: &str = "Concise, actionable, completable goal for the next sibling's distinct task, information, and context-lifecycle boundary. The transition call carrying this goal is retained in the sibling's context; continuation state from the node being finalized belongs in memory.";
 const TRIM_DESCRIPTION: &str = "Conservatively clean up one tagged tool-response projection; this never changes the Spine tree or creates memory. A TRIM_ID is live only for the immediately previous tool-result batch, and only in your next assistant tool request. After any later tool request it expires; if trim misses, treat the id as expired and continue. Use slice for needed visible evidence, snip only when useful facts are preserved elsewhere, and leave untrimmed if the original may still be needed.";
-const SPAWN_DESCRIPTION: &str = "Run a fission transaction over two or more self-contained tasks. Each task inherits the current context through native full-history child creation, runs concurrently in an independent session, needs no parent follow-up, and returns one terminal final memory. The parent waits for every child, then imports all closed child nodes atomically in input order. Use this proactively when the current node has two or more independent, self-contained workstreams and concurrent execution would materially improve speed or result quality. Child workspace and external effects are not transactional; only dispatch tasks whose writes are non-conflicting or explicitly coordinated.";
+const SPAWN_DESCRIPTION: &str = concat!(
+    "Run a fission transaction over two or more self-contained tasks. ",
+    "Each task must own a semantically independent direction: either resolve a concrete uncertainty or produce an independently verifiable outcome, with an explicit scope, evidence boundary, and completion predicate. ",
+    "Each task inherits the current context through native full-history child creation, runs concurrently in an independent session, and returns one terminal final memory. ",
+    "Once launched, a child must be able to evolve its hypotheses and approach using its own primary evidence, without future parent or sibling input. ",
+    "For exploration and review, treat inherited analytical conclusions as hypotheses to verify, refine, or falsify against primary evidence. ",
+    "The parent waits for every child, then imports all closed child nodes atomically in input order. ",
+    "Use this proactively when the current node has two or more independent, self-contained workstreams and concurrent execution would materially improve speed or result quality. ",
+    "Do not spawn paraphrased workstreams over the same tightly coupled question unless they are intentionally assigned as independent replication or falsification. ",
+    "Child workspace and external effects are not transactional; only dispatch tasks whose writes are non-conflicting or explicitly coordinated."
+);
 
 pub(crate) fn create_spine_tool(name: &str) -> ToolSpec {
     let function = match name {
