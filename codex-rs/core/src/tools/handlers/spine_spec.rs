@@ -25,14 +25,16 @@ const OPEN_SUMMARY_DESCRIPTION: &str = "Concise, actionable, completable goal fo
 const NEXT_SUMMARY_DESCRIPTION: &str = "Concise, actionable, completable goal for a true sibling within its own aligned set of task, information, and context-lifecycle boundaries. The call carrying it remains in the sibling's context; finalized-node state belongs in memory.";
 const TRIM_DESCRIPTION: &str = "Conservatively trim one tagged tool-result projection without changing the Spine tree or creating memory. A TRIM_ID is valid only for the immediately preceding tool-result batch and expires after the next assistant tool request; after a miss, do not retry it. Use slice to retain needed evidence, use snip only after useful facts are preserved, and otherwise leave the result unchanged.";
 const SPAWN_DESCRIPTION: &str = concat!(
-    "Run two or more self-contained tasks concurrently in independent child sessions created from the current full history. ",
-    "Each child must own a semantically independent direction: either resolve a concrete uncertainty or produce an independently verifiable outcome, with an explicit scope, evidence boundary, and completion predicate. ",
-    "It must evolve its hypotheses and approach using its own primary evidence, without later parent or sibling input, and return one terminal final memory. ",
+    "Fission the current work into two or more concurrent peer branches created from the current full history. ",
+    "Each branch receives a differentiated assignment and must own a semantically independent direction: either resolve a concrete uncertainty or produce an independently verifiable outcome, with an explicit scope, evidence boundary, and completion predicate. ",
+    "A branch may investigate, review, or implement directly and must return one terminal final memory. ",
+    "If branches need to coordinate, give every affected branch a distinct summary and predeclare the same shared-workspace artifact contract in every affected task prompt. ",
     "For exploration or review, treat inherited analytical conclusions as hypotheses to verify, refine, or falsify against primary evidence. ",
-    "The parent waits for all children and imports their terminal results as closed children atomically in input order. ",
-    "Use spawn proactively when the current node contains two or more independent, self-contained workstreams and parallel execution would materially improve speed or result quality. ",
-    "Do not spawn paraphrased workstreams over the same tightly coupled question unless they are deliberately assigned as independent replication or falsification. ",
-    "Child workspace and external effects are non-transactional, so only dispatch tasks whose writes are non-conflicting or explicitly coordinated."
+    "The original continuation is suspended during the fission; no supervisory model remains active. ",
+    "Join waits for every branch, records their terminal results as closed task nodes under the current Spine scope atomically in input order, and then resumes the original continuation. ",
+    "Use spawn proactively when the current work can be differentiated into two or more independently owned branches and concurrent execution would materially improve speed or result quality. ",
+    "Do not spawn paraphrased branches over the same tightly coupled question unless they are deliberately assigned as independent replication or falsification. ",
+    "Branch workspace and external effects are non-transactional, so production-file writes require disjoint ownership or one explicitly named integration owner."
 );
 
 pub(crate) fn create_spine_tool(name: &str) -> ToolSpec {
@@ -94,14 +96,14 @@ pub(crate) fn create_spine_tool(name: &str) -> ToolSpec {
                     (
                         "summary".to_string(),
                         JsonSchema::string(Some(
-                            "Concise label for one self-contained child task.".to_string(),
+                            "Concise branch label, distinct within this spawn call, and its independently owned outcome."
+                                .to_string(),
                         )),
                     ),
                     (
                         "prompt".to_string(),
                         JsonSchema::string(Some(
-                            "Complete task instruction solvable from inherited context without parent follow-up."
-                                .to_string(),
+                            "Complete initial branch assignment. If coordination is required, identify relevant peer branch summaries and roles, the common coordination root (recommended basename: `coordination_{task_id}_{timestamp}/`), this branch's single-writer coordination path, the artifact format and update/read protocol, synchronization points, and a bounded fallback for unavailable peer coordination state.".to_string(),
                         )),
                     ),
                 ]),
@@ -118,7 +120,7 @@ pub(crate) fn create_spine_tool(name: &str) -> ToolSpec {
                         "tasks".to_string(),
                         JsonSchema::array(
                             task,
-                            Some("Ordered self-contained child tasks.".to_string()),
+                            Some("Ordered differentiated branch assignments.".to_string()),
                         )
                         .with_min_items(2),
                     )]),

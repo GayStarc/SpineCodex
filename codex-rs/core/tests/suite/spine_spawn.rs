@@ -40,7 +40,7 @@ const SPAWN_TOOL: &str = "spawn";
 const SPAWN_CALL_ID: &str = "spawn-lifecycle-call";
 const FIRST_PARENT_PROMPT: &str = "run the lifecycle spawn batch";
 const SECOND_PARENT_PROMPT: &str = "run the replacement spawn batch";
-const CORRECTION_MESSAGE: &str = "你是自依赖的Agent，除了final memory之外不要发送我任何消息。";
+const CORRECTION_MESSAGE: &str = "No supervisory continuation is active during this fission. Continue within the current branch and return its terminal memory when complete or precisely bounded.";
 
 fn body_contains(request: &wiremock::Request, text: &str) -> bool {
     decoded_body(request)
@@ -64,9 +64,8 @@ fn child_task_marker(request: &wiremock::Request, marker: &str) -> bool {
                                 part.get("text")
                                     .and_then(Value::as_str)
                                     .is_some_and(|text| {
-                                        text.contains(
-                                            "You are a self-contained spine.spawn child agent",
-                                        ) && text.contains(marker)
+                                        text.contains("You are one branch of a spine.spawn fission")
+                                            && text.contains(marker)
                                     })
                             })
                         })
@@ -91,7 +90,7 @@ fn has_function_call_output(request: &wiremock::Request, call_id: &str) -> bool 
 
 fn is_parent_spawn_request(request: &wiremock::Request) -> bool {
     body_contains(request, FIRST_PARENT_PROMPT)
-        && !body_contains(request, "You are a self-contained spine.spawn child agent")
+        && !body_contains(request, "You are one branch of a spine.spawn fission")
         && !has_function_call_output(request, SPAWN_CALL_ID)
 }
 
@@ -201,7 +200,7 @@ fn parent_projection_request(
         .find(|request| {
             request.body_contains_text(first_memory)
                 && request.body_contains_text(second_memory)
-                && !request.body_contains_text("You are a self-contained spine.spawn child agent")
+                && !request.body_contains_text("You are one branch of a spine.spawn fission")
         })
         .expect("parent follow-up should contain the completed spawn projection")
 }
@@ -307,7 +306,7 @@ async fn build_reverse_completion_fixture(
         |request: &wiremock::Request| {
             body_contains(request, "first memory")
                 && body_contains(request, "second memory")
-                && !body_contains(request, "You are a self-contained spine.spawn child agent")
+                && !body_contains(request, "You are one branch of a spine.spawn fission")
         },
         sse(vec![
             ev_response_created("parent-followup-response"),
@@ -379,7 +378,7 @@ async fn spawn_starts_batch_concurrently_and_orders_reverse_completion_impl() ->
     let observe_overlap = async {
         if let Err(error) = wait_for_request(&first_child, "first child", |request| {
             request.body_contains_text("first-child-marker")
-                && request.body_contains_text("You are a self-contained spine.spawn child agent")
+                && request.body_contains_text("You are one branch of a spine.spawn fission")
         })
         .await
         {
@@ -399,7 +398,7 @@ async fn spawn_starts_batch_concurrently_and_orders_reverse_completion_impl() ->
         }
         wait_for_request(&second_child, "second child", |request| {
             request.body_contains_text("second-child-marker")
-                && request.body_contains_text("You are a self-contained spine.spawn child agent")
+                && request.body_contains_text("You are one branch of a spine.spawn fission")
         })
         .await?;
         assert!(
@@ -431,12 +430,12 @@ async fn spawn_starts_batch_concurrently_and_orders_reverse_completion_impl() ->
     let parent_first_request =
         unique_matching_request(&parent_spawn, "initial parent", |request| {
             request.body_contains_text(FIRST_PARENT_PROMPT)
-                && !request.body_contains_text("You are a self-contained spine.spawn child agent")
+                && !request.body_contains_text("You are one branch of a spine.spawn fission")
                 && request.function_call_output_text(SPAWN_CALL_ID).is_none()
         });
     let child_first_request = first_matching_request(&first_child, |request| {
         request.body_contains_text("first-child-marker")
-            && request.body_contains_text("You are a self-contained spine.spawn child agent")
+            && request.body_contains_text("You are one branch of a spine.spawn fission")
     });
     let parent_first_body = parent_first_request.body_json();
     let child_first_body = child_first_request.body_json();
@@ -559,7 +558,7 @@ async fn intermediate_message_is_corrected_once_and_never_reaches_parent_model()
         |request: &wiremock::Request| {
             body_contains(request, "corrected child memory")
                 && body_contains(request, "ordinary child memory")
-                && !body_contains(request, "You are a self-contained spine.spawn child agent")
+                && !body_contains(request, "You are one branch of a spine.spawn fission")
         },
         sse(vec![
             ev_response_created("parent-followup-response"),
@@ -573,7 +572,7 @@ async fn intermediate_message_is_corrected_once_and_never_reaches_parent_model()
     let inject_intermediate = async {
         wait_for_request(&corrected_child, "corrected child first turn", |request| {
             request.body_contains_text("corrected-child-marker")
-                && request.body_contains_text("You are a self-contained spine.spawn child agent")
+                && request.body_contains_text("You are one branch of a spine.spawn fission")
         })
         .await?;
         test.codex
@@ -728,12 +727,12 @@ async fn interrupt_tears_down_children_and_releases_batch_capacity() -> Result<(
         .await?;
     wait_for_request(&cancel_first, "cancel first child", |request| {
         request.body_contains_text("cancel-first-marker")
-            && request.body_contains_text("You are a self-contained spine.spawn child agent")
+            && request.body_contains_text("You are one branch of a spine.spawn fission")
     })
     .await?;
     wait_for_request(&cancel_second, "cancel second child", |request| {
         request.body_contains_text("cancel-second-marker")
-            && request.body_contains_text("You are a self-contained spine.spawn child agent")
+            && request.body_contains_text("You are one branch of a spine.spawn fission")
     })
     .await?;
     test.codex.submit(Op::Interrupt).await?;
@@ -769,7 +768,7 @@ async fn interrupt_tears_down_children_and_releases_batch_capacity() -> Result<(
     {
         wait_for_request(mock_response, marker, |request| {
             request.body_contains_text(marker)
-                && request.body_contains_text("You are a self-contained spine.spawn child agent")
+                && request.body_contains_text("You are one branch of a spine.spawn fission")
         })
         .await?;
     }
@@ -799,7 +798,7 @@ async fn successful_batches_release_transaction_children_for_immediate_reuse() -
         move |request: &wiremock::Request| {
             body_contains(request, FIRST_PARENT_PROMPT)
                 && !body_contains(request, SECOND_PARENT_PROMPT)
-                && !body_contains(request, "You are a self-contained spine.spawn child agent")
+                && !body_contains(request, "You are one branch of a spine.spawn fission")
                 && !has_function_call_output(request, first_call_id)
         },
         sse(vec![
@@ -846,7 +845,7 @@ async fn successful_batches_release_transaction_children_for_immediate_reuse() -
                 && body_contains(request, "first batch memory two")
                 && !body_contains(request, SECOND_PARENT_PROMPT)
                 && has_function_call_output(request, first_call_id)
-                && !body_contains(request, "You are a self-contained spine.spawn child agent")
+                && !body_contains(request, "You are one branch of a spine.spawn fission")
         },
         sse(vec![
             ev_response_created("first-success-followup-response"),
@@ -861,7 +860,7 @@ async fn successful_batches_release_transaction_children_for_immediate_reuse() -
         &server,
         move |request: &wiremock::Request| {
             body_contains(request, SECOND_PARENT_PROMPT)
-                && !body_contains(request, "You are a self-contained spine.spawn child agent")
+                && !body_contains(request, "You are one branch of a spine.spawn fission")
                 && !has_function_call_output(request, second_call_id)
         },
         sse(vec![
@@ -907,7 +906,7 @@ async fn successful_batches_release_transaction_children_for_immediate_reuse() -
             body_contains(request, "second batch memory one")
                 && body_contains(request, "second batch memory two")
                 && has_function_call_output(request, second_call_id)
-                && !body_contains(request, "You are a self-contained spine.spawn child agent")
+                && !body_contains(request, "You are one branch of a spine.spawn fission")
         },
         sse(vec![
             ev_response_created("second-success-followup-response"),
@@ -967,7 +966,7 @@ async fn capacity_rejection_returns_one_retryable_error_per_task_without_startin
         &server,
         move |request: &wiremock::Request| {
             body_contains(request, PROMPT)
-                && !body_contains(request, "You are a self-contained spine.spawn child agent")
+                && !body_contains(request, "You are one branch of a spine.spawn fission")
                 && !has_function_call_output(request, CALL_ID)
         },
         sse(vec![
@@ -986,7 +985,7 @@ async fn capacity_rejection_returns_one_retryable_error_per_task_without_startin
         &server,
         move |request: &wiremock::Request| {
             has_function_call_output(request, CALL_ID)
-                && !body_contains(request, "You are a self-contained spine.spawn child agent")
+                && !body_contains(request, "You are one branch of a spine.spawn fission")
         },
         sse(vec![
             ev_response_created("capacity-followup-response"),
@@ -999,7 +998,7 @@ async fn capacity_rejection_returns_one_retryable_error_per_task_without_startin
         &server,
         move |request: &wiremock::Request| {
             body_contains(request, RETRY_PROMPT)
-                && !body_contains(request, "You are a self-contained spine.spawn child agent")
+                && !body_contains(request, "You are one branch of a spine.spawn fission")
                 && !has_function_call_output(request, RETRY_CALL_ID)
         },
         sse(vec![
@@ -1046,7 +1045,7 @@ async fn capacity_rejection_returns_one_retryable_error_per_task_without_startin
             has_function_call_output(request, RETRY_CALL_ID)
                 && body_contains(request, "capacity retry first memory")
                 && body_contains(request, "capacity retry second memory")
-                && !body_contains(request, "You are a self-contained spine.spawn child agent")
+                && !body_contains(request, "You are one branch of a spine.spawn fission")
         },
         sse(vec![
             ev_response_created("capacity-retry-followup-response"),

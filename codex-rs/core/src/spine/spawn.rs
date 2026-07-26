@@ -31,7 +31,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
-const CORRECTION_MESSAGE: &str = "你是自依赖的Agent，除了final memory之外不要发送我任何消息。";
+const CORRECTION_MESSAGE: &str = "No supervisory continuation is active during this fission. Continue within the current branch and return its terminal memory when complete or precisely bounded.";
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -404,7 +404,8 @@ async fn execute_batch(
                 results[*ordinal] = Some(error_result(
                     *ordinal,
                     SpawnOutcome::Aborted,
-                    "child aborted because the parent spine.spawn was cancelled".to_string(),
+                    "branch aborted because the originating spine.spawn transaction was cancelled"
+                        .to_string(),
                     Some(thread_id.to_string()),
                 ));
             }
@@ -644,7 +645,7 @@ fn transaction_task_name(call_id: &str, ordinal: usize) -> String {
 
 fn task_envelope(task: &SpawnTask) -> String {
     format!(
-        "You are a self-contained spine.spawn child agent. Work only on the task below using the inherited context. Do not ask the parent for information and do not send questions, progress, commentary, or partial results to the parent. When finished, return exactly one final message containing the terminal memory for this task.\n\nTask summary: {}\n\nTask:\n{}",
+        "You are one branch of a spine.spawn fission. The original continuation is suspended during this fission; no supervisory model is active. Work directly on the differentiated assignment below using the inherited context. Other branches may execute concurrently in the shared workspace; follow any peer roster and coordination contract declared in this assignment. Complete this assignment or precisely bound its result, then return exactly one final message containing its terminal memory.\n\nBranch label and outcome: {}\n\nAssignment:\n{}",
         task.summary, task.prompt
     )
 }
