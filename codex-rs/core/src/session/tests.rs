@@ -1592,7 +1592,7 @@ enabled = false
 destructive_enabled = false
 
 [features]
-spine_spawn = false
+spine_spawn = true
 spine_status = false
 
 [tool_suggest]
@@ -1608,8 +1608,8 @@ disabled_tools = [
     let mut next_config = load_latest_config_for_session(&session).await;
     next_config.model = Some("gpt-5.4".to_string());
     next_config.notify = Some(vec!["echo".to_string()]);
-    assert!(original.features.enabled(Feature::SpineSpawn));
-    assert!(!next_config.features.enabled(Feature::SpineSpawn));
+    assert!(!original.features.enabled(Feature::SpineSpawn));
+    assert!(next_config.features.enabled(Feature::SpineSpawn));
     assert!(original.features.enabled(Feature::SpineStatus));
     assert!(!next_config.features.enabled(Feature::SpineStatus));
 
@@ -1634,7 +1634,7 @@ disabled_tools = [
     assert_eq!(app.destructive_enabled, Some(false));
     assert_eq!(config.model, original.model);
     assert_eq!(config.notify, original.notify);
-    assert!(config.features.enabled(Feature::SpineSpawn));
+    assert!(!config.features.enabled(Feature::SpineSpawn));
     assert!(config.features.enabled(Feature::SpineStatus));
     assert_eq!(
         config.tool_suggest.disabled_tools,

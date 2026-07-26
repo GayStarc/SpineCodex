@@ -227,18 +227,16 @@ fn set_features(turn: &mut TurnContext, features: &[Feature]) {
 }
 
 #[tokio::test]
-async fn spine_spawn_is_enabled_by_default_for_direct_non_plan_calls() {
+async fn spine_spawn_is_disabled_by_default_for_direct_non_plan_calls() {
     let defaults = probe(|_| {}).await;
+    let spawn_name = ToolName::namespaced("spine", "spawn").to_string();
 
     assert!(
-        defaults
+        !defaults
             .namespace_function_names("spine")
             .contains(&"spawn".to_string())
     );
-    assert_eq!(
-        defaults.exposure(&ToolName::namespaced("spine", "spawn").to_string()),
-        ToolExposure::DirectModelOnly
-    );
+    defaults.assert_registered_lacks(&[&spawn_name]);
 }
 
 #[tokio::test]

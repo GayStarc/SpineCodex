@@ -66,18 +66,18 @@ fn spine_status_is_experimental_enabled_by_default_and_explicitly_disableable() 
 }
 
 #[test]
-fn spine_spawn_is_experimental_enabled_by_default_and_explicitly_disableable() {
+fn spine_spawn_is_experimental_disabled_by_default_and_explicitly_enableable() {
     assert_eq!(feature_for_key("spine_spawn"), Some(Feature::SpineSpawn));
     let stage = Feature::SpineSpawn.stage();
     assert!(matches!(stage, Stage::Experimental { .. }));
     assert_eq!(stage.experimental_menu_name(), Some("Spine spawn"));
     assert!(stage.experimental_menu_description().is_some());
-    assert_eq!(Feature::SpineSpawn.default_enabled(), true);
+    assert!(!Feature::SpineSpawn.default_enabled());
     let mut features = Features::with_defaults();
-    assert!(features.enabled(Feature::SpineSpawn));
-
-    features.apply_map(&BTreeMap::from([("spine_spawn".to_string(), false)]));
     assert!(!features.enabled(Feature::SpineSpawn));
+
+    features.apply_map(&BTreeMap::from([("spine_spawn".to_string(), true)]));
+    assert!(features.enabled(Feature::SpineSpawn));
     assert!(!features.enabled(Feature::MultiAgentV2));
 }
 

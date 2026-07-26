@@ -40,12 +40,12 @@ fn format_config_error_preserves_server_validation_message() {
 }
 
 #[test]
-fn disabling_default_enabled_spine_spawn_persists_explicit_false() {
+fn enabling_default_disabled_spine_spawn_persists_explicit_true() {
     assert_eq!(
-        build_feature_enabled_edit("spine_spawn", /*enabled*/ false),
+        build_feature_enabled_edit("spine_spawn", /*enabled*/ true),
         ConfigEdit {
             key_path: "features.spine_spawn".to_string(),
-            value: serde_json::json!(false),
+            value: serde_json::json!(true),
             merge_strategy: MergeStrategy::Replace,
         }
     );

@@ -108,8 +108,8 @@ async fn experimental_feature_list_returns_feature_metadata_with_stage() -> Resu
         .find(|feature| feature.name == "spine_spawn")
         .expect("Spine spawn feature should be present");
     assert_eq!(spine_spawn.stage, ExperimentalFeatureStage::Beta);
-    assert!(spine_spawn.enabled);
-    assert!(spine_spawn.default_enabled);
+    assert!(!spine_spawn.enabled);
+    assert!(!spine_spawn.default_enabled);
     let spine_status = actual
         .data
         .iter()
@@ -217,7 +217,7 @@ stream_max_retries = 0
         project_config_dir.join("config.toml"),
         r#"[features]
 memories = true
-spine_spawn = false
+spine_spawn = true
 "#,
     )?;
 
@@ -257,8 +257,8 @@ spine_spawn = false
         .iter()
         .find(|feature| feature.name == "spine_spawn")
         .expect("Spine spawn feature should be present");
-    assert!(!spine_spawn.enabled);
-    assert!(spine_spawn.default_enabled);
+    assert!(spine_spawn.enabled);
+    assert!(!spine_spawn.default_enabled);
 
     Ok(())
 }
