@@ -11,6 +11,7 @@ use crate::tools::handlers::multi_agents_common::build_agent_spawn_config;
 use crate::tools::handlers::multi_agents_common::thread_spawn_source;
 use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
+use codex_protocol::error::CodexErr;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SpineSpawnProgressEvent;
@@ -230,12 +231,18 @@ async fn execute_batch(
         }
     }
 
-    let prepared = session
+    let prepared = match session
         .services
         .agent_control
         .prepare_agent_spawn_batch(config, requests)
         .await
-        .map_err(|error| format!("spine.spawn admission failed: {error}"))?;
+    {
+        Ok(prepared) => prepared,
+        Err(CodexErr::AgentLimitReached { max_threads }) => {
+            return capacity_rejection_receipts(calls, task_count, max_threads);
+        }
+        Err(error) => return Err(format!("spine.spawn admission failed: {error}")),
+    };
     if cancellation_token.is_cancelled() {
         drop(prepared);
         return Err("spine.spawn was cancelled before child creation".to_string());
@@ -505,6 +512,43 @@ fn finish_batch_receipts(
         );
     }
     debug_assert!(results.next().is_none());
+    Ok(receipts)
+}
+
+fn capacity_rejection_receipts(
+    calls: &[SpawnBatchCall],
+    task_count: usize,
+    max_threads: usize,
+) -> Result<HashMap<String, SpawnReceipt>, String> {
+    let mut receipts = HashMap::with_capacity(calls.len());
+    let mut batch_ordinal = 0usize;
+    for call in calls {
+        let results = call
+            .tasks
+            .iter()
+            .enumerate()
+            .map(|(task_ordinal, task)| {
+                batch_ordinal = batch_ordinal.saturating_add(1);
+                let diagnostic = format!(
+                    "spine.spawn task {batch_ordinal}/{task_count} (`{}`) was not started: \
+                     aggregate admission requested {task_count} child agents, but shared capacity \
+                     was unavailable under the configured limit of {max_threads} concurrent child \
+                     agents (existing agents also consume this capacity). Admission is \
+                     all-or-nothing, so no child agents from this batch were created. Retry \
+                     spine.spawn with fewer tasks after capacity is available, or increase \
+                     features.multi_agent_v2.max_concurrent_threads_per_session.",
+                    task.summary
+                );
+                Some(error_result(
+                    task_ordinal,
+                    SpawnOutcome::Errored,
+                    diagnostic,
+                    /*execution_ref*/ None,
+                ))
+            })
+            .collect();
+        receipts.insert(call.call_id.clone(), finish_receipt(&call.tasks, results)?);
+    }
     Ok(receipts)
 }
 

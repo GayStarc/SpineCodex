@@ -1,12 +1,19 @@
+use anyhow::Context;
 use anyhow::Result;
 use codex_features::Feature;
 use codex_protocol::AgentPath;
+use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::MULTI_AGENT_MODE_OPEN_TAG;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::Op;
+use codex_protocol::protocol::RolloutItem;
+use codex_protocol::protocol::RolloutLine;
 use codex_protocol::user_input::UserInput;
+use codex_spine_core::SPINE_SPAWN_RESULT_SCHEMA;
+use codex_spine_core::SpawnOutcome;
+use codex_spine_core::SpawnReceipt;
 use core_test_support::responses::ResponseMock;
 use core_test_support::responses::ResponsesRequest;
 use core_test_support::responses::ev_assistant_message;
@@ -105,14 +112,40 @@ fn decoded_body(request: &wiremock::Request) -> Option<Vec<u8>> {
     }
 }
 
+fn persisted_function_call_output(test: &TestCodex, call_id: &str) -> Result<String> {
+    let path = test
+        .codex
+        .rollout_path()
+        .context("test thread is missing its rollout path")?;
+    let rollout = std::fs::read_to_string(&path)
+        .with_context(|| format!("failed to read rollout {}", path.display()))?;
+    rollout
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(serde_json::from_str::<RolloutLine>)
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .find_map(|line| match line.item {
+            RolloutItem::ResponseItem(ResponseItem::FunctionCallOutput {
+                call_id: output_call_id,
+                output,
+                ..
+            }) if output_call_id == call_id => output.body.to_text(),
+            _ => None,
+        })
+        .with_context(|| format!("rollout is missing function output for `{call_id}`"))
+}
+
+fn spawn_args_for(tasks: &[(&str, &str)]) -> String {
+    let tasks = tasks
+        .iter()
+        .map(|(summary, prompt)| json!({"summary": summary, "prompt": prompt}))
+        .collect::<Vec<_>>();
+    json!({"tasks": tasks}).to_string()
+}
+
 fn spawn_args(first_marker: &str, second_marker: &str) -> String {
-    json!({
-        "tasks": [
-            {"summary": "first", "prompt": first_marker},
-            {"summary": "second", "prompt": second_marker}
-        ]
-    })
-    .to_string()
+    spawn_args_for(&[("first", first_marker), ("second", second_marker)])
 }
 
 fn spine_builder() -> TestCodexBuilder {
@@ -909,6 +942,196 @@ async fn successful_batches_release_transaction_children_for_immediate_reuse() -
         second_followup
             .function_call_output_text(second_call_id)
             .is_some()
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn capacity_rejection_returns_one_retryable_error_per_task_without_starting_children()
+-> Result<()> {
+    const CALL_ID: &str = "spawn-capacity-call";
+    const PROMPT: &str = "run an oversized spine spawn batch";
+    const RETRY_CALL_ID: &str = "spawn-capacity-retry-call";
+    const RETRY_PROMPT: &str = "retry with a capacity-fitting spine spawn batch";
+    let tasks = [
+        ("capacity-first", "capacity-first-marker"),
+        ("capacity-second", "capacity-second-marker"),
+        ("capacity-third", "capacity-third-marker"),
+    ];
+    let retry_tasks = [
+        ("retry-first", "retry-first-marker"),
+        ("retry-second", "retry-second-marker"),
+    ];
+    let server = start_mock_server().await;
+    mount_sse_once_match(
+        &server,
+        move |request: &wiremock::Request| {
+            body_contains(request, PROMPT)
+                && !body_contains(request, "You are a self-contained spine.spawn child agent")
+                && !has_function_call_output(request, CALL_ID)
+        },
+        sse(vec![
+            ev_response_created("capacity-parent-response"),
+            ev_function_call_with_namespace(
+                CALL_ID,
+                SPAWN_NAMESPACE,
+                SPAWN_TOOL,
+                &spawn_args_for(&tasks),
+            ),
+            ev_completed("capacity-parent-response"),
+        ]),
+    )
+    .await;
+    let parent_followup = mount_sse_once_match(
+        &server,
+        move |request: &wiremock::Request| {
+            has_function_call_output(request, CALL_ID)
+                && !body_contains(request, "You are a self-contained spine.spawn child agent")
+        },
+        sse(vec![
+            ev_response_created("capacity-followup-response"),
+            ev_assistant_message("capacity-followup-message", "capacity handled"),
+            ev_completed("capacity-followup-response"),
+        ]),
+    )
+    .await;
+    mount_sse_once_match(
+        &server,
+        move |request: &wiremock::Request| {
+            body_contains(request, RETRY_PROMPT)
+                && !body_contains(request, "You are a self-contained spine.spawn child agent")
+                && !has_function_call_output(request, RETRY_CALL_ID)
+        },
+        sse(vec![
+            ev_response_created("capacity-retry-parent-response"),
+            ev_function_call_with_namespace(
+                RETRY_CALL_ID,
+                SPAWN_NAMESPACE,
+                SPAWN_TOOL,
+                &spawn_args_for(&retry_tasks),
+            ),
+            ev_completed("capacity-retry-parent-response"),
+        ]),
+    )
+    .await;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| child_task_marker(request, "retry-first-marker"),
+        sse(vec![
+            ev_response_created("capacity-retry-first-response"),
+            ev_assistant_message(
+                "capacity-retry-first-message",
+                "capacity retry first memory",
+            ),
+            ev_completed("capacity-retry-first-response"),
+        ]),
+    )
+    .await;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| child_task_marker(request, "retry-second-marker"),
+        sse(vec![
+            ev_response_created("capacity-retry-second-response"),
+            ev_assistant_message(
+                "capacity-retry-second-message",
+                "capacity retry second memory",
+            ),
+            ev_completed("capacity-retry-second-response"),
+        ]),
+    )
+    .await;
+    let retry_followup = mount_sse_once_match(
+        &server,
+        move |request: &wiremock::Request| {
+            has_function_call_output(request, RETRY_CALL_ID)
+                && body_contains(request, "capacity retry first memory")
+                && body_contains(request, "capacity retry second memory")
+                && !body_contains(request, "You are a self-contained spine.spawn child agent")
+        },
+        sse(vec![
+            ev_response_created("capacity-retry-followup-response"),
+            ev_assistant_message("capacity-retry-followup-message", "capacity retry handled"),
+            ev_completed("capacity-retry-followup-response"),
+        ]),
+    )
+    .await;
+    let test = spine_builder().build(&server).await?;
+
+    test.submit_turn(PROMPT).await?;
+
+    assert_eq!(
+        test.thread_manager.list_thread_ids().await.len(),
+        1,
+        "aggregate capacity rejection must not create partial child sessions"
+    );
+    let provider_output = parent_followup
+        .function_call_output_text(CALL_ID)
+        .expect("parent follow-up must receive a spine.spawn success carrier");
+    assert_eq!(provider_output, r#"{"status":"success"}"#);
+    let parent_request = parent_followup.single_request();
+    let parent_body = parent_request.body_json().to_string();
+    for (summary, _) in tasks {
+        assert!(
+            parent_request.body_contains_text(summary),
+            "parent projection must include the rejected child `{summary}`: {parent_body}"
+        );
+    }
+    for expected in [
+        "requested 3 child agents",
+        "configured limit of 2",
+        "no child agents from this batch were created",
+        "Retry spine.spawn with fewer tasks",
+        "features.multi_agent_v2.max_concurrent_threads_per_session",
+    ] {
+        assert!(
+            parent_request.body_contains_text(expected),
+            "parent projection is missing `{expected}`: {parent_body}"
+        );
+    }
+
+    let output = persisted_function_call_output(&test, CALL_ID)?;
+    let receipt: SpawnReceipt = serde_json::from_str(&output).map_err(|error| {
+        anyhow::anyhow!("expected a spine.spawn capacity receipt, got `{output}`: {error}")
+    })?;
+    assert_eq!(receipt.schema, SPINE_SPAWN_RESULT_SCHEMA);
+    assert_eq!(receipt.results.len(), tasks.len());
+    for (ordinal, (result, (summary, _))) in receipt.results.iter().zip(tasks).enumerate() {
+        assert_eq!(result.ordinal, ordinal as u32);
+        assert_eq!(result.outcome, SpawnOutcome::Errored);
+        assert_eq!(result.execution_ref, None);
+        let diagnostic = result
+            .diagnostic
+            .as_deref()
+            .expect("capacity rejection must include a diagnostic");
+        assert_eq!(result.memory_body, diagnostic);
+        assert!(diagnostic.contains(summary));
+        assert!(diagnostic.contains("requested 3 child agents"));
+        assert!(diagnostic.contains("configured limit of 2"));
+        assert!(diagnostic.contains("no child agents from this batch were created"));
+        assert!(diagnostic.contains("Retry spine.spawn with fewer tasks"));
+        assert!(diagnostic.contains("features.multi_agent_v2.max_concurrent_threads_per_session"));
+    }
+
+    test.submit_turn(RETRY_PROMPT).await?;
+    assert_eq!(
+        test.thread_manager.list_thread_ids().await.len(),
+        1,
+        "a fitting retry must succeed and release its completed transaction children"
+    );
+    assert_eq!(
+        retry_followup
+            .function_call_output_text(RETRY_CALL_ID)
+            .as_deref(),
+        Some(r#"{"status":"success"}"#)
+    );
+    let retry_output = persisted_function_call_output(&test, RETRY_CALL_ID)?;
+    let retry_receipt: SpawnReceipt = serde_json::from_str(&retry_output)?;
+    assert_eq!(retry_receipt.results.len(), retry_tasks.len());
+    assert!(
+        retry_receipt
+            .results
+            .iter()
+            .all(|result| result.outcome == SpawnOutcome::Completed)
     );
     Ok(())
 }

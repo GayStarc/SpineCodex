@@ -308,6 +308,46 @@ fn batch_receipts_partition_flat_results_and_restore_task_ordinals() {
 }
 
 #[test]
+fn capacity_rejection_partitions_multiple_calls_without_losing_task_identity() {
+    let calls = vec![
+        SpawnBatchCall {
+            call_id: "spawn-1".to_string(),
+            tasks: parse_tasks(
+                r#"{"tasks":[{"summary":"a","prompt":"pa"},{"summary":"b","prompt":"pb"}]}"#,
+            )
+            .unwrap(),
+        },
+        SpawnBatchCall {
+            call_id: "spawn-2".to_string(),
+            tasks: parse_tasks(
+                r#"{"tasks":[{"summary":"c","prompt":"pc"},{"summary":"d","prompt":"pd"}]}"#,
+            )
+            .unwrap(),
+        },
+    ];
+
+    let receipts =
+        capacity_rejection_receipts(&calls, /*task_count*/ 4, /*max_threads*/ 3)
+            .expect("capacity rejection must produce complete receipts");
+
+    for (call_ordinal, call) in calls.iter().enumerate() {
+        let receipt = &receipts[&call.call_id];
+        assert_eq!(receipt.results.len(), call.tasks.len());
+        for (task_ordinal, (result, task)) in receipt.results.iter().zip(&call.tasks).enumerate() {
+            let batch_ordinal = call_ordinal * call.tasks.len() + task_ordinal + 1;
+            assert_eq!(result.ordinal, task_ordinal as u32);
+            assert_eq!(result.outcome, SpawnOutcome::Errored);
+            assert_eq!(result.execution_ref, None);
+            let diagnostic = result.diagnostic.as_deref().unwrap();
+            assert_eq!(result.memory_body, diagnostic);
+            assert!(diagnostic.contains(&format!("task {batch_ordinal}/4")));
+            assert!(diagnostic.contains(&format!("(`{}`)", task.summary)));
+            assert!(diagnostic.contains("configured limit of 3"));
+        }
+    }
+}
+
+#[test]
 fn response_group_admission_accepts_flat_and_namespaced_spawn_calls() {
     for rollout in [
         vec![call("spawn", None, "spine.spawn")],
