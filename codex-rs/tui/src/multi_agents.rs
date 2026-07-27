@@ -6,6 +6,7 @@
 
 use crate::history_cell::PlainHistoryCell;
 use crate::render::line_utils::prefix_lines;
+use crate::style::muted_text_style;
 use crate::text_formatting::truncate_text;
 use codex_app_server_protocol::CollabAgentState;
 use codex_app_server_protocol::CollabAgentStatus;
@@ -84,27 +85,59 @@ impl AgentActivityPreview {
     }
 
     pub(crate) fn lines_with_limit(&self, width: u16, max_lines: usize) -> Vec<Line<'static>> {
-        let mut lines = self
-            .activity
-            .iter()
-            .flat_map(|activity| textwrap::wrap(activity, usize::from(width.max(1))))
-            .filter(|line| !line.trim().is_empty())
-            .map(|line| line.into_owned().dim().into())
-            .collect::<Vec<_>>();
-        if lines.len() > max_lines {
-            lines.drain(..lines.len() - max_lines);
+        if max_lines == 0 {
+            return Vec::new();
         }
-        lines
-    }
 
-    pub(crate) fn flow_text(&self) -> String {
-        self.activity.join("\n")
-    }
+        let style = muted_text_style();
+        let width = usize::from(width.max(1));
+        let mut remaining = max_lines;
+        let mut newest_first = Vec::new();
+        for activity in self.activity.iter().rev() {
+            let wrapped = textwrap::wrap(activity, width)
+                .into_iter()
+                .filter(|line| !line.trim().is_empty())
+                .map(|line| Line::from(Span::styled(line.into_owned(), style)))
+                .collect::<Vec<_>>();
+            if wrapped.is_empty() {
+                continue;
+            }
+            if wrapped.len() <= remaining {
+                remaining -= wrapped.len();
+                newest_first.push(wrapped);
+                if remaining == 0 {
+                    break;
+                }
+                continue;
+            }
 
-    pub(crate) fn from_flow_text(text: &str) -> Self {
-        Self {
-            activity: text.lines().map(str::to_string).collect(),
+            if newest_first.is_empty() {
+                if max_lines == 1 {
+                    let inline_width = width.saturating_sub(1);
+                    let preview = if inline_width == 0 {
+                        String::new()
+                    } else {
+                        textwrap::wrap(activity, inline_width)
+                            .first()
+                            .map(|line| line.trim_end().to_string())
+                            .unwrap_or_default()
+                    };
+                    newest_first.push(vec![Line::from(Span::styled(format!("{preview}…"), style))]);
+                    break;
+                }
+                let mut clipped = wrapped
+                    .into_iter()
+                    .take(max_lines.saturating_sub(1))
+                    .collect::<Vec<_>>();
+                clipped.push(Line::from(Span::styled("…", style)));
+                newest_first.push(clipped);
+            } else if remaining > 0 {
+                newest_first.push(vec![Line::from(Span::styled("…", style))]);
+            }
+            break;
         }
+
+        newest_first.into_iter().rev().flatten().collect()
     }
 }
 
@@ -319,10 +352,11 @@ fn truncate_activity_summary(summary: &str) -> String {
     if grapheme_count <= AGENT_ACTIVITY_PREVIEW_GRAPHEMES {
         summary.to_string()
     } else {
-        summary
+        let suffix = summary
             .graphemes(true)
-            .skip(grapheme_count - AGENT_ACTIVITY_PREVIEW_GRAPHEMES)
-            .collect()
+            .skip(grapheme_count - AGENT_ACTIVITY_PREVIEW_GRAPHEMES + 1)
+            .collect::<String>();
+        format!("…{suffix}")
     }
 }
 
@@ -1196,6 +1230,48 @@ mod tests {
     }
 
     #[test]
+    fn activity_preview_drops_whole_older_entries_at_line_limit() {
+        let preview = AgentActivityPreview::from_summaries(
+            ["older one two three four five six", "newest complete"].into_iter(),
+        );
+
+        let rendered = preview
+            .lines_with_limit(/*width*/ 8, /*max_lines*/ 4)
+            .into_iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>();
+
+        assert_eq!(rendered, vec!["…", "newest", "complete"]);
+    }
+
+    #[test]
+    fn activity_preview_marks_a_truncated_newest_entry() {
+        let preview =
+            AgentActivityPreview::from_summaries(["alpha beta gamma delta epsilon"].into_iter());
+
+        let rendered = preview
+            .lines_with_limit(/*width*/ 7, /*max_lines*/ 3)
+            .into_iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>();
+
+        assert_eq!(rendered, vec!["alpha", "beta", "…"]);
+    }
+
+    #[test]
+    fn activity_preview_preserves_text_with_a_single_line_limit() {
+        let preview = AgentActivityPreview::from_summaries(["alpha beta gamma delta"].into_iter());
+
+        let rendered = preview
+            .lines_with_limit(/*width*/ 7, /*max_lines*/ 1)
+            .into_iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>();
+
+        assert_eq!(rendered, vec!["alpha…"]);
+    }
+
+    #[test]
     fn spine_spawn_activity_tracker_bounds_entries_and_text() {
         let mut tracker = AgentActivityTracker::default();
         for index in 0..=AGENT_ACTIVITY_PREVIEW_ITEMS {
@@ -1218,6 +1294,7 @@ mod tests {
             summary.graphemes(true).count(),
             AGENT_ACTIVITY_PREVIEW_GRAPHEMES
         );
+        assert!(summary.starts_with('…'));
     }
 
     #[test]

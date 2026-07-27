@@ -2,6 +2,7 @@ use super::plain_lines;
 use super::spine_spawn_progress::SpineSpawnOverlay;
 use crate::motion::ORGANIC_ACTIVITY_WORDS;
 use crate::product_brand::SPINE_BRAND_COLOR;
+use crate::style::muted_text_style;
 use codex_app_server_protocol::CollabAgentStatus;
 use codex_app_server_protocol::ItemCompletedNotification;
 use codex_app_server_protocol::ServerNotification;
@@ -94,12 +95,10 @@ fn renders_live_mixed_child_statuses() {
         "running activity word should use the Spine brand color: {lines:?}"
     );
     for activity_line in &lines[2..6] {
-        assert!(
-            activity_line.spans[0]
-                .style
-                .add_modifier
-                .contains(Modifier::DIM),
-            "activity branch should use the tree prefix style: {activity_line:?}"
+        assert_eq!(
+            activity_line.spans[0].style,
+            muted_text_style(),
+            "activity branch should use the muted preview style: {activity_line:?}"
         );
     }
 }
@@ -144,6 +143,51 @@ fn activity_refresh_keeps_the_newest_four_lines() {
     assert!(rendered.contains("activity 4\n"));
     assert!(rendered.contains("activity 5\n"));
     assert_eq!(overlay.display_lines("  ", true, 80, false).len(), 6);
+}
+
+#[test]
+fn activity_preview_is_identical_with_or_without_animations() {
+    let mut overlay = SpineSpawnOverlay::new(SpineSpawnProgressUpdatedNotification {
+        thread_id: "parent".to_string(),
+        turn_id: "turn-1".to_string(),
+        call_id: "spawn-1".to_string(),
+        tasks: vec![SpineSpawnTaskProgress {
+            ordinal: 0,
+            summary: "inspect events".to_string(),
+            thread_id: "child".to_string(),
+            agent_path: Some("/root/inspector".to_string()),
+            status: CollabAgentStatus::Running,
+        }],
+    });
+    let notifications = [
+        ("message-1", "first structured activity"),
+        ("message-2", "second structured activity"),
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(index, (id, text))| {
+        ServerNotification::ItemCompleted(ItemCompletedNotification {
+            item: ThreadItem::AgentMessage {
+                id: id.to_string(),
+                text: text.to_string(),
+                phase: None,
+                memory_citation: None,
+            },
+            thread_id: "child".to_string(),
+            turn_id: "turn-1".to_string(),
+            completed_at_ms: index as i64,
+        })
+    });
+    assert!(overlay.seed_activity("child", notifications));
+
+    let static_render = overlay.display_lines("  ", true, 80, false);
+    let animated_render = overlay.display_lines("  ", true, 80, true);
+    let static_lines = plain_lines(static_render.clone());
+    let animated_lines = plain_lines(animated_render);
+
+    assert_eq!(animated_lines, static_lines);
+    assert_eq!(static_render[1].spans[0].style, muted_text_style());
+    assert_eq!(static_render[1].spans[1].style, muted_text_style());
 }
 
 #[test]
