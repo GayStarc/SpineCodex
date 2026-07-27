@@ -803,10 +803,7 @@ impl TestCodexBuilder {
                 Feature::SpineSpawn => spine_core::Feature::Spawn,
                 _ => continue,
             };
-            config.spine_config = config
-                .spine_config
-                .clone()
-                .with_feature(spine_feature)?;
+            config.spine_config = config.spine_config.clone().with_feature(spine_feature)?;
             config.spine_tools = spine_core::ToolCatalog::new(&config.spine_config)?;
         }
         ensure_test_model_catalog(&mut config)?;

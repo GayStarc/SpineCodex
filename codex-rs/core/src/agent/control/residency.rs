@@ -51,12 +51,16 @@ impl AgentControl {
         config: &Config,
         protected_thread_id: Option<ThreadId>,
     ) -> CodexResult<V2ResidencySlot> {
+        // Spine MODIFIED: Implement single-child admission through the atomic batch primitive.
+        // Reason: Native callers retain base semantics while Spine can reserve several residents at once.
         self.reserve_v2_residency_slots(state, config, 1, protected_thread_id)
             .await?
             .pop()
             .ok_or_else(|| CodexErr::Fatal("missing reserved V2 residency slot".to_string()))
     }
 
+    // Spine MODIFIED: Reserve enough V2 residency for a complete child batch.
+    // Reason: Spine must not create a partial batch when only some child sessions can remain resident.
     pub(super) async fn reserve_v2_residency_slots(
         &self,
         state: &Arc<ThreadManagerState>,
@@ -90,6 +94,8 @@ impl AgentControl {
 }
 
 impl V2Residency {
+    // Spine MODIFIED: Generalize residency admission from one pending slot to an exact batch.
+    // Reason: The residency owner is the only place that can atomically account for loaded and pending sessions.
     async fn reserve_slots(
         self: Arc<Self>,
         manager: &Arc<ThreadManagerState>,
@@ -122,6 +128,8 @@ impl V2Residency {
         }
     }
 
+    // Spine MODIFIED: Test and increment multiple pending residency slots under one lock.
+    // Reason: Concurrent Spine batches must not oversubscribe capacity between per-child reservations.
     fn try_reserve_pending_slots(&self, capacity: usize, count: usize) -> bool {
         let mut state = self
             .state

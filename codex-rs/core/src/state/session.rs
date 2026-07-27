@@ -3,6 +3,8 @@
 use codex_protocol::models::AdditionalPermissionProfile;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ResponseItem;
+// Spine MODIFIED: Import persisted and usage inputs consumed by the session runtime adapter.
+// Reason: SessionState is where native history and SDK replay observations meet.
 use codex_protocol::protocol::RolloutItem;
 use codex_sandboxing::policy_transforms::merge_permission_profiles;
 use std::collections::HashMap;
@@ -22,6 +24,8 @@ use crate::session::PreviousTurnSettings;
 use crate::session::session::SessionConfiguration;
 use crate::session::time_reminder::CurrentTimeReminderState;
 use crate::session_startup_prewarm::SessionStartupPrewarmHandle;
+// Spine MODIFIED: Import the observer and runtime halves of the private Spine adapter.
+// Reason: SessionState owns their lifetime beside the authoritative ContextManager.
 use crate::spine::observer::CodexSpineObserverHandler;
 use crate::spine::session_runtime::SessionSpineRuntime;
 use codex_protocol::protocol::RateLimitSnapshot;
@@ -66,6 +70,8 @@ pub(crate) struct SessionState {
     next_turn_is_first: bool,
     projected_usage_basis: ProjectedUsageBasis,
     projected_usage_model: Option<String>,
+    // Spine MODIFIED: Keep optional SDK state colocated with native model history.
+    // Reason: Each history mutation can update Spine synchronously under the same state lock.
     spine_runtime: Option<SessionSpineRuntime>,
 }
 
@@ -76,6 +82,8 @@ impl SessionState {
         Self::new_with_auto_compact_window_ids(
             session_configuration,
             AutoCompactWindowIds::new_initial(),
+            // Spine MODIFIED: Use a no-op observer for lightweight constructors.
+            // Reason: Production bootstrap injects the channel-backed observer explicitly.
             CodexSpineObserverHandler::default(),
         )
     }
@@ -83,9 +91,13 @@ impl SessionState {
     pub(crate) fn new_with_auto_compact_window_ids(
         session_configuration: SessionConfiguration,
         auto_compact_window_ids: AutoCompactWindowIds,
+        // Spine MODIFIED: Accept the session-scoped effect handler during state construction.
+        // Reason: SDK transitions publish through Host-owned event and filesystem adapters.
         observer: CodexSpineObserverHandler,
     ) -> Self {
         let history = ContextManager::new();
+        // Spine MODIFIED: Instantiate the feature-gated runtime from immutable session config.
+        // Reason: Disabled sessions retain base behavior through a None adapter.
         let spine_runtime = SessionSpineRuntime::new(&session_configuration, observer);
         Self {
             session_configuration,
@@ -114,6 +126,8 @@ impl SessionState {
         I: IntoIterator,
         I::Item: std::ops::Deref<Target = ResponseItem>,
     {
+        // Spine MODIFIED: Compile exactly the native items accepted by this append operation.
+        // Reason: Live JIT recognizes user and tool events once, after history has been filled.
         let start = self.history.raw_items().len();
         self.history.record_items(items, policy);
         if let Some(spine) = &mut self.spine_runtime {
@@ -122,6 +136,8 @@ impl SessionState {
         }
     }
 
+    // Spine MODIFIED: Pair native history restoration with deterministic SDK rollout recovery.
+    // Reason: Resume, fork, and rollback must rebuild archived epochs and the live projection.
     pub(crate) fn replace_history_from_rollout(
         &mut self,
         items: Vec<ResponseItem>,
@@ -147,12 +163,16 @@ impl SessionState {
         self.mark_projected_usage_stale();
     }
 
+    // Spine MODIFIED: Forward authoritative token samples into optional Spine pressure state.
+    // Reason: Context-pressure projection belongs to the same locked session snapshot.
     pub(crate) fn observe_token_count(&mut self, event: TokenCountEvent) {
         if let Some(spine) = &mut self.spine_runtime {
             spine.observe_token_count(event);
         }
     }
 
+    // Spine MODIFIED: Mark an explicit native history replacement as a Spine compact epoch.
+    // Reason: Compact archives the old root and treats installed replacement context as opaque.
     pub(crate) fn compact_spine_live(&mut self) {
         if let Some(spine) = &mut self.spine_runtime {
             spine.compact_live(&mut self.history);
@@ -224,6 +244,8 @@ impl SessionState {
         self.history.clone()
     }
 
+    // Spine MODIFIED: Mirror native image sanitization into the SDK's source representation.
+    // Reason: Later context materialization must not restore an invalid projected image.
     pub(crate) fn replace_last_turn_images(&mut self, placeholder: &str) -> bool {
         if !self.history.replace_last_turn_images(placeholder) {
             return false;
@@ -239,6 +261,8 @@ impl SessionState {
         self.spine_runtime.as_ref()?.tree_update()
     }
 
+    // Spine MODIFIED: Delegate tool validation to the session's current SDK projection.
+    // Reason: Handlers need read-only decisions without exposing runtime state or parser details.
     pub(crate) fn validate_spine_control(&self, tool: spine_core::SpineTool) -> Result<(), String> {
         self.spine_runtime
             .as_ref()

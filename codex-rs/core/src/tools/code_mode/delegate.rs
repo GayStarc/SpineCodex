@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+// Spine MODIFIED: Track closed Code Mode cells and bound their retirement order.
+// Reason: Nested Spine calls can race cell closure, so late calls need bounded tombstones.
 use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -19,6 +21,8 @@ use tokio_util::sync::CancellationToken;
 use super::ExecContext;
 use super::PUBLIC_TOOL_NAME;
 use super::call_nested_tool;
+// Spine MODIFIED: Import nested Spine admission and first-output synchronization types.
+// Reason: The dispatch broker owns per-cell runtime ordering and lifecycle state.
 use super::spine_bridge::CellFirstOutputJoin;
 use super::spine_bridge::CellSpineState;
 use super::spine_bridge::NestedSpineAdmission;
@@ -29,6 +33,8 @@ use crate::tools::ToolRouter;
 use crate::tools::context::SharedTurnDiffTracker;
 use crate::tools::parallel::ToolCallRuntime;
 
+// Spine MODIFIED: Replace readiness-only gates with a registry carrying Spine cell state.
+// Reason: A cell must survive runtime close until admitted calls are sealed into first output.
 #[derive(Default)]
 struct DispatchRegistry {
     cells: HashMap<CellId, Arc<CellDispatchState>>,
@@ -71,6 +77,8 @@ impl FirstOutputJoin {
 pub(super) struct CodeModeDispatchBroker {
     dispatch_tx: async_channel::Sender<DispatchMessage>,
     dispatch_rx: async_channel::Receiver<DispatchMessage>,
+    // Spine MODIFIED: Store lifecycle-aware state instead of bare ready senders.
+    // Reason: Spine admission, closure, and tombstones must share one synchronization boundary.
     dispatch_gates: Arc<DispatchGates>,
 }
 
@@ -90,6 +98,8 @@ impl CodeModeDispatchBroker {
         }
     }
 
+    // Spine MODIFIED: Register outer ownership and admit nested Spine calls per cell.
+    // Reason: Only the broker can serialize runtime calls with the outer response boundary.
     pub(super) fn register_cell(
         &self,
         cell_id: &CellId,
@@ -139,6 +149,8 @@ impl CodeModeDispatchBroker {
         remove_dispatch_state_if_complete(&self.dispatch_gates, cell_id, &state);
     }
 
+    // Spine MODIFIED: Add explicit abort and pending-output inspection for bridged cells.
+    // Reason: Cancellation removes admission state while normal teardown awaits first output.
     pub(super) fn abort_cell(&self, cell_id: &CellId) {
         let mut registry = lock_dispatch_registry(&self.dispatch_gates);
         registry.closed_cells.insert(cell_id.clone());
@@ -188,6 +200,8 @@ impl CodeModeDispatchBroker {
                         cancellation_token,
                         response_tx,
                     } => {
+                        // Spine MODIFIED: Retain cell state when a notification is cancelled.
+                        // Reason: The first-output join, not one notification, owns retirement.
                         let response = if wait_until_cell_ready_for_dispatch(
                             &dispatch_gates,
                             &cell_id,
@@ -207,6 +221,8 @@ impl CodeModeDispatchBroker {
                         response_tx,
                     } => {
                         let cell_id = invocation.cell_id.clone();
+                        // Spine MODIFIED: Leave failed dispatch cleanup to the lifecycle owner.
+                        // Reason: Spine admission may still require the closed-cell tombstone.
                         if !wait_until_cell_ready_for_dispatch(
                             &dispatch_gates,
                             &cell_id,
@@ -218,6 +234,8 @@ impl CodeModeDispatchBroker {
                         }
                         let host = Arc::clone(&host);
                         tokio::spawn(async move {
+                            // Spine MODIFIED: Delegate cancellation to ToolCallRuntime.
+                            // Reason: Spine spawn needs cooperative teardown before returning.
                             // ToolCallRuntime owns cancellation and lets tools such as
                             // spine.spawn finish cooperative teardown before returning.
                             let response = host.invoke_tool(invocation, cancellation_token).await;
@@ -233,6 +251,8 @@ impl CodeModeDispatchBroker {
     }
 }
 
+// Spine MODIFIED: Reconcile cell states, closure tombstones, and bounded retirement.
+// Reason: Nested calls and runtime closure arrive independently and race at this boundary.
 fn dispatch_state(
     dispatch_gates: &DispatchGates,
     cell_id: &CellId,
@@ -328,6 +348,8 @@ async fn wait_until_cell_ready_for_dispatch(
     if cancellation_token.is_cancelled() {
         return false;
     }
+    // Spine MODIFIED: Subscribe through the registry and reject retired cells.
+    // Reason: A late dispatch must not recreate a cell after Spine admission has closed it.
     let Some(state) = dispatch_state(dispatch_gates, cell_id) else {
         return false;
     };

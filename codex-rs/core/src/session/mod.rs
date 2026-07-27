@@ -26,6 +26,8 @@ use crate::context::ApprovedCommandPrefixSaved;
 use crate::context::AvailableSkillsInstructions;
 use crate::context::CollaborationModeInstructions;
 use crate::context::ContextualUserFragment;
+// Spine MODIFIED: Remove direct initial-context use of the native multi-agent prompt renderer.
+// Reason: Spine configuration selects native or Spine-aware guidance without changing call sites.
 use crate::context::NetworkRuleSaved;
 use crate::context::PermissionsInstructions;
 use crate::context::PersonalitySpecInstructions;
@@ -623,6 +625,8 @@ impl Codex {
             .clone()
             .or_else(|| conversation_history.get_base_instructions().map(|s| s.text))
             .unwrap_or_else(|| model_info.get_model_instructions(config.personality));
+        // Spine MODIFIED: Extend base instructions with the SDK-managed JIT system prompt.
+        // Reason: Session bootstrap is the one boundary that constructs immutable system instructions.
         let base_instructions = config.spine_config.extend_system_prompt(&base_instructions);
 
         // Dynamic tools are defined at thread start and persisted in rollout session metadata.
@@ -1332,6 +1336,8 @@ impl Session {
         }
     }
 
+    // Spine MODIFIED: Expose locked validation delegates for Spine controls and trim requests.
+    // Reason: Tool handlers need atomic runtime validation without accessing SessionState internals.
     pub(crate) async fn validate_spine_control(
         &self,
         tool: spine_core::SpineTool,
@@ -1502,6 +1508,8 @@ impl Session {
         prepare_response_items(&mut history);
         {
             let mut state = self.state.lock().await;
+            // Spine MODIFIED: Recover SDK state from the same persisted rollout as native history.
+            // Reason: Resume, fork, and rollback must rebuild one deterministic Spine projection.
             state.replace_history_from_rollout(history, reference_context_item, rollout_items);
             if let Some(world_state) = world_state_baseline {
                 state.history.set_world_state_baseline(world_state);
@@ -1917,6 +1925,8 @@ impl Session {
             return;
         };
 
+        // Spine MODIFIED: Suppress the legacy parent completion event for Spine-managed children.
+        // Reason: Spine spawn publishes a transaction result and must not duplicate native notices.
         if self
             .services
             .agent_control
@@ -2066,6 +2076,8 @@ impl Session {
         self.deliver_event_raw(event).await;
     }
 
+    // Spine MODIFIED: Permit the private Spine observer adapter to deliver derived live events.
+    // Reason: It must reuse Session's status-aware event channel without duplicating delivery code.
     pub(crate) async fn deliver_event_raw(&self, event: Event) {
         // Record the last known agent status.
         if let Some(status) = agent_status_from_event(&event.msg) {
@@ -3634,6 +3646,8 @@ impl Session {
             items.push(usage_hint_message);
         }
         if let Some(multi_agent_mode) = multi_agents::effective_multi_agent_mode(turn_context) {
+            // Spine MODIFIED: Select initial multi-agent guidance through Spine configuration.
+            // Reason: Spine spawn prompts remain disabled unless their SDK feature is enabled.
             items.push(ContextualUserFragment::into(
                 crate::spine::config::multi_agent_mode_instructions(
                     &turn_context.config.spine_config,
@@ -4039,6 +4053,8 @@ impl Session {
             let state = self.state.lock().await;
             state.token_info_and_rate_limits()
         };
+        // Spine MODIFIED: Feed token observations to the SDK before publishing the native event.
+        // Reason: Spine derives context pressure and tree status from the same authoritative sample.
         let token_count = TokenCountEvent { info, rate_limits };
         let event = EventMsg::TokenCount(token_count.clone());
         {

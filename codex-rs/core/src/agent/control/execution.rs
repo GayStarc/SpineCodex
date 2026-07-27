@@ -5,6 +5,8 @@ use codex_protocol::error::Result as CodexResult;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::SessionSource;
+// Spine MODIFIED: Use one locked admission state with reservation identities.
+// Reason: Spine must reserve an entire child batch atomically before any asynchronous creation starts.
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -12,6 +14,8 @@ use std::sync::OnceLock;
 
 #[derive(Default)]
 pub(super) struct AgentExecutionLimiter {
+    // Spine MODIFIED: Replace an active-only counter with active, pending, and claimed reservations.
+    // Reason: Concurrent Spine batches need capacity held between validation and child task startup.
     state: Mutex<AgentExecutionState>,
     max_threads: OnceLock<usize>,
 }
@@ -27,6 +31,8 @@ pub(crate) struct AgentExecutionGuard {
     limiter: Arc<AgentExecutionLimiter>,
 }
 
+// Spine MODIFIED: Represent a pending execution slot as a one-shot RAII capability.
+// Reason: Failed Spine batch preparation must release every uncommitted slot automatically.
 pub(crate) struct AgentExecutionReservation {
     limiter: Arc<AgentExecutionLimiter>,
     active: bool,
@@ -34,6 +40,8 @@ pub(crate) struct AgentExecutionReservation {
 
 impl Drop for AgentExecutionGuard {
     fn drop(&mut self) {
+        // Spine MODIFIED: Release active capacity through the shared reservation-aware state.
+        // Reason: Active and pending counts must be serialized under the same lock to preserve the limit.
         let mut state = self
             .limiter
             .state
@@ -44,6 +52,8 @@ impl Drop for AgentExecutionGuard {
 }
 
 impl AgentExecutionReservation {
+    // Spine MODIFIED: Convert a pending slot into an active reservation bound to the new thread.
+    // Reason: The later execution guard must claim the exact slot already admitted for this Spine child.
     pub(crate) fn commit(mut self, thread_id: ThreadId) {
         let mut state = self
             .limiter
@@ -59,6 +69,8 @@ impl AgentExecutionReservation {
 
 impl Drop for AgentExecutionReservation {
     fn drop(&mut self) {
+        // Spine MODIFIED: Roll back pending capacity when a prepared spawn is abandoned.
+        // Reason: RAII keeps partial Spine batch failures from leaking execution slots.
         if self.active {
             let mut state = self
                 .limiter
@@ -124,6 +136,8 @@ impl AgentControl {
         Arc::clone(&self.agent_execution_limiter).reserve(count)
     }
 
+    // Spine MODIFIED: Reserve execution capacity from the Spine-specific limiter in one operation.
+    // Reason: Spine spawn needs all-or-nothing batch admission before creating child sessions.
     pub(crate) fn reserve_spine_spawn_slots(
         &self,
         count: usize,
@@ -133,10 +147,14 @@ impl AgentControl {
 
     pub(crate) fn execution_guard(
         &self,
+        // Spine MODIFIED: Identify the child whose pre-reserved slot is being claimed.
+        // Reason: A prepared Spine spawn must consume its reservation instead of incrementing capacity twice.
         thread_id: ThreadId,
         multi_agent_version: MultiAgentVersion,
         session_source: &SessionSource,
     ) -> Option<AgentExecutionGuard> {
+        // Spine MODIFIED: Claim pre-admitted native or Spine capacity before using legacy turn-based limiting.
+        // Reason: Prepared batches are already counted and must bypass a second capacity check.
         let limiter = Arc::clone(&self.agent_execution_limiter);
         if limiter.claim(thread_id) {
             return Some(AgentExecutionGuard { limiter });
@@ -149,6 +167,8 @@ impl AgentControl {
         is_execution_limited(multi_agent_version, session_source).then(|| limiter.guard())
     }
 
+    // Spine MODIFIED: Release any committed reservation when child startup fails after thread creation.
+    // Reason: Spine batch rollback removes the failed thread and must also return its execution capacity.
     pub(crate) fn release_execution_reservation(&self, thread_id: ThreadId) {
         self.agent_execution_limiter.release_reserved(thread_id);
         self.spine_spawn_limiter.release_reserved(thread_id);
@@ -165,6 +185,8 @@ impl AgentExecutionLimiter {
     }
 
     fn has_capacity(&self) -> bool {
+        // Spine MODIFIED: Count pending reservations as occupied capacity.
+        // Reason: A concurrent native spawn must not consume slots already promised to a Spine batch.
         let state = self
             .state
             .lock()
@@ -172,6 +194,8 @@ impl AgentExecutionLimiter {
         state.active.saturating_add(state.pending) < self.max_threads()
     }
 
+    // Spine MODIFIED: Atomically reserve an exact number of pending execution slots.
+    // Reason: Spine batch admission must fail before side effects unless the whole batch fits.
     fn reserve(self: Arc<Self>, count: usize) -> CodexResult<Vec<AgentExecutionReservation>> {
         if count == 0 {
             return Ok(Vec::new());
@@ -199,6 +223,8 @@ impl AgentExecutionLimiter {
             .collect())
     }
 
+    // Spine MODIFIED: Claim the committed reservation associated with a starting child thread.
+    // Reason: Thread execution must transition reserved capacity into its normal RAII guard.
     fn claim(&self, thread_id: ThreadId) -> bool {
         self.state
             .lock()
@@ -207,6 +233,8 @@ impl AgentExecutionLimiter {
             .remove(&thread_id)
     }
 
+    // Spine MODIFIED: Cancel committed capacity for a child removed during startup rollback.
+    // Reason: The normal execution guard does not exist yet on this failure path.
     fn release_reserved(&self, thread_id: ThreadId) {
         let mut state = self
             .state
@@ -218,6 +246,8 @@ impl AgentExecutionLimiter {
     }
 
     fn guard(self: Arc<Self>) -> AgentExecutionGuard {
+        // Spine MODIFIED: Record legacy non-reserved starts in the shared admission state.
+        // Reason: Reserved and ordinary children must contribute to the same native active count.
         self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)

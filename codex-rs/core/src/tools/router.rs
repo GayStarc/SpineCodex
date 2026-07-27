@@ -5,6 +5,8 @@ use crate::tools::context::SharedTurnDiffTracker;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
 use crate::tools::handlers::ToolSearchHandlerCache;
+// Spine MODIFIED: Thread response-owned direct Spine admission through native routing.
+// Reason: Routing connects the response runtime that owns ordering to the registry that observes execution.
 use crate::tools::parallel::DirectSpineControlAdmission;
 use crate::tools::registry::AnyToolResult;
 use crate::tools::registry::ToolArgumentDiffConsumer;
@@ -172,6 +174,8 @@ impl ToolRouter {
         call: ToolCall,
         source: ToolCallSource,
     ) -> Result<AnyToolResult, FunctionCallError> {
+        // Spine MODIFIED: Keep non-response and Code Mode dispatch outside direct Spine admission.
+        // Reason: Their transaction ordering is owned by their respective caller rather than this response batch.
         self.dispatch_tool_call_with_code_mode_result_inner(
             session,
             step_context,
@@ -196,6 +200,8 @@ impl ToolRouter {
         call: ToolCall,
         source: ToolCallSource,
         terminal_outcome_reached: Arc<AtomicBool>,
+        // Spine MODIFIED: Accept the response runtime's direct Spine admission token.
+        // Reason: The router forwards it unchanged to the registry lifecycle boundary.
         direct_spine_control_admission: Option<Arc<DirectSpineControlAdmission>>,
     ) -> Result<AnyToolResult, FunctionCallError> {
         self.dispatch_tool_call_with_code_mode_result_inner(
@@ -221,6 +227,8 @@ impl ToolRouter {
         call: ToolCall,
         source: ToolCallSource,
         terminal_outcome_reached: Option<Arc<AtomicBool>>,
+        // Spine MODIFIED: Preserve admission across the shared routing implementation.
+        // Reason: Both terminal-outcome tracking and Spine ordering must reach the same registry call.
         direct_spine_control_admission: Option<Arc<DirectSpineControlAdmission>>,
     ) -> Result<AnyToolResult, FunctionCallError> {
         let ToolCall {
@@ -244,6 +252,8 @@ impl ToolRouter {
         };
 
         self.registry
+            // Spine MODIFIED: Forward direct Spine admission with the native invocation.
+            // Reason: The registry is where handler success can provision the pending transition.
             .dispatch_any_with_terminal_outcome(
                 invocation,
                 terminal_outcome_reached,

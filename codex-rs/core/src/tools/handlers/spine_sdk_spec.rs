@@ -52,7 +52,13 @@ mod tests {
             SpineTool::Spawn,
         ] {
             let actual = create_spine_tool(catalog.definition(tool).unwrap());
-            let expected = crate::tools::handlers::spine_spec::create_spine_tool(tool.name());
+            let expected = match tool {
+                SpineTool::Open | SpineTool::Close | SpineTool::Next => {
+                    crate::tools::handlers::spine_spec::create_spine_tool(tool.name())
+                }
+                SpineTool::Spawn => crate::tools::handlers::spine_spec::create_spine_spawn_tool(),
+                SpineTool::Trim => unreachable!("trim is compared through its dedicated factory"),
+            };
             assert_eq!(actual, expected, "{} schema changed", tool.qualified_name());
         }
 

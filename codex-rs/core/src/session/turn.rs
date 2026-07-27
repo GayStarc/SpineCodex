@@ -1174,7 +1174,9 @@ async fn run_sampling_request(
             base_instructions.clone(),
         );
         let err = match try_run_sampling_request(
-            tool_runtime.clone(),
+            // Spine MODIFIED: Isolate response-group admission state for each retry attempt.
+            // Reason: Calls observed in a failed stream must not contaminate the retried Spine batch.
+            tool_runtime.for_sampling_attempt(),
             Arc::clone(&sess),
             Arc::clone(&turn_context),
             Arc::clone(&turn_store),
@@ -1655,6 +1657,8 @@ pub(super) fn realtime_text_for_event(msg: &EventMsg) -> Option<(String, Option<
         | EventMsg::CollabResumeBegin(_)
         | EventMsg::CollabResumeEnd(_)
         | EventMsg::SubAgentActivity(_) => None,
+        // Spine MODIFIED: Exclude Spine observer events from the realtime text mirror.
+        // Reason: They are structured state notifications rather than conversational text.
         EventMsg::SpineTreeUpdate(_) => None,
         EventMsg::SpineSpawnProgress(_) => None,
     }
@@ -2526,6 +2530,8 @@ async fn try_run_sampling_request(
             }
         }
     };
+    // Spine MODIFIED: Release spawn admission only after every call in the response is known.
+    // Reason: The SDK must validate the complete sibling tool-call group atomically.
     tool_runtime.finish_response_group();
     drop(sampling_timing_guard);
 

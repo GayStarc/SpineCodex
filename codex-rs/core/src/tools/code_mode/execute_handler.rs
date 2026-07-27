@@ -2,6 +2,8 @@ use crate::function_tool::FunctionCallError;
 use crate::image_preparation::prepare_function_call_output_body;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolInvocation;
+// Spine MODIFIED: Import generic output and carrier protocol model types.
+// Reason: Bridged results preserve visible output while embedding nested Spine calls.
 use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
 use crate::tools::context::boxed_tool_output;
@@ -26,11 +28,15 @@ use super::spine_bridge::encode_carrier;
 pub struct CodeModeExecuteHandler {
     spec: ToolSpec,
     nested_tool_specs: Vec<ToolSpec>,
+    // Spine MODIFIED: Record whether the nested tool surface exposes Spine.
+    // Reason: Ordinary Code Mode must retain native cancellation and output behavior.
     spine_bridge_enabled: bool,
 }
 
 impl CodeModeExecuteHandler {
     pub(crate) fn new(spec: ToolSpec, nested_tool_specs: Vec<ToolSpec>) -> Self {
+        // Spine MODIFIED: Derive bridge activation from registered nested tools.
+        // Reason: Tool exposure is the authoritative feature gate for nested Spine admission.
         let spine_bridge_enabled = nested_tool_specs
             .iter()
             .any(|tool| tool.name() == crate::tools::handlers::spine_spec::SPINE_NAMESPACE);
@@ -47,6 +53,8 @@ impl CodeModeExecuteHandler {
         turn: std::sync::Arc<crate::session::turn_context::TurnContext>,
         call_id: String,
         code: String,
+        // Spine MODIFIED: Accept runtime cancellation in the execute lifecycle.
+        // Reason: A bridged cell must seal or abort pending Spine calls before returning.
         cancellation_token: tokio_util::sync::CancellationToken,
     ) -> Result<CodeModeExecuteOutput, FunctionCallError> {
         let args =
@@ -69,6 +77,8 @@ impl CodeModeExecuteHandler {
             .await
             .map_err(FunctionCallError::RespondToModel)?;
         let cell_id = started_cell.cell_id.clone();
+        // Spine MODIFIED: Register this cell as a potential outer Spine carrier.
+        // Reason: Admission is valid only when the outer exec belongs to active Spine context.
         let spine_bridge_active = self.spine_bridge_enabled
             && exec
                 .session
@@ -95,6 +105,8 @@ impl CodeModeExecuteHandler {
             .services
             .code_mode_service
             .mark_cell_ready_for_dispatch(&cell_id);
+        // Spine MODIFIED: Abort bridge state if cancellation wins before first output.
+        // Reason: This prevents late nested calls from escaping a cancelled outer execution.
         let response = match tokio::select! {
             response = started_cell.initial_response() => response,
             _ = cancellation_token.cancelled() => {
@@ -138,6 +150,8 @@ impl CodeModeExecuteHandler {
         // is produced by `handle_runtime_response` and later linked through
         // `CodeCell.output_item_ids` in the reduced trace.
         code_cell_trace.record_initial_response(&response);
+        // Spine MODIFIED: Seal admitted calls before exposing the cell's first output.
+        // Reason: The carrier must atomically describe every Spine call preceding that output.
         let nested_spine_calls = if spine_bridge_active {
             let first_output_join = exec
                 .session
@@ -182,6 +196,8 @@ impl CodeModeExecuteHandler {
                 .finish_cell_dispatch(&cell_id);
         }
         exec.session.services.elicitations.wait_until_clear().await;
+        // Spine MODIFIED: Wrap output with a carrier only for an active bridge.
+        // Reason: Non-Spine Code Mode responses remain byte-for-byte on the native path.
         let visible = handle_runtime_response(&exec, response, args.max_output_tokens, started_at)
             .await
             .map_err(FunctionCallError::RespondToModel)?;
@@ -193,6 +209,8 @@ impl CodeModeExecuteHandler {
     }
 }
 
+// Spine MODIFIED: Wrap visible output with optional nested-call carrier data.
+// Reason: The response item is the durable boundary consumed by Spine compilation.
 pub(super) struct CodeModeExecuteOutput {
     visible: FunctionToolOutput,
     carrier_body: Option<String>,
@@ -293,6 +311,8 @@ impl CodeModeExecuteHandler {
             call_id,
             tool_name,
             payload,
+            // Spine MODIFIED: Forward the runtime token into bridged execution.
+            // Reason: Cell and Spine cleanup must share the same cancellation signal.
             cancellation_token,
             ..
         } = invocation;
@@ -314,6 +334,8 @@ impl CoreToolRuntime for CodeModeExecuteHandler {
         matches!(payload, ToolPayload::Custom { .. })
     }
 
+    // Spine MODIFIED: Await runtime cancellation only for a Spine bridge.
+    // Reason: Ordinary Code Mode keeps the native fast cancellation path.
     fn waits_for_runtime_cancellation(&self) -> bool {
         self.spine_bridge_enabled
     }

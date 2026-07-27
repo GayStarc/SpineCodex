@@ -371,6 +371,8 @@ impl Session {
         let turn = active.get_or_insert_with(ActiveTurn::default);
         debug_assert!(turn.task.is_none());
         let agent_execution_guard = self.services.agent_control.execution_guard(
+            // Spine MODIFIED: Identify the child whose pre-reserved execution slot is starting.
+            // Reason: Prepared Spine children must claim capacity instead of being counted twice.
             self.thread_id,
             turn_context.multi_agent_version,
             &turn_context.session_source,

@@ -2,6 +2,8 @@ use crate::context::ApprovalPromptContext;
 use crate::context::CollaborationModeInstructions;
 use crate::context::ContextualUserFragment;
 use crate::context::ModelSwitchInstructions;
+// Spine MODIFIED: Remove direct dependence on the native multi-agent prompt renderer.
+// Reason: Feature-gated Spine prompt selection now owns the equivalent update fragment.
 use crate::context::PermissionsInstructions;
 use crate::context::PersonalitySpecInstructions;
 use crate::context::RealtimeEndInstructions;
@@ -91,6 +93,8 @@ fn build_multi_agent_mode_update_item(
         return None;
     }
 
+    // Spine MODIFIED: Render mode changes through the configured Spine prompt selector.
+    // Reason: Settings updates must match the SDK-owned prompt used for initial context.
     match effective_multi_agent_mode {
         Some(multi_agent_mode) => Some(
             crate::spine::config::multi_agent_mode_instructions(

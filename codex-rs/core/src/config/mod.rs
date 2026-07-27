@@ -119,6 +119,8 @@ use rmcp::model::FormElicitationCapability;
 use rmcp::model::UrlElicitationCapability;
 use serde::Deserialize;
 use serde::Serialize;
+// Spine MODIFIED: Import validated SDK configuration and its derived tool catalog.
+// Reason: Config is the session bootstrap boundary for immutable feature-gated Spine inputs.
 use spine_core::SpineConfig;
 use spine_core::ToolCatalog;
 use std::collections::BTreeMap;
@@ -1039,6 +1041,8 @@ pub struct Config {
 
     /// Settings specific to the task-path-based multi-agent tool surface.
     pub multi_agent_v2: MultiAgentV2Config,
+    // Spine MODIFIED: Store the resolved per-session capacity used by spine.spawn.
+    // Reason: Native agent admission owns thread capacity even though Spine owns spawn semantics.
     /// Session-scoped capacity for children created through `spine.spawn`.
     pub spine_spawn: SpineSpawnConfig,
 
@@ -1052,6 +1056,8 @@ pub struct Config {
     /// Centralized feature flags; source of truth for feature gating.
     pub features: ManagedFeatures,
 
+    // Spine MODIFIED: Retain validated SDK configuration and its model-visible tool catalog.
+    // Reason: Session bootstrap must reuse one contract instead of reloading Spine configuration.
     /// Validated host-neutral Spine SDK configuration.
     pub spine_config: SpineConfig,
 
@@ -1198,6 +1204,8 @@ impl Default for MultiAgentV2Config {
     }
 }
 
+// Spine MODIFIED: Define the native capacity projection for Spine-managed child agents.
+// Reason: Codex enforces residency, so SDK feature options need a host configuration type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct SpineSpawnConfig {
     pub max_concurrent_threads_per_session: usize,
@@ -1468,6 +1476,8 @@ impl Config {
         }
     }
 
+    // Spine MODIFIED: Convert total session capacity into capacity available to Spine children.
+    // Reason: The resident root consumes one native thread slot before Spine admits children.
     pub(crate) fn effective_spine_spawn_max_threads(&self) -> usize {
         self.spine_spawn
             .max_concurrent_threads_per_session
@@ -2587,6 +2597,8 @@ fn resolve_multi_agent_v2_config(config_toml: &ConfigToml) -> MultiAgentV2Config
     }
 }
 
+// Spine MODIFIED: Resolve spine.spawn capacity with the native multi-agent default as fallback.
+// Reason: Config loading is where omitted feature settings receive host defaults.
 fn resolve_spine_spawn_config(config_toml: &ConfigToml) -> SpineSpawnConfig {
     SpineSpawnConfig {
         max_concurrent_threads_per_session: config_toml
@@ -3113,6 +3125,8 @@ impl Config {
             feature_requirements,
             &mut startup_warnings,
         )?;
+        // Spine MODIFIED: Load and validate SDK configuration, then derive advertised tools.
+        // Reason: Invalid Spine contracts must fail before a session and its tool router are built.
         let (spine_config, spine_tools) =
             crate::spine::config::load(cfg.spine_config_file.as_ref(), &features)?;
         let respect_system_proxy = features.enabled(Feature::RespectSystemProxy);
@@ -3455,6 +3469,8 @@ impl Config {
             resolve_experimental_request_user_input_enabled(&cfg);
         let code_mode = resolve_code_mode_config(&cfg);
         let multi_agent_v2 = resolve_multi_agent_v2_config(&cfg);
+        // Spine MODIFIED: Resolve native admission capacity for the Spine spawn adapter.
+        // Reason: The value must be frozen with the rest of the session configuration.
         let spine_spawn = resolve_spine_spawn_config(&cfg);
         let token_budget = resolve_token_budget_config(&cfg, &features)?;
         let rollout_budget = resolve_rollout_budget_config(&cfg, &features)?;
@@ -3996,6 +4012,8 @@ impl Config {
             background_terminal_max_timeout,
             ghost_snapshot,
             multi_agent_v2,
+            // Spine MODIFIED: Install resolved Spine host and SDK settings in Config.
+            // Reason: Downstream session construction consumes them without reopening config files.
             spine_spawn,
             token_budget,
             rollout_budget,

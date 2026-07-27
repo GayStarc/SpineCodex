@@ -15,6 +15,17 @@ pub const MAX_SPAWN_BATCH_BYTES: usize = 64 * 1024;
 pub const SPINE_NAMESPACE: &str = "spine";
 pub const SPINE_NAMESPACE_DESCRIPTION: &str = "Use Spine to shape the work.";
 
+const NODE_MEMORY_DESCRIPTION: &str = concat!(
+    "Continuation state replacing the finalized node's local working detail. ",
+    "Preserve only what later work needs beyond inherited context: completed or confirmed progress, confirmed findings, decisions and constraints, validation results, bounded unresolved factual gaps or risks, remaining work that can proceed from this memory and inherited context without reconstructing the replaced detail, and the logic linking evidence and findings to decisions and next steps. ",
+    "Include compact supporting evidence or precise, recoverable references when needed. ",
+    "For source code, cite exact paths and lines; for commands, cite the exact command and decisive output or result, so continuation need not replay the work. ",
+    "Runtime preserves user messages and child memories. ",
+    "Use existing `[U#]` anchors only to bind approvals, corrections, rejections, clarifications, and elliptical replies to their referents and record the resulting continuation-relevant semantic deltas in task scope, decisions, constraints, progress, and remaining obligations; the underlying user messages remain available independently of these references."
+);
+const OPEN_SUMMARY_DESCRIPTION: &str = "Concise, actionable, completable goal for a direct child within one aligned set of task, information, and context-lifecycle boundaries. The call carrying it remains in the child's context.";
+const NEXT_SUMMARY_DESCRIPTION: &str = "Concise, actionable, completable goal for a true sibling within its own aligned set of task, information, and context-lifecycle boundaries. The call carrying it remains in the sibling's context; finalized-node state belongs in memory.";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SpineTool {
     Open,
@@ -62,7 +73,6 @@ pub struct ToolDefinition {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ToolCatalog {
     definitions: Vec<ToolDefinition>,
-    spawn_task_limit: usize,
 }
 
 impl ToolCatalog {
@@ -80,30 +90,7 @@ impl ToolCatalog {
                 parameters: parameters_for(tool),
             })
             .collect();
-        Ok(Self {
-            definitions,
-            spawn_task_limit: MAX_SPAWN_TASKS,
-        })
-    }
-
-    pub fn with_spawn_task_limit(mut self, max_tasks: usize) -> Self {
-        self.spawn_task_limit = max_tasks.min(MAX_SPAWN_TASKS);
-        if self.spawn_task_limit < 2 {
-            self.definitions
-                .retain(|definition| definition.tool != SpineTool::Spawn);
-        } else if let Some(definition) = self
-            .definitions
-            .iter_mut()
-            .find(|definition| definition.tool == SpineTool::Spawn)
-        {
-            definition.parameters["properties"]["tasks"]["maxItems"] =
-                serde_json::json!(self.spawn_task_limit);
-        }
-        self
-    }
-
-    pub fn spawn_task_limit(&self) -> usize {
-        self.spawn_task_limit
+        Ok(Self { definitions })
     }
 
     pub fn validate(
@@ -310,21 +297,21 @@ fn parameters_for(tool: SpineTool) -> Value {
     match tool {
         SpineTool::Open => serde_json::json!({
             "type": "object",
-            "properties": { "summary": { "type": "string", "maxLength": MAX_SUMMARY_BYTES, "description": "Concise, actionable, completable goal for the child node being opened. The transition call carrying this goal is retained in the child node's context." } },
+            "properties": { "summary": { "type": "string", "maxLength": MAX_SUMMARY_BYTES, "description": OPEN_SUMMARY_DESCRIPTION } },
             "required": ["summary"],
             "additionalProperties": false
         }),
         SpineTool::Close => serde_json::json!({
             "type": "object",
-            "properties": { "memory": { "type": "string", "maxLength": MAX_MEMORY_BYTES, "description": "Compiled continuation state for the node being finalized. This memory replaces the node's local working content for future continuation. Preserve only continuation-relevant state: completed or confirmed progress, key decisions and constraints, confirmed findings, validation results, unresolved factual gaps or risks, remaining work, and the logic linking evidence and findings to decisions and next steps. Use compact supporting evidence or precise, recoverable references wherever they clarify that logic. For source code, cite the precise path and line or line range; for commands or outputs, cite the exact command and decisive output or result, so later work can continue without replaying completed investigation or reloading the same context. Treat inherited ancestor context as already available. Runtime preserves user messages and child memories; use this memory for the additional state required for continuation. Preserve the continuation-relevant evolution of user intent by using [U#] anchors to resolve approvals, corrections, rejections, clarifications, and elliptical replies to their concrete referents, and record the resulting semantic deltas in task scope, decisions, constraints, progress, and remaining obligations." } },
+            "properties": { "memory": { "type": "string", "maxLength": MAX_MEMORY_BYTES, "description": NODE_MEMORY_DESCRIPTION } },
             "required": ["memory"],
             "additionalProperties": false
         }),
         SpineTool::Next => serde_json::json!({
             "type": "object",
             "properties": {
-                "summary": { "type": "string", "description": "Concise goal for the next sibling node. Make it actionable and completable. The transition call carrying this goal is retained in the sibling's context; continuation state from the node being finalized belongs in memory." },
-                "memory": { "type": "string", "description": "Compiled continuation state for the node being finalized. This memory replaces the node's local working content for future continuation. Preserve only continuation-relevant state: completed or confirmed progress, key decisions and constraints, confirmed findings, validation results, unresolved factual gaps or risks, remaining work, and the logic linking evidence and findings to decisions and next steps. Use compact supporting evidence or precise, recoverable references wherever they clarify that logic. For source code, cite the precise path and line or line range; for commands or outputs, cite the exact command and decisive output or result, so later work can continue without replaying completed investigation or reloading the same context. Treat inherited ancestor context as already available. Runtime preserves user messages and child memories; use this memory for the additional state required for continuation. Preserve the continuation-relevant evolution of user intent by using [U#] anchors to resolve approvals, corrections, rejections, clarifications, and elliptical replies to their concrete referents, and record the resulting semantic deltas in task scope, decisions, constraints, progress, and remaining obligations." }
+                "summary": { "type": "string", "description": NEXT_SUMMARY_DESCRIPTION },
+                "memory": { "type": "string", "description": NODE_MEMORY_DESCRIPTION }
             },
             "required": ["summary", "memory"],
             "additionalProperties": false
@@ -348,14 +335,13 @@ fn parameters_for(tool: SpineTool) -> Value {
             "properties": {
                 "tasks": {
                     "type": "array",
-                    "description": "Ordered self-contained child tasks.",
+                    "description": "Ordered differentiated branch assignments.",
                     "minItems": 2,
-                    "maxItems": MAX_SPAWN_TASKS,
                     "items": {
                         "type": "object",
                         "properties": {
-                            "summary": { "type": "string", "maxLength": MAX_SUMMARY_BYTES, "description": "Concise label for one self-contained child task." },
-                            "prompt": { "type": "string", "maxLength": MAX_SPAWN_PROMPT_BYTES, "description": "Complete task instruction solvable from inherited context without parent follow-up." }
+                            "summary": { "type": "string", "maxLength": MAX_SUMMARY_BYTES, "description": "Concise branch label, distinct within this spawn call, and its independently owned outcome." },
+                            "prompt": { "type": "string", "maxLength": MAX_SPAWN_PROMPT_BYTES, "description": "Complete initial branch assignment. If coordination is required, identify relevant peer branch summaries and roles, the common coordination root (recommended basename: `coordination_{task_id}_{timestamp}/`), this branch's single-writer coordination path, the artifact format and update/read protocol, synchronization points, and a bounded fallback for unavailable peer coordination state." }
                         },
                         "required": ["summary", "prompt"],
                         "additionalProperties": false
@@ -387,41 +373,17 @@ mod tests {
     }
 
     #[test]
-    fn spawn_limit_specializes_schema_without_changing_sdk_validation() {
+    fn spawn_schema_does_not_encode_runtime_capacity() {
         let config = SpineConfig::v1()
             .with_features([Feature::Jit, Feature::Spawn])
             .unwrap();
-        let catalog = ToolCatalog::new(&config)
-            .unwrap()
-            .with_spawn_task_limit(3);
+        let catalog = ToolCatalog::new(&config).unwrap();
         let definition = catalog.definition(SpineTool::Spawn).unwrap();
-        assert_eq!(
-            definition.parameters["properties"]["tasks"]["maxItems"],
-            serde_json::json!(3)
+        assert!(
+            definition.parameters["properties"]["tasks"]
+                .get("maxItems")
+                .is_none()
         );
-
-        let arguments = serde_json::json!({
-            "tasks": (0..4)
-                .map(|index| SpawnTask {
-                    summary: format!("task-{index}"),
-                    prompt: format!("prompt-{index}"),
-                })
-                .collect::<Vec<_>>()
-        });
-        assert!(catalog
-            .validate(SpineTool::Spawn, &arguments.to_string())
-            .is_ok());
-    }
-
-    #[test]
-    fn spawn_is_hidden_when_capacity_cannot_form_a_batch() {
-        let config = SpineConfig::v1()
-            .with_features([Feature::Jit, Feature::Spawn])
-            .unwrap();
-        let catalog = ToolCatalog::new(&config)
-            .unwrap()
-            .with_spawn_task_limit(1);
-        assert!(catalog.definition(SpineTool::Spawn).is_none());
     }
 
     #[test]

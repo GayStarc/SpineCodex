@@ -43,6 +43,8 @@ pub(crate) struct AgentMetadata {
     pub(crate) agent_nickname: Option<String>,
     pub(crate) agent_role: Option<String>,
     pub(crate) last_task_message: Option<String>,
+    // Spine MODIFIED: Persist whether native completion notification is suppressed for this child.
+    // Reason: Completion is emitted later from registry metadata, after the Spine batch request is gone.
     pub(crate) suppress_parent_completion_notification: bool,
 }
 
@@ -96,11 +98,15 @@ impl AgentRegistry {
         self: &Arc<Self>,
         max_threads: Option<usize>,
     ) -> Result<SpawnReservation> {
+        // Spine MODIFIED: Preserve the single-child API by delegating to atomic batch reservation.
+        // Reason: Native callers stay unchanged while Spine can reserve its full child set up front.
         self.reserve_spawn_slots(max_threads, 1)?
             .pop()
             .ok_or_else(|| CodexErr::Fatal("missing reserved spawn slot".to_string()))
     }
 
+    // Spine MODIFIED: Reserve and return one RAII registry capability per requested child.
+    // Reason: Spine batch preparation must update the global thread count atomically and roll back per child.
     pub(crate) fn reserve_spawn_slots(
         self: &Arc<Self>,
         max_threads: Option<usize>,
@@ -316,6 +322,8 @@ impl AgentRegistry {
         }
     }
 
+    // Spine MODIFIED: Increment the registry count by an exact batch without overflow or partial success.
+    // Reason: Per-child compare-and-swap loops could admit only part of a Spine transaction.
     fn try_increment_spawned_by(&self, max_threads: usize, count: usize) -> bool {
         let mut current = self.total_count.load(Ordering::Acquire);
         loop {

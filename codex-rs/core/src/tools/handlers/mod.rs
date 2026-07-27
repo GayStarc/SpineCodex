@@ -28,6 +28,8 @@ pub(crate) mod request_user_input_spec;
 mod shell;
 pub(crate) mod shell_spec;
 mod sleep;
+// Spine MODIFIED: Wire the Spine handler and SDK-owned tool specifications into core tools.
+// Reason: The native handler registry is the boundary that exposes SDK tool contracts to Codex.
 pub(crate) mod spine;
 pub(crate) mod spine_sdk_spec;
 #[cfg(test)]
@@ -77,6 +79,8 @@ pub use request_user_input::RequestUserInputHandler;
 pub use shell::ShellCommandHandler;
 pub(crate) use shell::ShellCommandHandlerOptions;
 pub use sleep::SleepHandler;
+// Spine MODIFIED: Re-export the native adapter used to register configured Spine tools.
+// Reason: Tool planning imports handlers through this module instead of depending on their files.
 pub(crate) use spine::SpineHandler;
 pub use test_sync::TestSyncHandler;
 pub(crate) use tool_search::ToolSearchHandlerCache;

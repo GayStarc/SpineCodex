@@ -1,10 +1,14 @@
 use std::sync::Arc;
+// Spine MODIFIED: Add mutex state for ordered direct Spine control admission.
+// Reason: Parallel tool calls need one response-scoped coordinator with short critical sections.
 use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
+// Spine MODIFIED: Add wakeups for direct Spine controls waiting on earlier response calls.
+// Reason: Later controls must wait without blocking a thread until earlier slots resolve.
 use tokio::sync::Notify;
 use tokio::sync::RwLock;
 use tokio::task::JoinError;
@@ -31,6 +35,8 @@ use crate::tools::router::ToolRouter;
 use codex_protocol::error::CodexErr;
 use codex_protocol::models::ResponseInputItem;
 
+// Spine MODIFIED: Coordinate direct Spine controls as one ordered response batch.
+// Reason: A response may contain parallel controls, but only the earliest validated transition may commit.
 #[derive(Default)]
 struct DirectSpineControlBatch {
     state: Mutex<DirectSpineControlBatchState>,
@@ -220,6 +226,8 @@ pub(crate) struct ToolCallRuntime {
     step_context: Arc<StepContext>,
     tracker: SharedTurnDiffTracker,
     parallel_execution: Arc<RwLock<()>>,
+    // Spine MODIFIED: Retain response-scoped admission state beside native parallel execution state.
+    // Reason: Direct open, close, and next calls must share ordering across concurrently executed calls.
     direct_spine_controls: Arc<DirectSpineControlBatch>,
 }
 
@@ -240,6 +248,8 @@ impl ToolCallRuntime {
         }
     }
 
+    // Spine MODIFIED: Start each model sampling attempt with a fresh direct-control batch.
+    // Reason: Admission order is defined by one response and must not leak across retries.
     pub(crate) fn for_sampling_attempt(&self) -> Self {
         Self {
             router: Arc::clone(&self.router),
@@ -258,6 +268,8 @@ impl ToolCallRuntime {
         self.router.create_diff_consumer(tool_name)
     }
 
+    // Spine MODIFIED: Record every response tool call and seal its spawn admission group.
+    // Reason: Spine spawn must validate conflicts against the complete model response before execution.
     pub(crate) fn register_response_call(&self, call: &ToolCall) {
         let name = match call.tool_name.namespace.as_deref() {
             Some(namespace) => format!("{namespace}.{}", call.tool_name.name),
@@ -282,6 +294,8 @@ impl ToolCallRuntime {
         call: ToolCall,
         cancellation_token: CancellationToken,
     ) -> impl std::future::Future<Output = Result<ResponseInputItem, CodexErr>> {
+        // Spine MODIFIED: Register and finally commit direct Spine control admission around dispatch.
+        // Reason: Validation may run in parallel, while the response order selects one successful transition.
         let admission = self.direct_spine_controls.register(&call.tool_name);
         let dispatch_admission = admission.as_ref().map(Arc::clone);
         let error_call = call.clone();
@@ -316,6 +330,8 @@ impl ToolCallRuntime {
         self.handle_tool_call_inner(call, source, cancellation_token, None)
     }
 
+    // Spine MODIFIED: Carry optional direct-control admission through the shared dispatch implementation.
+    // Reason: Direct calls need coordination while nested Code Mode calls retain their existing path.
     fn handle_tool_call_inner(
         self,
         call: ToolCall,
@@ -376,6 +392,8 @@ impl ToolCallRuntime {
                         dispatch_call,
                         source,
                         dispatch_terminal_outcome_reached,
+                        // Spine MODIFIED: Hand the response-owned admission token to tool lifecycle dispatch.
+                        // Reason: Provisioning must occur after handler success but before post-tool finalization.
                         direct_spine_control_admission,
                     )
                     .instrument(dispatch_span.clone())

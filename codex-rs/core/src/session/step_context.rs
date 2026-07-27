@@ -4,6 +4,8 @@ use crate::agents_md::LoadedAgentsMd;
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::session::McpRuntimeSnapshot;
 use crate::session::turn_context::TurnContext;
+// Spine MODIFIED: Import the per-response Spine spawn admission group.
+// Reason: Tool calls from one model response must be validated as one transaction.
 use crate::spine::spawn::SpineSpawnGroup;
 use codex_exec_server::ResolvedSelectedCapabilityRoot;
 use codex_mcp::ToolInfo;
@@ -22,6 +24,8 @@ pub(crate) struct StepContext {
     mcp_tool_snapshot: OnceCell<Vec<ToolInfo>>,
     /// The canonical AGENTS.md value observed with this environment snapshot.
     pub(crate) loaded_agents_md: Option<Arc<LoadedAgentsMd>>,
+    // Spine MODIFIED: Share one spawn admission boundary across all calls in a response.
+    // Reason: Spine must see sibling open/close/next calls before admitting any spawn.
     /// All model tool calls in this sampling response share one admission boundary.
     pub(crate) spine_spawn_group: Arc<SpineSpawnGroup>,
 }
@@ -41,6 +45,8 @@ impl StepContext {
             mcp,
             mcp_tool_snapshot: OnceCell::new(),
             loaded_agents_md,
+            // Spine MODIFIED: Start each response step with an isolated admission group.
+            // Reason: Call discovery and completion synchronization must not cross sampling steps.
             spine_spawn_group: Arc::new(SpineSpawnGroup::default()),
         }
     }

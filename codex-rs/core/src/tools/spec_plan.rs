@@ -26,6 +26,8 @@ use crate::tools::handlers::RequestUserInputHandler;
 use crate::tools::handlers::ShellCommandHandler;
 use crate::tools::handlers::ShellCommandHandlerOptions;
 use crate::tools::handlers::SleepHandler;
+// Spine MODIFIED: Import the native adapter for SDK-selected Spine tool contracts.
+// Reason: Core tool planning is the single boundary that makes configured SDK tools model-visible.
 use crate::tools::handlers::SpineHandler;
 use crate::tools::handlers::TestSyncHandler;
 use crate::tools::handlers::ToolSearchHandlerCache;
@@ -219,11 +221,16 @@ fn apply_direct_model_only_namespace_overrides(
                     .contains(namespace)
             });
         match runtime.exposure() {
-            ToolExposure::Direct | ToolExposure::Deferred if configured => {
+            // Spine MODIFIED: Treat SDK tools exposed in both direct and Code Mode like other direct tools.
+            // Reason: Namespace overrides must remain authoritative when Spine permits both invocation paths.
+            ToolExposure::Direct | ToolExposure::DirectAndCodeMode | ToolExposure::Deferred
+                if configured =>
+            {
                 *runtime =
                     override_tool_exposure(Arc::clone(runtime), ToolExposure::DirectModelOnly);
             }
             ToolExposure::Direct
+            | ToolExposure::DirectAndCodeMode
             | ToolExposure::Deferred
             | ToolExposure::DirectModelOnly
             | ToolExposure::Hidden => {}
@@ -339,6 +346,8 @@ fn namespace_tools_enabled(turn_context: &TurnContext) -> bool {
 
 fn multi_agent_v2_enabled(turn_context: &TurnContext) -> bool {
     turn_context.multi_agent_version == MultiAgentVersion::V2
+        // Spine MODIFIED: Keep native multi-agent v2 tools behind their own feature after isolating Spine spawn.
+        // Reason: Spine spawn no longer implies or depends on native collaboration tool availability.
         && turn_context
             .config
             .features
@@ -347,6 +356,8 @@ fn multi_agent_v2_enabled(turn_context: &TurnContext) -> bool {
 }
 
 fn collab_tools_enabled(turn_context: &TurnContext) -> bool {
+    // Spine MODIFIED: Read native collaboration feature gates independently from Spine spawn.
+    // Reason: Decoupling Spine admission must not expose native collaboration tools implicitly.
     let features = turn_context.config.features.get();
     match turn_context.multi_agent_version {
         MultiAgentVersion::Disabled => false,
@@ -692,45 +703,13 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut
 
     planned_tools.add(PlanHandler);
 
-<<<<<<< HEAD
-<<<<<<< HEAD
-    if features.enabled(Feature::SpineJit) {
-        for handler in SpineHandler::controls(&turn_context.config.spine_tools) {
-            planned_tools.add(handler);
-        }
-    }
-    if features.enabled(Feature::SpineJit)
-        && features.enabled(Feature::SpineSpawn)
-        && turn_context.collaboration_mode.mode != codex_protocol::config_types::ModeKind::Plan
-    {
-<<<<<<< HEAD
-        planned_tools.add(SpineHandler::spawn());
-=======
-        if let Some(handler) = SpineHandler::spawn(&turn_context.config.spine_tools) {
-            planned_tools.add(handler);
-        }
->>>>>>> refactor(spine): move config and tool contracts into sdk
-    }
-    if features.enabled(Feature::SpineTrim) {
-        if let Some(handler) = SpineHandler::trim(&turn_context.config.spine_tools) {
-            planned_tools.add(handler);
-        }
-    }
-=======
-=======
-    let spine_tools = turn_context.config.spine_tools.clone().with_spawn_task_limit(
-        turn_context
-            .config
-            .effective_agent_max_threads(turn_context.multi_agent_version)
-            .unwrap_or_default(),
-    );
->>>>>>> fix(spine): preserve sdk context guidance on main
+    // Spine MODIFIED: Register SDK-selected Spine tools in the turn's native tool plan.
+    // Reason: This is the Codex boundary where configured SDK contracts become model-visible tools.
     SpineHandler::add_tools(
-        &spine_tools,
+        &turn_context.config.spine_tools,
         turn_context.collaboration_mode.mode,
         |handler| planned_tools.add(handler),
     );
->>>>>>> refactor(spine): let SDK own tool exposure
 
     if features.enabled(Feature::DeferredExecutor) {
         planned_tools.add(WaitForEnvironmentHandler);

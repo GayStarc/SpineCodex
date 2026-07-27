@@ -22,6 +22,8 @@ use crate::tools::handlers::multi_agents_spec::MULTI_AGENT_V1_NAMESPACE;
 use crate::tools::hook_names::HookToolName;
 use crate::tools::lifecycle::notify_tool_finish;
 use crate::tools::lifecycle::notify_tool_start;
+// Spine MODIFIED: Accept response-owned direct Spine admission during native tool dispatch.
+// Reason: The registry observes handler success and the later lifecycle outcome needed for two-phase admission.
 use crate::tools::parallel::DirectSpineControlAdmission;
 use crate::tools::tool_dispatch_trace::ToolDispatchTrace;
 use crate::util::error_or_panic;
@@ -395,6 +397,8 @@ impl ToolRegistry {
         &self,
         invocation: ToolInvocation,
     ) -> Result<AnyToolResult, FunctionCallError> {
+        // Spine MODIFIED: Preserve ordinary registry dispatch without a direct Spine admission token.
+        // Reason: Only response-level direct controls participate in ordered transition admission.
         self.dispatch_any_with_terminal_outcome(
             invocation, /*terminal_outcome_reached*/ None,
             /*direct_spine_control_admission*/ None,
@@ -410,6 +414,8 @@ impl ToolRegistry {
         &self,
         mut invocation: ToolInvocation,
         terminal_outcome_reached: Option<Arc<AtomicBool>>,
+        // Spine MODIFIED: Receive the optional admission token owned by the response runtime.
+        // Reason: The registry can provision it at the exact boundary between handler and lifecycle success.
         direct_spine_control_admission: Option<Arc<DirectSpineControlAdmission>>,
     ) -> Result<AnyToolResult, FunctionCallError> {
         let tool_name = invocation.tool_name.clone();
@@ -559,6 +565,8 @@ impl ToolRegistry {
                     let response_cell = &response_cell;
                     async move {
                         let result = handle_any_tool(tool.as_ref(), invocation_for_tool).await;
+                        // Spine MODIFIED: Provision direct Spine control admission after tool execution.
+                        // Reason: Admission remains reversible until the surrounding tool lifecycle confirms the final result.
                         let result = match direct_spine_control_admission {
                             Some(admission) => admission.provision(result).await,
                             None => result,

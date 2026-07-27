@@ -326,6 +326,8 @@ pub(crate) async fn handle_output_item_done(
     match ToolRouter::build_tool_call(item.clone()) {
         // The model emitted a tool call; log it, persist the item immediately, and queue the tool execution.
         Ok(Some(call)) => {
+            // Spine MODIFIED: Register each discovered call with the response admission group.
+            // Reason: spine.spawn waits until all sibling controls in the response are known.
             ctx.tool_runtime.register_response_call(&call);
             ctx.sess
                 .input_queue

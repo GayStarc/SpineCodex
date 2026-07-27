@@ -50,6 +50,8 @@ use tracing::warn;
 pub(crate) use self::execution::AgentExecutionGuard;
 use self::execution::AgentExecutionLimiter;
 use self::residency::V2Residency;
+// Spine MODIFIED: Re-export the capability that owns a fully admitted child spawn.
+// Reason: The Spine spawn adapter must prepare children transactionally without accessing control internals.
 pub(crate) use self::spawn::PreparedAgentSpawn;
 
 const ROOT_LAST_TASK_MESSAGE: &str = "Main thread";
@@ -62,6 +64,8 @@ mod spawn;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum SpawnAgentForkMode {
     FullHistory,
+    // Spine MODIFIED: Add a fork mode that removes the parent spawn tool batch from child history.
+    // Reason: A Spine child needs the completed prefix but must not inherit the tool call that creates it.
     FullHistoryTrimToolCallSuffix,
     LastNTurns(usize),
 }
@@ -76,6 +80,8 @@ pub(crate) struct SpawnAgentOptions {
 
 pub(crate) struct SpawnPromptCacheAffinity;
 
+// Spine MODIFIED: Bundle one child request and its notification policy for atomic batch admission.
+// Reason: Spine spawn validates and reserves the complete batch before creating any child thread.
 pub(crate) struct SpawnAgentBatchRequest {
     pub(crate) session_source: SessionSource,
     pub(crate) options: SpawnAgentOptions,
@@ -129,6 +135,8 @@ pub(crate) struct AgentControl {
     state: Arc<AgentRegistry>,
     v2_residency: Arc<V2Residency>,
     agent_execution_limiter: Arc<AgentExecutionLimiter>,
+    // Spine MODIFIED: Track a session-scoped execution pool dedicated to Spine-created children.
+    // Reason: Spine spawn capacity must remain independent of the model-visible multi-agent feature limit.
     spine_spawn_limiter: Arc<AgentExecutionLimiter>,
     /// Session-scoped state shared by the root thread and every cloned sub-agent control handle.
     rollout_budget: Arc<RolloutBudget>,
@@ -150,6 +158,8 @@ impl AgentControl {
         control
     }
 
+    // Spine MODIFIED: Initialize both native multi-agent and Spine spawn execution capacities.
+    // Reason: Each admission path needs an explicit session limit while sharing the native lifecycle owner.
     pub(crate) fn with_session_id(
         mut self,
         session_id: SessionId,
@@ -351,6 +361,8 @@ impl AgentControl {
         self.state.agent_metadata_for_thread(agent_id)
     }
 
+    // Spine MODIFIED: Expose whether a prepared child suppresses the legacy parent completion notice.
+    // Reason: Spine publishes its own spawn lifecycle events and must avoid duplicate native notifications.
     pub(crate) fn suppresses_parent_completion_notification(&self, agent_id: ThreadId) -> bool {
         self.state
             .agent_metadata_for_thread(agent_id)
@@ -642,6 +654,8 @@ impl AgentControl {
             agent_nickname,
             agent_role,
             last_task_message: None,
+            // Spine MODIFIED: Default native thread spawns to the existing completion-notification behavior.
+            // Reason: Only the explicit Spine batch request opts out, preserving base behavior otherwise.
             suppress_parent_completion_notification: false,
         };
         Ok((session_source, agent_metadata))

@@ -203,6 +203,8 @@ impl ContextManager {
         self.world_state_baseline = None;
     }
 
+    // Spine MODIFIED: Install a context handler's prepared model-visible item sequence.
+    // Reason: Spine commits its staged projection without resetting native history baselines.
     pub(crate) fn replace_items(&mut self, items: Vec<ResponseItem>) {
         self.items = items;
     }

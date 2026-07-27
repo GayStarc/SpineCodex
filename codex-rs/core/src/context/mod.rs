@@ -27,6 +27,8 @@ mod realtime_start_instructions;
 mod realtime_start_with_instructions;
 mod recommended_plugins_instructions;
 mod rollout_budget;
+// Spine MODIFIED: Register Codex renderers for SDK-owned model-context fragments.
+// Reason: Injected fragments must live under core/context and implement ContextualUserFragment.
 mod spine_context;
 mod subagent_notification;
 mod token_budget_context;
@@ -71,6 +73,8 @@ pub(crate) use realtime_start_instructions::RealtimeStartInstructions;
 pub(crate) use realtime_start_with_instructions::RealtimeStartWithInstructions;
 pub(crate) use recommended_plugins_instructions::RecommendedPluginsInstructions;
 pub(crate) use rollout_budget::RolloutBudgetContext;
+// Spine MODIFIED: Expose Spine renderers only to crate-private Codex adapters.
+// Reason: SDK semantics map to native ResponseItems without expanding the public core API.
 pub(crate) use spine_context::SpineMemoryFragment;
 pub(crate) use spine_context::SpineMultiAgentModeInstructions;
 pub(crate) use spine_context::SpineNodeFragment;

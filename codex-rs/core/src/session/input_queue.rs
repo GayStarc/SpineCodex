@@ -199,6 +199,8 @@ impl InputQueue {
             .collect()
     }
 
+    // Spine MODIFIED: Extract mailbox messages belonging to one spawn transaction.
+    // Reason: Batched Spine completion consumes child results without reordering unrelated mail.
     pub(crate) async fn extract_mailbox_communications(
         &self,
         mut predicate: impl FnMut(&InterAgentCommunication) -> bool,

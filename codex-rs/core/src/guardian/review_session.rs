@@ -1071,8 +1071,8 @@ pub(crate) fn build_guardian_review_session_config(
             );
         }
     }
-    // Guardian review is a control-plane session and must not derive a task
-    // projection from the parent session's rollout.
+    // Spine MODIFIED: Disable task-context Spine features in the derived Guardian review session.
+    // Reason: Guardian is a control-plane session and must not replay or project the parent task's Spine state.
     let mut review_features = guardian_config.features.get().clone();
     for feature in [
         Feature::SpineJit,

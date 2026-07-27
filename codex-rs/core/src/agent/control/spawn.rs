@@ -1,3 +1,5 @@
+// Spine MODIFIED: Import the native residency, execution, depth, and registry admission capabilities.
+// Reason: Spine batch preparation composes existing lifecycle owners rather than duplicating admission logic.
 use super::residency::V2ResidencySlot;
 use super::residency::is_v2_resident_session_source;
 use super::*;
@@ -16,6 +18,8 @@ struct SpawnAgentThreadInheritance {
 /// One-shot capability proving that a child owns every native admission resource needed to
 /// create its thread. Dropping it before creation releases the registry, execution, and residency
 /// reservations together.
+// Spine MODIFIED: Hold every resource and resolved input required to create exactly one admitted child.
+// Reason: Spine validates and reserves a full batch before any child thread side effect occurs.
 pub(crate) struct PreparedAgentSpawn {
     config: Config,
     options: SpawnAgentOptions,
@@ -114,6 +118,8 @@ fn is_multi_agent_v2_usage_hint_message(item: &ResponseItem, usage_hint_texts: &
         .any(|usage_hint_text| usage_hint_text == text)
 }
 
+// Spine MODIFIED: Classify request-side tool items and extract supported tool call identifiers.
+// Reason: A Spine child fork must find the entire parent tool batch that contains its own spawn call.
 fn is_tool_call_request_response_item(item: &ResponseItem) -> bool {
     matches!(
         item,
@@ -134,6 +140,8 @@ fn response_item_call_id(item: &ResponseItem) -> Option<&str> {
     }
 }
 
+// Spine MODIFIED: Remove the parent spawn call and adjacent request-side tool calls from a child fork.
+// Reason: Children inherit the completed prefix before their transaction, not the unresolved batch that created them.
 pub(super) fn trim_tool_call_related_suffix(
     items: &mut Vec<RolloutItem>,
     parent_call_id: &str,
@@ -216,6 +224,8 @@ impl AgentControl {
     }
 
     /// Reserve an entire V2 full-history child batch before any child thread is created.
+    // Spine MODIFIED: Validate and reserve all native resources for a full-history Spine child batch.
+    // Reason: All-or-nothing admission belongs beside native thread creation, registry, residency, and execution ownership.
     pub(crate) async fn prepare_agent_spawn_batch(
         &self,
         config: Config,
@@ -349,6 +359,8 @@ impl AgentControl {
         Ok(prepared)
     }
 
+    // Spine MODIFIED: Start a child from a previously admitted capability using normal native lifecycle code.
+    // Reason: The Spine adapter should submit inputs without reimplementing thread construction.
     pub(crate) async fn spawn_prepared_agent_with_metadata(
         &self,
         prepared: PreparedAgentSpawn,
@@ -514,6 +526,8 @@ impl AgentControl {
         };
         let notification_source = session_source.clone();
 
+        // Spine MODIFIED: Route legacy single-child spawning through the prepared-spawn implementation.
+        // Reason: Spine and native callers must share one creation, notification, inheritance, and rollback path.
         self.spawn_prepared_agent_internal(
             initial_input,
             PreparedAgentSpawn {
@@ -532,6 +546,8 @@ impl AgentControl {
         .await
     }
 
+    // Spine MODIFIED: Consume the one-shot prepared capability while performing child creation.
+    // Reason: Keeping reservations owned by this function guarantees RAII rollback until each resource commits.
     async fn spawn_prepared_agent_internal(
         &self,
         initial_input: SpawnInitialInput,
@@ -587,6 +603,8 @@ impl AgentControl {
         if let Some(residency_slot) = residency_slot {
             residency_slot.commit(new_thread.thread_id);
         }
+        // Spine MODIFIED: Bind the reserved execution slot to the concrete child only after creation succeeds.
+        // Reason: Earlier failures should drop pending capacity; later failures need a thread-addressable rollback.
         let used_reserved_execution = execution_reservation.is_some();
         if let Some(execution_reservation) = execution_reservation {
             execution_reservation.commit(new_thread.thread_id);
@@ -649,6 +667,8 @@ impl AgentControl {
         .await;
         drop(topology_update);
 
+        // Spine MODIFIED: Capture initial submission failure so a reserved Spine child can be removed atomically.
+        // Reason: Native single spawns predate batch transactions and otherwise leave a partially created child.
         let initial_input_result = match initial_input {
             SpawnInitialInput::UserInput(input) => {
                 self.send_input_after_capacity_check(new_thread.thread_id, &state, input)
@@ -673,6 +693,8 @@ impl AgentControl {
             }
             return Err(error);
         }
+        // Spine MODIFIED: Skip the legacy running-status path for already admitted Spine children.
+        // Reason: Their reserved execution lifecycle starts with the child task and would be counted twice here.
         if !used_reserved_execution && multi_agent_version != MultiAgentVersion::V2 {
             let child_reference = agent_metadata
                 .agent_path
@@ -760,6 +782,8 @@ impl AgentControl {
             })
             .unwrap_or_default();
         let mut forked_rollout_items = parent_history.items;
+        // Spine MODIFIED: Apply the suffix-trimming fork mode before normal rollout filtering.
+        // Reason: Spine children need the exact parent prefix ending before the transaction's tool-call batch.
         match fork_mode {
             SpawnAgentForkMode::LastNTurns(last_n_turns) => {
                 forked_rollout_items =
@@ -778,6 +802,8 @@ impl AgentControl {
             }
             SpawnAgentForkMode::FullHistory => {}
         }
+        // Spine MODIFIED: Preserve the complete pre-transaction rollout for Spine suffix-trim forks.
+        // Reason: Native filtering would remove context records needed by SDK replay in the child session.
         if !matches!(fork_mode, SpawnAgentForkMode::FullHistoryTrimToolCallSuffix) {
             let multi_agent_v2_usage_hint_texts_to_filter: Vec<String> =
                 if let Some(parent_thread) = parent_thread.as_ref() {

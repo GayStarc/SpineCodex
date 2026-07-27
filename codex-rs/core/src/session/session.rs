@@ -94,6 +94,8 @@ pub(crate) struct SessionConfiguration {
     pub(super) thread_name: Option<String>,
 
     // TODO(pakrym): Remove config from here
+    // Spine MODIFIED: Widen resolved-config access to the crate-private Spine session adapter.
+    // Reason: The adapter derives immutable SDK feature settings without exposing Config publicly.
     pub(crate) original_config_do_not_use: Arc<Config>,
     /// Optional service name tag for session metrics.
     pub(super) metrics_service_name: Option<String>,
@@ -563,6 +565,9 @@ impl Session {
             config
                 .effective_agent_max_threads(MultiAgentVersion::V2)
                 .unwrap_or(usize::MAX),
+            // Spine MODIFIED: Give native AgentControl a separate Spine child capacity.
+            // Reason: Spine batch admission must not consume the native multi-agent limiter.
+            config.effective_spine_spawn_max_threads(),
         );
         let time_provider = crate::current_time::resolve_time_provider(
             config.current_time_reminder.as_ref(),
@@ -953,6 +958,8 @@ impl Session {
             session_configuration.thread_name = thread_name.clone();
             validate_config_lock_if_configured(&session_configuration).await?;
             export_config_lock_if_configured(&session_configuration, thread_id).await?;
+            // Spine MODIFIED: Build the session-scoped observer and optional memory projection.
+            // Reason: Session bootstrap owns event channels, cwd, and identity needed by Host effects.
             let session_id_text = session_id.to_string();
             let spine_jit_enabled = session_configuration.spine_jit_enabled();
             let spinetree_memory_projection =

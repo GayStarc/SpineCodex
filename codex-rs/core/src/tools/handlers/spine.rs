@@ -1,5 +1,7 @@
 use crate::function_tool::FunctionCallError;
 use crate::spine::tool_response::SpineToolResponse;
+use crate::tools::code_mode::spine_bridge::NestedSpineAdmission;
+use crate::tools::code_mode::spine_bridge::NestedSpineToolName;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolCallSource;
 use crate::tools::context::ToolInvocation;
@@ -11,6 +13,7 @@ use crate::tools::handlers::spine_sdk_spec::SPINE_TRIM;
 use crate::tools::handlers::spine_sdk_spec::create_spine_tool;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolExecutor;
+use codex_code_mode::CellId;
 use codex_protocol::config_types::ModeKind;
 use codex_tools::ToolExposure;
 use codex_tools::ToolName;
@@ -32,70 +35,35 @@ pub(crate) struct SpineHandler {
 #[derive(Clone, Copy)]
 enum SpineHandlerKind {
     Control(SpineTool),
-    Spawn { max_tasks: usize },
+    Spawn,
     Trim,
 }
 
 impl SpineHandler {
-<<<<<<< HEAD
-    pub(crate) fn controls(catalog: &ToolCatalog) -> Vec<Self> {
-        [SpineTool::Open, SpineTool::Close, SpineTool::Next]
-            .into_iter()
-            .filter_map(|tool| catalog.definition(tool).cloned())
-            .map(Self::from_definition)
-            .collect()
-    }
-
-    pub(crate) fn trim(catalog: &ToolCatalog) -> Option<Self> {
-        catalog
-            .definition(SpineTool::Trim)
-            .cloned()
-            .map(Self::from_definition)
-    }
-
-<<<<<<< HEAD
-    pub(crate) fn spawn() -> Self {
-        Self {
-            kind: SpineHandlerKind::Spawn,
-        }
-=======
-    pub(crate) fn spawn(catalog: &ToolCatalog) -> Option<Self> {
-        catalog
-            .definition(SpineTool::Spawn)
-            .cloned()
-            .map(Self::from_definition)
-=======
     pub(crate) fn add_tools(catalog: &ToolCatalog, mode: ModeKind, mut add: impl FnMut(Self)) {
         for definition in catalog.definitions() {
             if mode == ModeKind::Plan && definition.tool == SpineTool::Spawn {
                 continue;
             }
-            add(Self::from_definition(
-                definition.clone(),
-                catalog.spawn_task_limit(),
-            ));
+            add(Self::from_definition(definition.clone()));
         }
->>>>>>> refactor(spine): let SDK own tool exposure
     }
 
-    fn from_definition(definition: ToolDefinition, spawn_task_limit: usize) -> Self {
+    fn from_definition(definition: ToolDefinition) -> Self {
         let kind = match definition.tool {
             SpineTool::Open | SpineTool::Close | SpineTool::Next => {
                 SpineHandlerKind::Control(definition.tool)
             }
-            SpineTool::Spawn => SpineHandlerKind::Spawn {
-                max_tasks: spawn_task_limit,
-            },
+            SpineTool::Spawn => SpineHandlerKind::Spawn,
             SpineTool::Trim => SpineHandlerKind::Trim,
         };
         Self { kind, definition }
->>>>>>> refactor(spine): move config and tool contracts into sdk
     }
 
     fn name(&self) -> &'static str {
         match self.kind {
             SpineHandlerKind::Control(tool) => tool.name(),
-            SpineHandlerKind::Spawn { .. } => SPINE_SPAWN,
+            SpineHandlerKind::Spawn => SPINE_SPAWN,
             SpineHandlerKind::Trim => SPINE_TRIM,
         }
     }
@@ -124,19 +92,15 @@ impl ToolExecutor<ToolInvocation> for SpineHandler {
     }
 
     fn spec(&self) -> ToolSpec {
-<<<<<<< HEAD
-        match self.kind {
-            SpineHandlerKind::Control(_) => create_spine_tool(self.name()),
-            SpineHandlerKind::Spawn => create_spine_spawn_tool(),
-            SpineHandlerKind::Trim => create_spine_trim_tool(),
-        }
-=======
         create_spine_tool(&self.definition)
->>>>>>> refactor(spine): move config and tool contracts into sdk
     }
 
     fn exposure(&self) -> ToolExposure {
-        ToolExposure::DirectModelOnly
+        ToolExposure::DirectAndCodeMode
+    }
+
+    fn supports_parallel_tool_calls(&self) -> bool {
+        true
     }
 
     fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
@@ -159,11 +123,13 @@ impl SpineHandler {
             source,
             ..
         } = invocation;
-        if matches!(source, ToolCallSource::CodeMode { .. }) {
-            return Err(FunctionCallError::RespondToModel(
-                "Spine is not available as a Code Mode nested tool".to_string(),
-            ));
-        }
+        let nested_source = match source {
+            ToolCallSource::Direct => None,
+            ToolCallSource::CodeMode {
+                cell_id,
+                runtime_tool_call_id,
+            } => Some((CellId::new(cell_id), runtime_tool_call_id)),
+        };
         if turn.collaboration_mode.mode == ModeKind::Plan {
             return Err(FunctionCallError::RespondToModel(
                 "Spine transitions are not allowed in Plan mode".to_string(),
@@ -181,18 +147,20 @@ impl SpineHandler {
         let response_tool = match self.kind {
             SpineHandlerKind::Control(tool) => {
                 validate_arguments(tool, &arguments)?;
-                session
-                    .validate_spine_control(tool)
-                    .await
-                    .map_err(FunctionCallError::RespondToModel)?;
-                SpineToolResponse::from_control(tool)
+                let admission = self.admit_nested(&session, nested_source, arguments.clone())?;
+                let response = SpineToolResponse::from_control(tool);
+                match session.validate_spine_control(tool).await {
+                    Ok(()) => {
+                        complete_nested(admission, true, response.success_carrier())?;
+                        response
+                    }
+                    Err(error) => {
+                        complete_nested(admission, false, error.clone())?;
+                        return Err(FunctionCallError::RespondToModel(error));
+                    }
+                }
             }
-<<<<<<< HEAD
             SpineHandlerKind::Spawn => {
-<<<<<<< HEAD
-                let tasks = crate::spine::spawn::parse_tasks(&arguments)
-                    .map_err(FunctionCallError::RespondToModel)?;
-<<<<<<< HEAD
                 let admission = self.admit_nested(&session, nested_source, arguments.clone())?;
                 let receipt = match admission.as_ref() {
                     Some(admission) => {
@@ -202,54 +170,41 @@ impl SpineHandler {
                             admission.outer_exec_call_id().to_string(),
                             admission.invocation_ordinal(),
                             cancellation_token,
-                            tasks,
+                            arguments,
                         )
                         .await
                     }
                     None => {
                         crate::spine::spawn::execute(
-                            session.clone(),
-                            turn.clone(),
+                            session,
+                            turn,
+                            step_context,
                             call_id,
                             cancellation_token,
-                            tasks,
+                            arguments,
                         )
-=======
-                let receipt =
-                    crate::spine::spawn::execute(session, turn, call_id, cancellation_token, tasks)
->>>>>>> refactor(spine): move config and tool contracts into sdk
                         .await
-                        .map_err(FunctionCallError::RespondToModel)?;
-=======
-=======
-            SpineHandlerKind::Spawn { max_tasks } => {
-                let catalog = ToolCatalog::new(&turn.config.spine_config)
-                    .map_err(|error| FunctionCallError::RespondToModel(error.to_string()))?
-                    .with_spawn_task_limit(max_tasks);
-                catalog
-                    .validate(SpineTool::Spawn, &arguments)
-                    .map_err(|error| FunctionCallError::RespondToModel(error.to_string()))?;
->>>>>>> fix(spine): preserve sdk context guidance on main
-                let receipt = crate::spine::spawn::execute(
-                    session,
-                    turn,
-                    step_context,
-                    call_id,
-                    cancellation_token,
-                    arguments,
-                )
-                .await
-                .map_err(FunctionCallError::RespondToModel)?;
-<<<<<<< HEAD
->>>>>>> refactor(spine): align spawn lifecycle with sdk contract
-                let body = crate::spine::spawn::encode_receipt(&receipt).map_err(|error| {
-=======
+                    }
+                };
+                let receipt = match receipt {
+                    Ok(receipt) => receipt,
+                    Err(error) => {
+                        complete_nested(admission, false, error.clone())?;
+                        return Err(FunctionCallError::RespondToModel(error));
+                    }
+                };
                 let body = receipt.encode_json().map_err(|error| {
->>>>>>> refactor(spine): minimize codex adapter boundary
                     FunctionCallError::RespondToModel(format!(
                         "failed to encode spine.spawn receipt: {error}"
                     ))
                 })?;
+                if admission.is_some() {
+                    complete_nested(admission, true, body)?;
+                    return Ok(boxed_tool_output(FunctionToolOutput::from_text(
+                        format!("Spine {SPINE_SPAWN} accepted."),
+                        Some(true),
+                    )));
+                }
                 return Ok(boxed_tool_output(FunctionToolOutput::from_text(
                     body,
                     Some(true),
@@ -258,17 +213,34 @@ impl SpineHandler {
             SpineHandlerKind::Trim => {
                 let request =
                     TrimRequest::parse(&arguments).map_err(FunctionCallError::RespondToModel)?;
-                session
-                    .validate_spine_trim(&call_id, &request)
-                    .await
-                    .map_err(FunctionCallError::RespondToModel)?;
-                SpineToolResponse::Trim
+                let admission = self.admit_nested(&session, nested_source, arguments.clone())?;
+                let validation = match admission.as_ref() {
+                    Some(admission) => {
+                        session
+                            .validate_nested_spine_trim(admission.outer_exec_call_id(), &request)
+                            .await
+                    }
+                    None => session.validate_spine_trim(&call_id, &request).await,
+                };
+                match validation {
+                    Ok(()) => {
+                        complete_nested(
+                            admission,
+                            true,
+                            SpineToolResponse::Trim.success_carrier(),
+                        )?;
+                        SpineToolResponse::Trim
+                    }
+                    Err(error) => {
+                        complete_nested(admission, false, error.clone())?;
+                        return Err(FunctionCallError::RespondToModel(error));
+                    }
+                }
             }
         };
 
         Ok(boxed_tool_output(response_tool.success()))
     }
-<<<<<<< HEAD
 
     fn admit_nested(
         &self,
@@ -294,11 +266,14 @@ impl SpineHandler {
 
     fn nested_tool_name(&self) -> NestedSpineToolName {
         match self.kind {
-            SpineHandlerKind::Control(SpineControlKind::Open) => NestedSpineToolName::Open,
-            SpineHandlerKind::Control(SpineControlKind::Close) => NestedSpineToolName::Close,
-            SpineHandlerKind::Control(SpineControlKind::Next) => NestedSpineToolName::Next,
+            SpineHandlerKind::Control(SpineTool::Open) => NestedSpineToolName::Open,
+            SpineHandlerKind::Control(SpineTool::Close) => NestedSpineToolName::Close,
+            SpineHandlerKind::Control(SpineTool::Next) => NestedSpineToolName::Next,
             SpineHandlerKind::Spawn => NestedSpineToolName::Spawn,
             SpineHandlerKind::Trim => NestedSpineToolName::Trim,
+            SpineHandlerKind::Control(SpineTool::Spawn | SpineTool::Trim) => {
+                unreachable!("spawn and trim have dedicated handler kinds")
+            }
         }
     }
 }
@@ -314,13 +289,11 @@ fn complete_nested(
     admission
         .complete(success, body)
         .map_err(FunctionCallError::RespondToModel)
-=======
->>>>>>> refactor(spine): move config and tool contracts into sdk
 }
 
 impl CoreToolRuntime for SpineHandler {
     fn waits_for_runtime_cancellation(&self) -> bool {
-        matches!(self.kind, SpineHandlerKind::Spawn { .. })
+        matches!(self.kind, SpineHandlerKind::Spawn)
     }
 }
 
@@ -416,28 +389,12 @@ mod tests {
     }
 
     #[test]
-    fn spine_tools_are_direct_model_only() {
+    fn spine_tools_support_code_mode() {
         assert!(
             handlers(ModeKind::Default)
                 .iter()
-                .all(|handler| handler.exposure() == ToolExposure::DirectModelOnly)
+                .all(|handler| handler.exposure() == ToolExposure::DirectAndCodeMode)
         );
-<<<<<<< HEAD
-        assert_eq!(
-            SpineHandler::trim(&catalog()).unwrap().exposure(),
-            ToolExposure::DirectModelOnly
-        );
-        assert_eq!(
-<<<<<<< HEAD
-            SpineHandler::spawn().exposure(),
-            ToolExposure::DirectAndCodeMode
-=======
-            SpineHandler::spawn(&catalog()).unwrap().exposure(),
-            ToolExposure::DirectModelOnly
->>>>>>> refactor(spine): move config and tool contracts into sdk
-        );
-=======
->>>>>>> refactor(spine): let SDK own tool exposure
     }
 
     #[test]
