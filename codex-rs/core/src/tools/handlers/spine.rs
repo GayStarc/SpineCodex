@@ -39,7 +39,7 @@ pub(crate) struct SpineHandler {
 #[derive(Clone, Copy)]
 enum SpineHandlerKind {
     Control(SpineControlKind),
-    Spawn { max_tasks: usize },
+    Spawn,
     Trim,
 }
 
@@ -64,9 +64,9 @@ impl SpineHandler {
         }
     }
 
-    pub(crate) fn spawn(max_tasks: usize) -> Self {
+    pub(crate) fn spawn() -> Self {
         Self {
-            kind: SpineHandlerKind::Spawn { max_tasks },
+            kind: SpineHandlerKind::Spawn,
         }
     }
 
@@ -75,7 +75,7 @@ impl SpineHandler {
             SpineHandlerKind::Control(SpineControlKind::Open) => SPINE_OPEN,
             SpineHandlerKind::Control(SpineControlKind::Close) => SPINE_CLOSE,
             SpineHandlerKind::Control(SpineControlKind::Next) => SPINE_NEXT,
-            SpineHandlerKind::Spawn { .. } => SPINE_SPAWN,
+            SpineHandlerKind::Spawn => SPINE_SPAWN,
             SpineHandlerKind::Trim => SPINE_TRIM,
         }
     }
@@ -129,15 +129,6 @@ fn validate_arguments(kind: SpineControlKind, arguments: &str) -> Result<(), Fun
     Ok(())
 }
 
-fn validate_spawn_task_count(task_count: usize, max_tasks: usize) -> Result<(), FunctionCallError> {
-    if task_count > max_tasks {
-        return Err(FunctionCallError::RespondToModel(format!(
-            "spine.spawn accepts at most {max_tasks} tasks per call"
-        )));
-    }
-    Ok(())
-}
-
 impl ToolExecutor<ToolInvocation> for SpineHandler {
     fn tool_name(&self) -> ToolName {
         ToolName::namespaced(SPINE_NAMESPACE, self.name())
@@ -146,7 +137,7 @@ impl ToolExecutor<ToolInvocation> for SpineHandler {
     fn spec(&self) -> ToolSpec {
         match self.kind {
             SpineHandlerKind::Control(_) => create_spine_tool(self.name()),
-            SpineHandlerKind::Spawn { max_tasks } => create_spine_spawn_tool(max_tasks),
+            SpineHandlerKind::Spawn => create_spine_spawn_tool(),
             SpineHandlerKind::Trim => create_spine_trim_tool(),
         }
     }
@@ -215,10 +206,9 @@ impl SpineHandler {
                     }
                 }
             }
-            SpineHandlerKind::Spawn { max_tasks } => {
+            SpineHandlerKind::Spawn => {
                 let tasks = crate::spine::spawn::parse_tasks(&arguments)
                     .map_err(FunctionCallError::RespondToModel)?;
-                validate_spawn_task_count(tasks.len(), max_tasks)?;
                 let admission = self.admit_nested(&session, nested_source, arguments.clone())?;
                 let receipt = match admission.as_ref() {
                     Some(admission) => {
@@ -329,7 +319,7 @@ impl SpineHandler {
             SpineHandlerKind::Control(SpineControlKind::Open) => NestedSpineToolName::Open,
             SpineHandlerKind::Control(SpineControlKind::Close) => NestedSpineToolName::Close,
             SpineHandlerKind::Control(SpineControlKind::Next) => NestedSpineToolName::Next,
-            SpineHandlerKind::Spawn { .. } => NestedSpineToolName::Spawn,
+            SpineHandlerKind::Spawn => NestedSpineToolName::Spawn,
             SpineHandlerKind::Trim => NestedSpineToolName::Trim,
         }
     }
@@ -350,7 +340,7 @@ fn complete_nested(
 
 impl CoreToolRuntime for SpineHandler {
     fn waits_for_runtime_cancellation(&self) -> bool {
-        matches!(self.kind, SpineHandlerKind::Spawn { .. })
+        matches!(self.kind, SpineHandlerKind::Spawn)
     }
 }
 
@@ -426,7 +416,7 @@ mod tests {
             ToolExposure::DirectAndCodeMode
         );
         assert_eq!(
-            SpineHandler::spawn(3).exposure(),
+            SpineHandler::spawn().exposure(),
             ToolExposure::DirectAndCodeMode
         );
     }
@@ -442,17 +432,5 @@ mod tests {
             TrimOperation::Slice(TrimSlice::Tail { tail: 3 })
         );
         assert!(TrimRequest::parse(r#"{"TRIM_ID":"trim_4","op":"slice"}"#).is_err());
-    }
-
-    #[test]
-    fn spawn_rejects_task_count_above_advertised_limit() {
-        assert!(validate_spawn_task_count(3, 3).is_ok());
-        let error = validate_spawn_task_count(4, 3).expect_err("four tasks must exceed limit");
-        assert_eq!(
-            error,
-            FunctionCallError::RespondToModel(
-                "spine.spawn accepts at most 3 tasks per call".to_string()
-            )
-        );
     }
 }
