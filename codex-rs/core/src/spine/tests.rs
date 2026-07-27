@@ -551,6 +551,7 @@ fn spawn_bridge_projects_one_ordered_atomic_batch_and_hides_success_carrier() {
             &effective,
             None,
             None,
+            &test_node_prompt(),
             true,
         )
         .expect("test rollout sources resolve"),

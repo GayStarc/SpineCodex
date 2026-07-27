@@ -14,6 +14,7 @@ use spine_core::ParseCell;
 use spine_core::ParseStack;
 use spine_core::RawBoundary;
 use spine_core::SpineChar;
+use spine_core::SpineConfig;
 use spine_core::SpineContextEventHandler;
 use spine_core::ToolRequestChar;
 use spine_core::ToolResponseChar;
@@ -26,6 +27,7 @@ use std::fmt;
 #[derive(Clone, Debug)]
 pub(crate) struct CodexContextHandler {
     spawn_enabled: bool,
+    node_prompt: String,
     raw_cells: BTreeMap<CellId, ResponseItem>,
     cell_order: Vec<CellId>,
     staged_cells: BTreeMap<RawBoundary, ResponseItem>,
@@ -52,9 +54,10 @@ impl fmt::Display for CodexContextError {
 impl std::error::Error for CodexContextError {}
 
 impl CodexContextHandler {
-    pub(crate) fn new(spawn_enabled: bool) -> Self {
+    pub(crate) fn new(config: &SpineConfig) -> Self {
         Self {
-            spawn_enabled,
+            spawn_enabled: config.is_enabled(spine_core::Feature::Spawn),
+            node_prompt: config.node_prompt().unwrap_or_default().to_string(),
             raw_cells: BTreeMap::new(),
             cell_order: Vec::new(),
             staged_cells: BTreeMap::new(),
@@ -225,6 +228,7 @@ impl CodexContextHandler {
                 &[],
                 None,
                 None,
+                &self.node_prompt,
                 self.spawn_enabled,
             )
             .map_err(CodexContextError)?

@@ -66,17 +66,32 @@ pub(crate) struct SpineNodeFragment {
 }
 
 impl SpineNodeFragment {
-    pub(crate) fn new(node_id: &NodeId, summary: &str, status: NodeStatus) -> Result<Self, String> {
-        let body = format!(
-            " id=\"{node_id}\" summary=\"{}\" status=\"{}\" ",
+    pub(crate) fn new(
+        node_id: &NodeId,
+        summary: &str,
+        status: NodeStatus,
+        prompt: &str,
+    ) -> Result<Self, String> {
+        let attributes = format!(
+            " id=\"{node_id}\" summary=\"{}\" status=\"{}\">",
             escape_xml_attribute(summary),
             status_name(status),
         );
-        checked_fragment("node", "<spine_node", body, "/>").map(|body| Self { body })
+        let body = if status == NodeStatus::Live {
+            format!("{attributes}\n{}\n", prompt.trim())
+        } else {
+            attributes
+        };
+        checked_fragment("node", "<spine_node", body, "</spine_node>").map(|body| Self { body })
     }
 }
 
-impl_fragment!(SpineNodeFragment, "developer", "<spine_node", "/>");
+impl_fragment!(
+    SpineNodeFragment,
+    "developer",
+    "<spine_node",
+    "</spine_node>"
+);
 
 pub(crate) struct SpineMemoryFragment {
     body: String,

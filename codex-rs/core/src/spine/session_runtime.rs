@@ -28,17 +28,17 @@ impl SessionSpineRuntime {
         observer: CodexSpineObserverHandler,
     ) -> Option<Self> {
         let enabled = configuration.spine_jit_enabled() || configuration.spine_trim_enabled();
-        enabled.then(|| Self {
-            runtime: SpineContextRuntime::new_with_observer(
-                configuration.spine_sdk_config(),
-                CodexContextHandler::new(configuration.spine_spawn_enabled()),
-                observer,
-            )
-            .expect("validated session Spine configuration must initialize"),
-            next_boundary: 0,
-            pending_calls: HashMap::new(),
-            trim_enabled: configuration.spine_trim_enabled(),
-            jit_enabled: configuration.spine_jit_enabled(),
+        enabled.then(|| {
+            let config = configuration.spine_sdk_config();
+            let handler = CodexContextHandler::new(&config);
+            Self {
+                runtime: SpineContextRuntime::new_with_observer(config, handler, observer)
+                    .expect("validated session Spine configuration must initialize"),
+                next_boundary: 0,
+                pending_calls: HashMap::new(),
+                trim_enabled: configuration.spine_trim_enabled(),
+                jit_enabled: configuration.spine_jit_enabled(),
+            }
         })
     }
 

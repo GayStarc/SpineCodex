@@ -172,6 +172,7 @@ fn projection_from_effective_rollout(
             effective,
             trim.as_ref(),
             host_history,
+            &test_node_prompt(),
             spawn_enabled,
         )
         .expect("derived Spine context must resolve against the same rollout")
@@ -192,6 +193,16 @@ fn derive_spine_projection(events: &[RolloutEvent]) -> SpineProjection {
         .replay(events.iter().cloned())
         .expect("Codex adapter emits monotonic event boundaries")
         .projection
+}
+
+#[cfg(test)]
+fn test_node_prompt() -> String {
+    SpineConfig::v1()
+        .with_feature(Feature::Jit)
+        .expect("JIT configuration is valid")
+        .node_prompt()
+        .expect("the built-in JIT configuration has a node prompt")
+        .to_string()
 }
 
 #[cfg(test)]
@@ -585,6 +596,7 @@ fn materialize_context(
     source: &[(usize, &RolloutItem)],
     trim: Option<&TrimProjection>,
     host_history: Option<&ContextManager>,
+    node_prompt: &str,
     spawn_enabled: bool,
 ) -> Result<Vec<ResponseItem>, String> {
     let mut materialized = Vec::new();
@@ -626,7 +638,10 @@ fn materialize_context(
                 summary,
                 status,
             } => materialized.push(ContextualUserFragment::into(SpineNodeFragment::new(
-                node_id, summary, *status,
+                node_id,
+                summary,
+                *status,
+                node_prompt,
             )?)),
             ContextItem::MemorySlot(slot) => match slot {
                 MemorySlot::User {

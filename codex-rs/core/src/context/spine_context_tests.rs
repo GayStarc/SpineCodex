@@ -7,17 +7,29 @@ fn typed_fragments_own_exact_rendering() {
         &NodeId::root_epoch(1).child(1),
         "child <scope>",
         NodeStatus::Live,
+        "Node guidance.",
     )
     .unwrap();
     let memory = SpineMemoryFragment::new(&NodeId::root_epoch(1), "finished").unwrap();
+    let opened = SpineNodeFragment::new(
+        &NodeId::root_epoch(1).child(1),
+        "child <scope>",
+        NodeStatus::Opened,
+        "Node guidance.",
+    )
+    .unwrap();
 
     assert_eq!(
         node.render(),
-        r#"<spine_node id="1.1" summary="child &lt;scope&gt;" status="live" />"#
+        "<spine_node id=\"1.1\" summary=\"child &lt;scope&gt;\" status=\"live\">\nNode guidance.\n</spine_node>"
     );
     assert_eq!(
         memory.render(),
         "<spine_memory node_id=\"1\">\nfinished\n</spine_memory>"
+    );
+    assert_eq!(
+        opened.render(),
+        "<spine_node id=\"1.1\" summary=\"child &lt;scope&gt;\" status=\"opened\"></spine_node>"
     );
 }
 

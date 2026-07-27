@@ -3,6 +3,7 @@ use std::collections::BTreeSet;
 use std::fmt;
 
 const MAX_TRIM_THRESHOLD_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_NODE_PROMPT_BYTES: usize = 1024;
 pub const DEFAULT_CONFIG_TOML: &str = include_str!("../config/default.toml");
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -23,6 +24,7 @@ pub struct SpineConfig {
     schema_version: u32,
     trim_threshold_bytes: usize,
     jit_prompt: String,
+    node_prompt: String,
     trim_prompt: String,
     spawn_prompt: String,
     spawn_explicit_request_only_prompt: String,
@@ -70,6 +72,8 @@ struct FileLimits {
 struct FilePrompt {
     #[serde(default)]
     jit: Option<String>,
+    #[serde(default)]
+    node: Option<String>,
     #[serde(default)]
     trim: Option<String>,
     #[serde(default)]
@@ -126,10 +130,20 @@ impl SpineConfig {
                 parsed.limits.trim_threshold_bytes,
             ));
         }
+        if let Some(prompt) = &parsed.prompt.node
+            && prompt.len() > MAX_NODE_PROMPT_BYTES
+        {
+            return Err(ConfigError::PromptTooLong {
+                name: "node",
+                max: MAX_NODE_PROMPT_BYTES,
+                actual: prompt.len(),
+            });
+        }
         Ok(Self {
             schema_version: parsed.schema_version,
             trim_threshold_bytes: parsed.limits.trim_threshold_bytes as usize,
             jit_prompt: parsed.prompt.jit.unwrap_or_default(),
+            node_prompt: parsed.prompt.node.unwrap_or_default(),
             trim_prompt: parsed.prompt.trim.unwrap_or_default(),
             spawn_prompt: parsed.prompt.spawn.unwrap_or_default(),
             spawn_explicit_request_only_prompt: parsed
@@ -194,6 +208,13 @@ impl SpineConfig {
         (!prompt.trim().is_empty()).then_some(prompt.as_str())
     }
 
+    pub fn node_prompt(&self) -> Option<&str> {
+        if !self.is_enabled(Feature::Jit) {
+            return None;
+        }
+        (!self.node_prompt.trim().is_empty()).then_some(self.node_prompt.as_str())
+    }
+
     pub(crate) fn prompt(&self, feature: crate::Feature) -> &str {
         match feature {
             crate::Feature::Jit => &self.jit_prompt,
@@ -225,6 +246,7 @@ impl SpineConfig {
     fn validate_features(&self) -> Result<(), crate::InitError> {
         if self.is_enabled(Feature::Jit) {
             require_prompt(self.prompt(Feature::Jit), Feature::Jit)?;
+            require_configured_prompt(self.node_prompt(), Feature::Jit)?;
             for name in ["open", "close", "next"] {
                 require_tool(self.tool_description(name), name)?;
             }
@@ -236,11 +258,11 @@ impl SpineConfig {
             if !self.is_enabled(Feature::Jit) {
                 return Err(crate::InitError::SpawnRequiresJit);
             }
-            require_spawn_prompt(
+            require_configured_prompt(
                 self.spawn_prompt(SpawnPromptMode::ExplicitRequestOnly),
                 Feature::Spawn,
             )?;
-            require_spawn_prompt(
+            require_configured_prompt(
                 self.spawn_prompt(SpawnPromptMode::Proactive),
                 Feature::Spawn,
             )?;
@@ -257,7 +279,7 @@ fn require_prompt(value: &str, feature: crate::Feature) -> Result<(), crate::Ini
     Ok(())
 }
 
-fn require_spawn_prompt(
+fn require_configured_prompt(
     value: Option<&str>,
     feature: crate::Feature,
 ) -> Result<(), crate::InitError> {
@@ -279,6 +301,11 @@ pub enum ConfigError {
     InvalidToml(String),
     UnsupportedSchemaVersion(u32),
     InvalidTrimThreshold(u64),
+    PromptTooLong {
+        name: &'static str,
+        max: usize,
+        actual: usize,
+    },
 }
 
 impl fmt::Display for ConfigError {
@@ -293,6 +320,12 @@ impl fmt::Display for ConfigError {
             }
             Self::InvalidTrimThreshold(value) => {
                 write!(formatter, "invalid Spine trim threshold {value}")
+            }
+            Self::PromptTooLong { name, max, actual } => {
+                write!(
+                    formatter,
+                    "Spine {name} prompt is {actual} bytes; maximum is {max}"
+                )
             }
         }
     }
@@ -310,6 +343,7 @@ schema_version = 1
 trim_threshold_bytes = 2048
 [prompt]
 jit = "jit prompt"
+node = "node prompt"
 trim = ""
 spawn = "spawn prompt"
 spawn_explicit_request_only = "spawn explicit request only prompt"
@@ -332,6 +366,7 @@ description = "spawn"
         assert_eq!(config.schema_version(), 1);
         assert_eq!(config.trim_threshold_bytes(), 2048);
         assert_eq!(config.prompt(crate::Feature::Jit), "jit prompt");
+        assert_eq!(config.node_prompt(), None);
         assert_eq!(
             config.spawn_prompt(SpawnPromptMode::ExplicitRequestOnly),
             None
@@ -340,6 +375,7 @@ description = "spawn"
         let config = config
             .with_features([crate::Feature::Jit, crate::Feature::Spawn])
             .unwrap();
+        assert_eq!(config.node_prompt(), Some("node prompt"));
         assert_eq!(
             config.spawn_prompt(SpawnPromptMode::ExplicitRequestOnly),
             Some("spawn explicit request only prompt")
@@ -360,6 +396,15 @@ description = "spawn"
             SpineConfig::parse_toml("schema_version = 1\n[limits]\ntrim_threshold_bytes = 0"),
             Err(ConfigError::InvalidTrimThreshold(0))
         ));
+        let source = VALID.replace("node prompt", &"x".repeat(MAX_NODE_PROMPT_BYTES + 1));
+        assert_eq!(
+            SpineConfig::parse_toml(&source),
+            Err(ConfigError::PromptTooLong {
+                name: "node",
+                max: MAX_NODE_PROMPT_BYTES,
+                actual: MAX_NODE_PROMPT_BYTES + 1,
+            })
+        );
     }
 
     #[test]

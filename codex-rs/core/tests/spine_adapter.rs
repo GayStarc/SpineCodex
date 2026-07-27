@@ -34,6 +34,7 @@ use core_test_support::test_codex::spine_test_codex;
 use core_test_support::wait_for_event;
 use serde_json::Value;
 use serde_json::json;
+use spine_core::SpineConfig;
 use std::fs;
 #[cfg(not(target_os = "windows"))]
 use std::os::unix::fs::PermissionsExt;
@@ -186,6 +187,74 @@ async fn spine_adapter_omits_status_when_feature_is_disabled() -> Result<()> {
             .all(|item| !item.to_string().contains("<spine_status ")),
         "status-off request must not contain a Spine status developer tail"
     );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn configured_node_prompt_marks_the_open_scope_boundary() -> Result<()> {
+    const NODE_PROMPT: &str = "CUSTOM NODE SCOPE GUIDANCE";
+    let config = SpineConfig::parse_toml(&format!(
+        r#"
+schema_version = 1
+[limits]
+trim_threshold_bytes = 10000
+[prompt]
+jit = "<spine_view>test</spine_view>"
+node = "{NODE_PROMPT}"
+[tools.open]
+description = "open"
+[tools.close]
+description = "close"
+[tools.next]
+description = "next"
+"#
+    ))?;
+    let server = start_mock_server().await;
+    let response_mock = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_response_created("configured-node-open"),
+                ev_function_call_with_namespace(
+                    "configured-node-call",
+                    "spine",
+                    "open",
+                    r#"{"summary":"configured child"}"#,
+                ),
+                ev_completed("configured-node-open"),
+            ]),
+            sse(vec![
+                ev_response_created("configured-node-done"),
+                ev_completed("configured-node-done"),
+            ]),
+        ],
+    )
+    .await;
+    let test = spine_test_codex()
+        .with_config(move |test_config| test_config.spine_config = config)
+        .build(&server)
+        .await?;
+
+    test.submit_turn("open configured scope").await?;
+
+    let requests = response_mock.requests();
+    assert_eq!(requests.len(), 2);
+    let input = requests[1].input();
+    let node_index = input
+        .iter()
+        .position(|item| item.to_string().contains("<spine_node"))
+        .context("missing projected Spine node marker")?;
+    let transition_index = input
+        .iter()
+        .position(|item| {
+            item.get("call_id").and_then(Value::as_str) == Some("configured-node-call")
+        })
+        .context("missing spine.open transition")?;
+    let node = input[node_index].to_string();
+    assert!(node.contains(NODE_PROMPT), "{node}");
+    assert!(node.contains("</spine_node>"), "{node}");
+    assert!(node_index < transition_index);
 
     Ok(())
 }

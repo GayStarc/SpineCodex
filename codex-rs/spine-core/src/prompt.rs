@@ -47,6 +47,7 @@ mod tests {
 trim_threshold_bytes = 100
 [prompt]
 jit = "<spine_view>jit</spine_view>"
+node = "node prompt"
 [tools.open]
 description = "open"
 [tools.close]

@@ -1,4 +1,6 @@
 use super::*;
+use crate::context::ContextualUserFragment;
+use crate::context::SpineNodeFragment;
 use crate::session::tests::make_session_configuration_for_tests;
 use crate::state::AutoCompactWindowSnapshot;
 use codex_protocol::AgentPath;
@@ -1436,6 +1438,8 @@ async fn spine_tree_spawn_outcome_belongs_only_to_the_spawned_node() {
 #[tokio::test]
 async fn context_transitions_publish_compact_and_replay_before_return() {
     let mut disabled = make_session_configuration_for_tests().await;
+    let config = std::sync::Arc::make_mut(&mut disabled.original_config_do_not_use);
+    let _ = config.features.disable(codex_features::Feature::SpineSpawn);
     disabled.disable_spine_jit_for_test();
     assert!(SessionState::new(disabled).spine_tree_update().is_none());
 
@@ -1529,7 +1533,18 @@ async fn context_transitions_publish_compact_and_replay_before_return() {
         &[
             response_message(
                 "developer",
-                r#"<spine_node id="2.1" summary="fresh" status="live" />"#,
+                &SpineNodeFragment::new(
+                    &spine_core::NodeId::root_epoch(2).child(1),
+                    "fresh",
+                    spine_core::NodeStatus::Live,
+                    spine_core::SpineConfig::v1()
+                        .with_feature(spine_core::Feature::Jit)
+                        .expect("JIT config")
+                        .node_prompt()
+                        .expect("node prompt"),
+                )
+                .expect("node fragment")
+                .render(),
             ),
             fresh_items[0].clone(),
             fresh_items[1].clone(),

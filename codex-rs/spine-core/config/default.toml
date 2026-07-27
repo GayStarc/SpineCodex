@@ -88,6 +88,15 @@ Conventions:
 
 </spine_view>
 '''
+node = '''This marker begins the active Spine node's model-visible scope.
+The immediately following `spine.open` or `spine.next` transition created this
+node and is its first action. Treat subsequent context as work owned by this
+node until another `spine_node` marker appears or you leave the node with
+`spine.next` or `spine.close`. Use `spine.next` only after finishing this scope
+and when a sibling must continue the parent's work; use `spine.close` only
+after finishing this scope and when control should return to the parent. For
+either transition, write `memory` from this scope's continuation-relevant
+decisions, evidence, results, and remaining obligations.'''
 trim = ""
 spawn = ""
 spawn_explicit_request_only = "Do not use the MultiAgent collaboration tools to spawn sub-agents unless the user or applicable AGENTS.md/skill instructions explicitly ask for sub-agents, delegation, or parallel agent work. This restriction applies only to the MultiAgent collaboration surface and does not restrict independently available tools such as spine.spawn."
