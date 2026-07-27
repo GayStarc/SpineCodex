@@ -72,6 +72,8 @@ pub(crate) struct SpawnAgentOptions {
     pub(crate) environments: Option<Vec<TurnEnvironmentSelection>>,
 }
 
+pub(crate) struct SpawnPromptCacheAffinity;
+
 pub(crate) struct SpawnAgentBatchRequest {
     pub(crate) session_source: SessionSource,
     pub(crate) options: SpawnAgentOptions,

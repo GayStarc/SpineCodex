@@ -1,5 +1,6 @@
 use super::input_queue::InputQueue;
 use super::*;
+use crate::agent::control::SpawnPromptCacheAffinity;
 use crate::agents_md_manager::AgentsMdManager;
 use crate::config::ConstraintError;
 use crate::environment_selection::ThreadEnvironments;
@@ -630,6 +631,15 @@ impl Session {
                 }
             };
         let mcp_thread_init = thread_extension_init.clone();
+        let prompt_cache_key_override = thread_extension_init
+            .get::<SpawnPromptCacheAffinity>()
+            .map(|_| session_id.to_string())
+            .or_else(|| {
+                crate::guardian::prompt_cache_key_override_for_review_session(
+                    &session_configuration.session_source,
+                    session_configuration.parent_thread_id,
+                )
+            });
         let thread_extension_data = codex_extension_api::ExtensionData::new_with_init(
             thread_id.to_string(),
             thread_extension_init,
@@ -1194,12 +1204,7 @@ impl Session {
                     attestation_provider,
                     config.http_client_factory(),
                 )
-                .with_prompt_cache_key_override(
-                    crate::guardian::prompt_cache_key_override_for_review_session(
-                        &session_configuration.session_source,
-                        session_configuration.parent_thread_id,
-                    ),
-                ),
+                .with_prompt_cache_key_override(prompt_cache_key_override),
                 code_mode_service: crate::tools::code_mode::CodeModeService::new(Arc::clone(
                     &code_mode_session_provider,
                 )),

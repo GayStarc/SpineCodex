@@ -846,6 +846,9 @@ impl AgentControl {
         }
         let mut thread_extension_init = ExtensionDataInit::new();
         thread_extension_init.insert(selected_capability_roots);
+        if fork_mode == &SpawnAgentForkMode::FullHistoryTrimToolCallSuffix {
+            thread_extension_init.insert(SpawnPromptCacheAffinity);
+        }
 
         state
             .fork_thread_with_source(
