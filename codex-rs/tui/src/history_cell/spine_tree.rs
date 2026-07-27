@@ -54,6 +54,7 @@ pub(crate) fn new_debug_spine_node_snapshot(
 #[derive(Debug, Clone)]
 pub(crate) struct SpineTreeViewState {
     snapshot: Option<SpineTreeUpdatedNotification>,
+    tree_change_observed: bool,
     overlays: Vec<SpineSpawnOverlay>,
     settled_spawn_call_ids: HashSet<String>,
     animations_enabled: bool,
@@ -69,6 +70,7 @@ impl SpineTreeViewState {
     pub(crate) fn new(animations_enabled: bool) -> Self {
         Self {
             snapshot: None,
+            tree_change_observed: false,
             overlays: Vec::new(),
             settled_spawn_call_ids: HashSet::new(),
             animations_enabled,
@@ -87,6 +89,10 @@ impl SpineTreeViewState {
         {
             return;
         }
+        self.tree_change_observed |= self
+            .snapshot
+            .as_ref()
+            .is_some_and(|current| display_tree_changed(current, &snapshot));
         let removed_call_ids = snapshot.settled_spawn_call_ids.clone();
         self.snapshot = Some(snapshot);
         self.settled_spawn_call_ids
@@ -189,7 +195,7 @@ impl SpineTreeViewState {
     }
 
     pub(crate) fn render_cell(&self) -> Option<SpineTreeUpdateCell> {
-        if self.overlays.is_empty() {
+        if !self.tree_change_observed && self.overlays.is_empty() {
             return None;
         }
         let snapshot = self.snapshot.clone()?;
@@ -217,6 +223,29 @@ impl SpineTreeViewState {
             .iter()
             .any(|overlay| overlay.call_id() == call_id)
     }
+}
+
+fn display_tree_changed(
+    previous: &SpineTreeUpdatedNotification,
+    current: &SpineTreeUpdatedNotification,
+) -> bool {
+    previous.active_node_id != current.active_node_id
+        || previous.nodes.len() != current.nodes.len()
+        || previous
+            .nodes
+            .iter()
+            .zip(&current.nodes)
+            .any(|(left, right)| {
+                left.node_id != right.node_id
+                    || left.parent_id != right.parent_id
+                    || left.kind != right.kind
+                    || left.status != right.status
+                    || left.summary != right.summary
+                    || left.memory_summary != right.memory_summary
+                    || left.spawn_outcome != right.spawn_outcome
+                    || left.start != right.start
+                    || left.end != right.end
+            })
 }
 
 #[derive(Debug, Clone)]
@@ -1420,7 +1449,7 @@ mod tests {
     }
 
     #[test]
-    fn semantic_snapshot_alone_does_not_create_a_live_tail() {
+    fn initial_snapshot_alone_does_not_create_a_live_tail() {
         let mut state = SpineTreeViewState::default();
         state.apply_tree_update(snapshot(
             "1",
@@ -1429,6 +1458,208 @@ mod tests {
 
         assert!(state.render_cell().is_none());
         assert!(state.snapshot_cell().is_some());
+    }
+
+    #[test]
+    fn display_tree_change_creates_a_live_tail_without_an_overlay() {
+        let mut state = SpineTreeViewState::default();
+        state.apply_tree_update(snapshot(
+            "1",
+            vec![node("1", None, Some("root"), SpineTreeNodeStatus::Live)],
+        ));
+
+        let mut changed = snapshot(
+            "1.1",
+            vec![
+                node("1", None, Some("root"), SpineTreeNodeStatus::Opened),
+                node(
+                    "1.1",
+                    Some("1"),
+                    Some("nested task"),
+                    SpineTreeNodeStatus::Live,
+                ),
+            ],
+        );
+        changed.snapshot_seq = 2;
+        state.apply_tree_update(changed);
+
+        let rendered = render(
+            &state
+                .render_cell()
+                .expect("tree change should create a live tail")
+                .display_lines(80),
+        );
+        assert!(rendered.contains("nested task"), "{rendered}");
+    }
+
+    #[test]
+    fn projection_only_updates_do_not_create_a_live_tail() {
+        let mut state = SpineTreeViewState::default();
+        let initial = snapshot(
+            "1",
+            vec![node("1", None, Some("active"), SpineTreeNodeStatus::Live)],
+        );
+        state.apply_tree_update(initial.clone());
+
+        let mut projection_only = initial;
+        projection_only.turn_id = "later-turn".to_string();
+        projection_only.snapshot_seq = 2;
+        projection_only.settled_spawn_call_ids = vec!["settled-call".to_string()];
+        projection_only.nodes[0].context_pressure =
+            Some(codex_app_server_protocol::SpineNodeContextPressure {
+                open_input_tokens: Some(100),
+                current_input_tokens: Some(200),
+                context_tokens: Some(300),
+                problem: None,
+            });
+        state.apply_tree_update(projection_only);
+
+        assert!(state.render_cell().is_none());
+    }
+
+    #[test]
+    fn projection_only_updates_do_not_hide_an_observed_tree_change() {
+        let mut state = SpineTreeViewState::default();
+        state.apply_tree_update(snapshot(
+            "1",
+            vec![node("1", None, Some("root"), SpineTreeNodeStatus::Live)],
+        ));
+
+        let mut changed = snapshot(
+            "1.1",
+            vec![
+                node("1", None, Some("root"), SpineTreeNodeStatus::Opened),
+                node(
+                    "1.1",
+                    Some("1"),
+                    Some("nested task"),
+                    SpineTreeNodeStatus::Live,
+                ),
+            ],
+        );
+        changed.snapshot_seq = 2;
+        state.apply_tree_update(changed.clone());
+
+        changed.turn_id = "status-followup".to_string();
+        changed.snapshot_seq = 3;
+        changed.nodes[1].context_pressure =
+            Some(codex_app_server_protocol::SpineNodeContextPressure {
+                open_input_tokens: Some(100),
+                current_input_tokens: Some(200),
+                context_tokens: Some(300),
+                problem: None,
+            });
+        state.apply_tree_update(changed);
+
+        assert!(state.render_cell().is_some());
+    }
+
+    #[test]
+    fn stale_tree_change_does_not_create_a_live_tail() {
+        let mut state = SpineTreeViewState::default();
+        let mut current = snapshot(
+            "1",
+            vec![node("1", None, Some("current"), SpineTreeNodeStatus::Live)],
+        );
+        current.snapshot_seq = 2;
+        state.apply_tree_update(current);
+
+        let stale = snapshot(
+            "1.1",
+            vec![
+                node("1", None, Some("current"), SpineTreeNodeStatus::Opened),
+                node(
+                    "1.1",
+                    Some("1"),
+                    Some("stale task"),
+                    SpineTreeNodeStatus::Live,
+                ),
+            ],
+        );
+        state.apply_tree_update(stale);
+
+        assert!(state.render_cell().is_none());
+        assert_eq!(
+            state
+                .snapshot()
+                .map(|snapshot| snapshot.active_node_id.as_str()),
+            Some("1")
+        );
+    }
+
+    #[test]
+    fn spawn_outcome_change_creates_a_live_tail() {
+        let mut state = SpineTreeViewState::default();
+        state.apply_tree_update(snapshot(
+            "1",
+            vec![node(
+                "1",
+                None,
+                Some("spawn result"),
+                SpineTreeNodeStatus::Closed,
+            )],
+        ));
+
+        let mut changed = snapshot(
+            "1",
+            vec![node(
+                "1",
+                None,
+                Some("spawn result"),
+                SpineTreeNodeStatus::Closed,
+            )],
+        );
+        changed.snapshot_seq = 2;
+        changed.nodes[0].spawn_outcome = Some(SpineSpawnOutcome::Completed);
+        state.apply_tree_update(changed);
+
+        assert!(state.render_cell().is_some());
+    }
+
+    #[test]
+    fn settled_spawn_overlay_is_replaced_by_the_committed_tree() {
+        let mut state = SpineTreeViewState::default();
+        state.apply_tree_update(snapshot(
+            "1",
+            vec![node("1", None, Some("root"), SpineTreeNodeStatus::Live)],
+        ));
+        state.apply_spawn_progress(SpineSpawnProgressUpdatedNotification {
+            thread_id: "thread".to_string(),
+            turn_id: "turn".to_string(),
+            call_id: "spawn-1".to_string(),
+            tasks: vec![codex_app_server_protocol::SpineSpawnTaskProgress {
+                ordinal: 0,
+                summary: "worker".to_string(),
+                thread_id: "child-1".to_string(),
+                agent_path: Some("/root/worker".to_string()),
+                status: codex_app_server_protocol::CollabAgentStatus::Completed,
+            }],
+        });
+
+        let mut committed = snapshot(
+            "1",
+            vec![
+                node("1", None, Some("root"), SpineTreeNodeStatus::Live),
+                node(
+                    "1.1",
+                    Some("1"),
+                    Some("worker"),
+                    SpineTreeNodeStatus::Closed,
+                ),
+            ],
+        );
+        committed.snapshot_seq = 2;
+        committed.settled_spawn_call_ids = vec!["spawn-1".to_string()];
+        state.apply_tree_update(committed);
+
+        assert!(!state.has_spawn_call("spawn-1"));
+        let rendered = render(
+            &state
+                .render_cell()
+                .expect("committed spawn tree should remain visible")
+                .display_lines(80),
+        );
+        assert!(rendered.contains("worker"), "{rendered}");
     }
 
     #[test]

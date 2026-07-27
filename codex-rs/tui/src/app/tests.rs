@@ -636,6 +636,91 @@ async fn inactive_thread_replay_restores_spawn_progress_projection() -> Result<(
 }
 
 #[tokio::test]
+async fn committed_spine_tree_change_installs_a_source_independent_live_tail() -> Result<()> {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let thread_id = ThreadId::new();
+    let cwd = tempdir()?;
+    app.chat_widget
+        .handle_thread_session_quiet(test_thread_session(thread_id, cwd.path().to_path_buf()));
+    while app_event_rx.try_recv().is_ok() {}
+
+    let mut tui = crate::tui::test_support::make_test_tui().expect("test tui");
+    let mut app_server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
+        .await
+        .expect("embedded app server");
+    let baseline = SpineTreeUpdatedNotification {
+        thread_id: thread_id.to_string(),
+        turn_id: "turn-baseline".to_string(),
+        snapshot_seq: 1,
+        active_node_id: "1".to_string(),
+        settled_spawn_call_ids: Vec::new(),
+        nodes: vec![SpineTreeNode {
+            node_id: "1".to_string(),
+            parent_id: None,
+            kind: SpineTreeNodeKind::RootEpoch,
+            status: SpineTreeNodeStatus::Live,
+            summary: Some("root".to_string()),
+            memory_summary: None,
+            start: 0,
+            end: None,
+            context_pressure: None,
+            spawn_outcome: None,
+        }],
+    };
+    app.handle_event(
+        &mut tui,
+        &mut app_server,
+        AppEvent::UpsertSpineTreeCell {
+            snapshot: baseline.clone(),
+        },
+    )
+    .await?;
+    assert!(
+        app.spine_tree_views
+            .get(&thread_id)
+            .is_some_and(|state| state.render_cell().is_none()),
+        "the first snapshot establishes a baseline without opening the live tail"
+    );
+
+    let mut changed = baseline;
+    changed.turn_id = "turn-transition".to_string();
+    changed.snapshot_seq = 2;
+    changed.active_node_id = "1.1".to_string();
+    changed.nodes[0].status = SpineTreeNodeStatus::Opened;
+    changed.nodes.push(SpineTreeNode {
+        node_id: "1.1".to_string(),
+        parent_id: Some("1".to_string()),
+        kind: SpineTreeNodeKind::Task,
+        status: SpineTreeNodeStatus::Live,
+        summary: Some("nested transition".to_string()),
+        memory_summary: None,
+        start: 1,
+        end: None,
+        context_pressure: None,
+        spawn_outcome: None,
+    });
+    app.handle_event(
+        &mut tui,
+        &mut app_server,
+        AppEvent::UpsertSpineTreeCell { snapshot: changed },
+    )
+    .await?;
+
+    let rendered = app
+        .chat_widget
+        .active_cell_transcript_lines(80)
+        .expect("committed tree change should install a live tail")
+        .into_iter()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(rendered.contains("nested transition"), "{rendered}");
+
+    app_server.shutdown().await.expect("app server shutdown");
+    Ok(())
+}
+
+#[tokio::test]
 async fn working_spine_tree_command_inserts_a_static_snapshot_without_a_live_tail() -> Result<()> {
     let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
     let thread_id = ThreadId::new();
