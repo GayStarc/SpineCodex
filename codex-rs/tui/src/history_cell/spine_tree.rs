@@ -669,7 +669,8 @@ fn render_history_bucket(
         Span::from(line_prefix).dim(),
         "◌".dim(),
         " ".into(),
-        Span::from(format!("{count} previous ")).dim(),
+        Span::from(count.to_string()).green().bold(),
+        " previous ".green(),
         Span::from(history_bucket_noun(count)).green(),
     ]);
     let wrapped = adaptive_wrap_line(
@@ -966,19 +967,30 @@ mod tests {
           ├ ✓ child 2
           └ ◉ active child
         "###);
-        let history_prefix = lines[1]
+        let history_count = lines[1]
             .spans
             .iter()
-            .find(|span| span.content == "2 previous ")
-            .expect("history bucket prefix");
-        assert!(history_prefix.style.add_modifier.contains(Modifier::DIM));
-        assert_ne!(history_prefix.style.fg, Some(Color::Green));
+            .find(|span| span.content == "2")
+            .expect("history bucket count");
+        assert_eq!(history_count.style.fg, Some(Color::Green));
+        assert!(history_count.style.add_modifier.contains(Modifier::BOLD));
+        assert!(!history_count.style.add_modifier.contains(Modifier::DIM));
+        let history_previous = lines[1]
+            .spans
+            .iter()
+            .find(|span| span.content == " previous ")
+            .expect("history bucket previous label");
+        assert_eq!(history_previous.style.fg, Some(Color::Green));
+        assert!(!history_previous.style.add_modifier.contains(Modifier::BOLD));
+        assert!(!history_previous.style.add_modifier.contains(Modifier::DIM));
         let history_noun = lines[1]
             .spans
             .iter()
             .find(|span| span.content == "leaves")
             .expect("history bucket noun");
         assert_eq!(history_noun.style.fg, Some(Color::Green));
+        assert!(!history_noun.style.add_modifier.contains(Modifier::BOLD));
+        assert!(!history_noun.style.add_modifier.contains(Modifier::DIM));
         assert!(render(&cell.raw_lines()).contains("2 previous leaves"));
         assert!(!rendered.contains("old root"));
         assert!(!rendered.contains("3 "));
@@ -1075,6 +1087,24 @@ mod tests {
             .find(|span| span.content == "leaf")
             .expect("history bucket noun");
         assert_eq!(history_noun.style.fg, Some(Color::Green));
+        assert!(!history_noun.style.add_modifier.contains(Modifier::BOLD));
+        assert!(!history_noun.style.add_modifier.contains(Modifier::DIM));
+        let history_previous = lines[1]
+            .spans
+            .iter()
+            .find(|span| span.content == " previous ")
+            .expect("history bucket previous label");
+        assert_eq!(history_previous.style.fg, Some(Color::Green));
+        assert!(!history_previous.style.add_modifier.contains(Modifier::BOLD));
+        assert!(!history_previous.style.add_modifier.contains(Modifier::DIM));
+        let history_count = lines[1]
+            .spans
+            .iter()
+            .find(|span| span.content == "1")
+            .expect("history bucket count");
+        assert_eq!(history_count.style.fg, Some(Color::Green));
+        assert!(history_count.style.add_modifier.contains(Modifier::BOLD));
+        assert!(!history_count.style.add_modifier.contains(Modifier::DIM));
         let raw = render(&cell.raw_lines());
         assert!(raw.contains("1 previous leaf"), "{raw}");
         assert!(!raw.contains("hidden historical child"));
