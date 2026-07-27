@@ -105,8 +105,19 @@ pub(crate) fn calls_in_response_group(
                 );
             }
 
+            let spawn_calls = group
+                .calls
+                .iter()
+                .filter(|call| call.name == "spine.spawn")
+                .collect::<Vec<_>>();
+            if spawn_calls.len() > 1 {
+                return Err(
+                    "spine.spawn may be called at most once in one model response".to_string(),
+                );
+            }
+
             let mut calls = Vec::new();
-            for call in group.calls.iter().filter(|call| call.name == "spine.spawn") {
+            for call in spawn_calls {
                 match parse_tasks(&call.arguments) {
                     Ok(tasks) => calls.push(SpawnBatchCall {
                         call_id: call.call_id.clone(),

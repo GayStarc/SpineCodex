@@ -32,6 +32,7 @@ const SPAWN_DESCRIPTION: &str = concat!(
     "For exploration or review, treat inherited analytical conclusions as hypotheses to verify, refine, or falsify against primary evidence. ",
     "The original continuation is suspended during the fission; no supervisory model remains active. ",
     "Join waits for every branch, records their terminal results as closed task nodes under the current Spine scope atomically in input order, and then resumes the original continuation. ",
+    "Call spine.spawn at most once in one model response; place every concurrent branch in that call's tasks array. ",
     "Use spawn proactively when the current work can be differentiated into two or more independently owned branches and concurrent execution would materially improve speed or result quality. ",
     "Do not spawn paraphrased branches over the same tightly coupled question unless they are deliberately assigned as independent replication or falsification. ",
     "Branch workspace and external effects are non-transactional, so production-file writes require disjoint ownership or one explicitly named integration owner."
@@ -220,6 +221,11 @@ mod tests {
         };
         let ResponsesApiNamespaceTool::Function(function) = &namespace.tools[0];
         assert_eq!(function.name, SPINE_SPAWN);
+        assert!(
+            function
+                .description
+                .contains("Call spine.spawn at most once in one model response")
+        );
     }
 
     #[test]

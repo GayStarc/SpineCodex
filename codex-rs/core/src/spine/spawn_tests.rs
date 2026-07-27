@@ -424,7 +424,7 @@ fn response_group_admission_uses_native_response_group_boundaries() {
 }
 
 #[test]
-fn response_group_admission_accepts_text_reasoning_ordinary_and_multiple_spawn_calls() {
+fn response_group_admission_accepts_text_reasoning_and_ordinary_sibling_calls() {
     for rollout in [
         vec![
             message("assistant", "extra"),
@@ -438,18 +438,19 @@ fn response_group_admission_accepts_text_reasoning_ordinary_and_multiple_spawn_c
     ] {
         assert_eq!(calls_in_response_group(&rollout, "spawn").unwrap().len(), 1);
     }
+}
 
+#[test]
+fn response_group_admission_rejects_multiple_spawn_calls() {
     let multiple = vec![
         call("spawn-1", None, "spine.spawn"),
         call("spawn-2", Some("spine"), "spawn"),
     ];
+    let error = calls_in_response_group(&multiple, "spawn-2")
+        .expect_err("multiple spine.spawn calls must be rejected before execution");
     assert_eq!(
-        calls_in_response_group(&multiple, "spawn-2")
-            .unwrap()
-            .into_iter()
-            .map(|call| call.call_id)
-            .collect::<Vec<_>>(),
-        vec!["spawn-1", "spawn-2"]
+        error,
+        "spine.spawn may be called at most once in one model response"
     );
 }
 

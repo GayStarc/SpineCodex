@@ -1316,18 +1316,83 @@ async fn successful_batches_release_transaction_children_for_immediate_reuse() -
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn multiple_spawn_calls_are_rejected_before_child_creation() -> Result<()> {
+    const PROMPT: &str = "attempt two spine spawn calls in one response";
+    const FIRST_CALL_ID: &str = "duplicate-spawn-first";
+    const SECOND_CALL_ID: &str = "duplicate-spawn-second";
+
+    let server = start_mock_server().await;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            body_contains(request, PROMPT)
+                && !has_function_call_output(request, FIRST_CALL_ID)
+                && !has_function_call_output(request, SECOND_CALL_ID)
+        },
+        sse(vec![
+            ev_response_created("duplicate-spawn-parent-response"),
+            ev_function_call_with_namespace(
+                FIRST_CALL_ID,
+                SPAWN_NAMESPACE,
+                SPAWN_TOOL,
+                &spawn_args("duplicate-first-a", "duplicate-first-b"),
+            ),
+            ev_function_call_with_namespace(
+                SECOND_CALL_ID,
+                SPAWN_NAMESPACE,
+                SPAWN_TOOL,
+                &spawn_args("duplicate-second-a", "duplicate-second-b"),
+            ),
+            ev_completed("duplicate-spawn-parent-response"),
+        ]),
+    )
+    .await;
+    let followup = mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            has_function_call_output(request, FIRST_CALL_ID)
+                && has_function_call_output(request, SECOND_CALL_ID)
+        },
+        sse(vec![
+            ev_response_created("duplicate-spawn-followup-response"),
+            ev_assistant_message("duplicate-spawn-followup-message", "duplicate rejected"),
+            ev_completed("duplicate-spawn-followup-response"),
+        ]),
+    )
+    .await;
+    let test = spine_builder().build(&server).await?;
+
+    test.submit_turn(PROMPT).await?;
+
+    assert_eq!(
+        test.thread_manager.list_thread_ids().await.len(),
+        1,
+        "duplicate spine.spawn calls must fail before creating children"
+    );
+    for call_id in [FIRST_CALL_ID, SECOND_CALL_ID] {
+        let provider_output = followup
+            .function_call_output_text(call_id)
+            .with_context(|| format!("missing failure output for `{call_id}`"))?;
+        assert_eq!(provider_output, r#"{"status":"failure"}"#);
+        let output = persisted_function_call_output(&test, call_id)?;
+        assert!(
+            output.contains("spine.spawn may be called at most once in one model response"),
+            "unexpected durable failure output for `{call_id}`: {output}"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn capacity_rejection_returns_one_retryable_error_per_task_without_starting_children()
 -> Result<()> {
-    const FIRST_CALL_ID: &str = "spawn-capacity-first-call";
-    const SECOND_CALL_ID: &str = "spawn-capacity-second-call";
+    const CALL_ID: &str = "spawn-capacity-call";
     const PROMPT: &str = "run an oversized spine spawn batch";
     const RETRY_CALL_ID: &str = "spawn-capacity-retry-call";
     const RETRY_PROMPT: &str = "retry with a capacity-fitting spine spawn batch";
-    let first_tasks = [
+    let tasks = [
         ("capacity-first", "capacity-first-marker"),
         ("capacity-second", "capacity-second-marker"),
-    ];
-    let second_tasks = [
         ("capacity-third", "capacity-third-marker"),
         ("capacity-fourth", "capacity-fourth-marker"),
     ];
@@ -1341,22 +1406,15 @@ async fn capacity_rejection_returns_one_retryable_error_per_task_without_startin
         move |request: &wiremock::Request| {
             body_contains(request, PROMPT)
                 && !body_contains(request, "You are one branch of a spine.spawn fission")
-                && !has_function_call_output(request, FIRST_CALL_ID)
-                && !has_function_call_output(request, SECOND_CALL_ID)
+                && !has_function_call_output(request, CALL_ID)
         },
         sse(vec![
             ev_response_created("capacity-parent-response"),
             ev_function_call_with_namespace(
-                FIRST_CALL_ID,
+                CALL_ID,
                 SPAWN_NAMESPACE,
                 SPAWN_TOOL,
-                &spawn_args_for(&first_tasks),
-            ),
-            ev_function_call_with_namespace(
-                SECOND_CALL_ID,
-                SPAWN_NAMESPACE,
-                SPAWN_TOOL,
-                &spawn_args_for(&second_tasks),
+                &spawn_args_for(&tasks),
             ),
             ev_completed("capacity-parent-response"),
         ]),
@@ -1365,8 +1423,7 @@ async fn capacity_rejection_returns_one_retryable_error_per_task_without_startin
     let parent_followup = mount_sse_once_match(
         &server,
         move |request: &wiremock::Request| {
-            has_function_call_output(request, FIRST_CALL_ID)
-                && has_function_call_output(request, SECOND_CALL_ID)
+            has_function_call_output(request, CALL_ID)
                 && !body_contains(request, "You are one branch of a spine.spawn fission")
         },
         sse(vec![
@@ -1446,16 +1503,12 @@ async fn capacity_rejection_returns_one_retryable_error_per_task_without_startin
         "aggregate capacity rejection must not create partial child sessions"
     );
     let provider_output = parent_followup
-        .function_call_output_text(FIRST_CALL_ID)
-        .expect("parent follow-up must receive the first spine.spawn success carrier");
+        .function_call_output_text(CALL_ID)
+        .expect("parent follow-up must receive the spine.spawn success carrier");
     assert_eq!(provider_output, r#"{"status":"success"}"#);
-    let second_provider_output = parent_followup
-        .function_call_output_text(SECOND_CALL_ID)
-        .expect("parent follow-up must receive the second spine.spawn success carrier");
-    assert_eq!(second_provider_output, r#"{"status":"success"}"#);
     let parent_request = parent_followup.single_request();
     let parent_body = parent_request.body_json().to_string();
-    for (summary, _) in first_tasks.into_iter().chain(second_tasks) {
+    for (summary, _) in tasks {
         assert!(
             parent_request.body_contains_text(summary),
             "parent projection must include the rejected child `{summary}`: {parent_body}"
@@ -1474,32 +1527,27 @@ async fn capacity_rejection_returns_one_retryable_error_per_task_without_startin
         );
     }
 
-    for (call_id, tasks) in [
-        (FIRST_CALL_ID, first_tasks.as_slice()),
-        (SECOND_CALL_ID, second_tasks.as_slice()),
-    ] {
-        let output = persisted_function_call_output(&test, call_id)?;
-        let receipt: SpawnReceipt = serde_json::from_str(&output).map_err(|error| {
-            anyhow::anyhow!("expected a spine.spawn capacity receipt, got `{output}`: {error}")
-        })?;
-        assert_eq!(receipt.schema, SPINE_SPAWN_RESULT_SCHEMA);
-        assert_eq!(receipt.results.len(), tasks.len());
-        for (ordinal, (result, (summary, _))) in receipt.results.iter().zip(tasks).enumerate() {
-            assert_eq!(result.ordinal, ordinal as u32);
-            assert_eq!(result.outcome, SpawnOutcome::Errored);
-            assert_eq!(result.execution_ref, None);
-            let diagnostic = result
-                .diagnostic
-                .as_deref()
-                .expect("capacity rejection must include a diagnostic");
-            assert_eq!(result.memory_body, diagnostic);
-            assert!(diagnostic.contains(summary));
-            assert!(diagnostic.contains("requested 4 child agents"));
-            assert!(diagnostic.contains("configured limit of 2"));
-            assert!(diagnostic.contains("no child agents from this batch were created"));
-            assert!(diagnostic.contains("Retry spine.spawn with fewer tasks"));
-            assert!(diagnostic.contains("features.spine_spawn.max_concurrent_threads_per_session"));
-        }
+    let output = persisted_function_call_output(&test, CALL_ID)?;
+    let receipt: SpawnReceipt = serde_json::from_str(&output).map_err(|error| {
+        anyhow::anyhow!("expected a spine.spawn capacity receipt, got `{output}`: {error}")
+    })?;
+    assert_eq!(receipt.schema, SPINE_SPAWN_RESULT_SCHEMA);
+    assert_eq!(receipt.results.len(), tasks.len());
+    for (ordinal, (result, (summary, _))) in receipt.results.iter().zip(tasks).enumerate() {
+        assert_eq!(result.ordinal, ordinal as u32);
+        assert_eq!(result.outcome, SpawnOutcome::Errored);
+        assert_eq!(result.execution_ref, None);
+        let diagnostic = result
+            .diagnostic
+            .as_deref()
+            .expect("capacity rejection must include a diagnostic");
+        assert_eq!(result.memory_body, diagnostic);
+        assert!(diagnostic.contains(summary));
+        assert!(diagnostic.contains("requested 4 child agents"));
+        assert!(diagnostic.contains("configured limit of 2"));
+        assert!(diagnostic.contains("no child agents from this batch were created"));
+        assert!(diagnostic.contains("Retry spine.spawn with fewer tasks"));
+        assert!(diagnostic.contains("features.spine_spawn.max_concurrent_threads_per_session"));
     }
 
     test.submit_turn(RETRY_PROMPT).await?;
