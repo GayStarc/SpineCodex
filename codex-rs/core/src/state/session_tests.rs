@@ -1,6 +1,12 @@
 use super::*;
 use crate::session::tests::make_session_configuration_for_tests;
 use crate::state::AutoCompactWindowSnapshot;
+use crate::tools::code_mode::spine_bridge::CODE_MODE_SPINE_CARRIER_MARKER;
+use crate::tools::code_mode::spine_bridge::CodeModeOutputCarrierV1;
+use crate::tools::code_mode::spine_bridge::NestedSpineCallV1;
+use crate::tools::code_mode::spine_bridge::NestedSpineOutputV1;
+use crate::tools::code_mode::spine_bridge::NestedSpineToolName;
+use crate::tools::code_mode::spine_bridge::encode_carrier;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::FunctionCallOutputPayload;
@@ -123,10 +129,82 @@ async fn spine_feature_off_clones_native_history_unchanged() {
 }
 
 #[tokio::test]
+async fn historical_code_mode_carrier_is_projected_with_spine_features_off() {
+    let mut session_configuration = make_session_configuration_for_tests().await;
+    session_configuration.disable_spine_jit_for_test();
+    session_configuration.disable_spine_trim_for_test();
+    let mut state = SessionState::new(session_configuration);
+    assert!(state.spine_rollout.is_none());
+
+    let call_id = "historical-exec";
+    let exec = ResponseItem::CustomToolCall {
+        id: None,
+        status: None,
+        call_id: call_id.to_string(),
+        name: "exec".to_string(),
+        namespace: None,
+        input: "text('visible exec output')".to_string(),
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let carrier = CodeModeOutputCarrierV1::new(
+        FunctionCallOutputBody::Text("visible exec output".to_string()),
+        Some(true),
+        "historical-cell".to_string(),
+        vec![NestedSpineCallV1 {
+            runtime_call_id: "historical-open".to_string(),
+            invocation_ordinal: 0,
+            name: NestedSpineToolName::Open,
+            arguments: r#"{"summary":"historical task"}"#.to_string(),
+            output: NestedSpineOutputV1 {
+                success: true,
+                body: "Spine open accepted.".to_string(),
+            },
+        }],
+    )
+    .expect("valid historical carrier");
+    let carrier_output = ResponseItem::CustomToolCallOutput {
+        id: None,
+        call_id: call_id.to_string(),
+        name: Some(CODE_MODE_SPINE_CARRIER_MARKER.to_string()),
+        output: FunctionCallOutputPayload {
+            body: FunctionCallOutputBody::Text(encode_carrier(&carrier).expect("encode carrier")),
+            success: Some(true),
+        },
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let rollout = vec![
+        RolloutItem::ResponseItem(exec.clone()),
+        RolloutItem::ResponseItem(carrier_output.clone()),
+    ];
+    state.record_items([&exec, &carrier_output], TruncationPolicy::Tokens(10_000));
+    state.replace_spine_rollout(&rollout);
+
+    let projected = state.clone_history();
+    assert_eq!(projected.raw_items().len(), 2);
+    assert_eq!(projected.raw_items()[0], exec);
+    let ResponseItem::CustomToolCallOutput {
+        name,
+        output,
+        call_id: projected_call_id,
+        ..
+    } = &projected.raw_items()[1]
+    else {
+        panic!("expected projected exec output");
+    };
+    assert_eq!(projected_call_id, call_id);
+    assert_eq!(name, &None);
+    assert_eq!(
+        output.body,
+        FunctionCallOutputBody::Text("visible exec output".to_string())
+    );
+    assert_eq!(output.success, Some(true));
+    assert!(state.spine_tree_update().is_none());
+}
+
+#[tokio::test]
 async fn spine_jit_is_enabled_in_default_session_state() {
     let session_configuration = make_session_configuration_for_tests().await;
     assert!(session_configuration.spine_jit_enabled());
-    assert!(session_configuration.spine_status_enabled());
     assert!(
         SessionState::new(session_configuration)
             .spine_tree_update()
@@ -135,30 +213,27 @@ async fn spine_jit_is_enabled_in_default_session_state() {
 }
 
 #[tokio::test]
-async fn spine_status_requires_both_spine_jit_and_spine_status() {
+async fn spine_transition_status_requires_spine_jit_only() {
     let enabled = make_session_configuration_for_tests().await;
-    assert!(enabled.spine_status_enabled());
     assert!(
         SessionState::new(enabled)
-            .spine_status_prompt_overlay(None)
+            .spine_transition_status_item(None, None)
             .is_some()
     );
 
     let mut status_disabled = make_session_configuration_for_tests().await;
     status_disabled.disable_spine_status_for_test();
-    assert!(!status_disabled.spine_status_enabled());
     assert!(
         SessionState::new(status_disabled)
-            .spine_status_prompt_overlay(None)
-            .is_none()
+            .spine_transition_status_item(None, None)
+            .is_some()
     );
 
     let mut jit_disabled = make_session_configuration_for_tests().await;
     jit_disabled.disable_spine_jit_for_test();
-    assert!(!jit_disabled.spine_status_enabled());
     assert!(
         SessionState::new(jit_disabled)
-            .spine_status_prompt_overlay(None)
+            .spine_transition_status_item(None, None)
             .is_none()
     );
 }
@@ -296,8 +371,8 @@ async fn spawn_context_install_is_atomic_and_independently_feature_gated() {
     assert!(
         response_text(
             &disabled_state
-                .spine_status_prompt_overlay(None)
-                .expect("status overlay enabled")
+                .spine_transition_status_item(None, None)
+                .expect("Spine transition status enabled")
         )
         .contains("cursor=\"1\"")
     );

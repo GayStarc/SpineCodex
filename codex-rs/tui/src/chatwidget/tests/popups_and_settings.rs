@@ -2954,7 +2954,7 @@ async fn experimental_popup_omits_stable_guardian_approval() {
 }
 
 #[tokio::test]
-async fn experimental_popup_includes_spine_features() {
+async fn experimental_popup_includes_active_spine_features_and_omits_removed_status() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
     chat.open_experimental_popup();
@@ -2965,8 +2965,8 @@ async fn experimental_popup_includes_spine_features() {
         "expected Spine spawn to be shown in the experimental popup, got:\n{popup}"
     );
     assert!(
-        popup.contains("Spine status"),
-        "expected Spine status to be shown in the experimental popup, got:\n{popup}"
+        !popup.contains("Spine status"),
+        "expected removed Spine status to be omitted from the experimental popup, got:\n{popup}"
     );
     assert!(
         popup.contains("Spinetree memory projection"),

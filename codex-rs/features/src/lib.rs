@@ -224,7 +224,7 @@ pub enum Feature {
     CurrentTimeReminder,
     /// Enable Spine task-tree context projection from native rollout history.
     SpineJit,
-    /// Append the current Spine cursor and context pressure to model requests.
+    /// Removed compatibility flag for the legacy dynamic Spine status tail.
     SpineStatus,
     /// Enable the experimental native-child `spine.spawn` transaction tool.
     SpineSpawn,
@@ -495,6 +495,9 @@ impl Features {
                     continue;
                 }
                 "terminal_resize_reflow" => {
+                    continue;
+                }
+                "spine_status" => {
                     continue;
                 }
                 "use_legacy_landlock" => {
@@ -1273,12 +1276,8 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::SpineStatus,
         key: "spine_status",
-        stage: Stage::Experimental {
-            name: "Spine status",
-            menu_description: "Append the current Spine cursor and context pressure to model requests. Enabled by default; changes apply to new sessions.",
-            announcement: "NEW: Spine status can be disabled in /experimental.",
-        },
-        default_enabled: true,
+        stage: Stage::Removed,
+        default_enabled: false,
     },
     FeatureSpec {
         id: Feature::SpineSpawn,

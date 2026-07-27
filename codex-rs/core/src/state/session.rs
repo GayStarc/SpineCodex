@@ -240,21 +240,19 @@ impl SessionState {
         })
     }
 
-    pub(crate) fn spine_status_prompt_overlay(
+    pub(crate) fn spine_transition_status_item(
         &self,
-        auto_compact_token_limit: Option<i64>,
+        current_provider_input_tokens: Option<i64>,
+        context_left_tokens: Option<i64>,
     ) -> Option<ResponseItem> {
-        if !self.session_configuration.spine_status_enabled() {
+        if !self.session_configuration.spine_jit_enabled() {
             return None;
         }
         let rollout = self.spine_rollout.as_deref()?;
-        let context_left_tokens = auto_compact_token_limit.map(|limit| {
-            limit
-                .saturating_sub(self.get_total_token_usage(self.server_reasoning_included()))
-                .max(0)
-        });
-        Some(crate::spine::status::prompt_overlay(
+        let context_left_tokens = current_provider_input_tokens.and(context_left_tokens);
+        Some(crate::spine::status::transition_item(
             rollout,
+            current_provider_input_tokens,
             context_left_tokens,
             self.session_configuration.spine_spawn_enabled(),
         ))
@@ -296,6 +294,13 @@ impl SessionState {
     }
 
     pub(crate) fn replace_spine_rollout(&mut self, items: &[RolloutItem]) {
+        if self.spine_rollout.is_none()
+            && items
+                .iter()
+                .any(crate::spine::is_code_mode_spine_carrier_rollout_item)
+        {
+            self.spine_rollout = Some(Vec::new());
+        }
         if let Some(rollout) = &mut self.spine_rollout {
             rollout.clear();
             rollout.extend_from_slice(items);
@@ -326,6 +331,14 @@ impl SessionState {
         Ok(())
     }
 
+    pub(crate) fn validate_code_mode_spine_outer_exec(&self, call_id: &str) -> Result<(), String> {
+        let rollout = self
+            .spine_rollout
+            .as_deref()
+            .ok_or_else(|| "Spine is not enabled for this session".to_string())?;
+        crate::spine::validate_code_mode_spine_outer_exec(rollout, call_id)
+    }
+
     pub(crate) fn validate_spine_trim(
         &self,
         current_call_id: &str,
@@ -339,6 +352,21 @@ impl SessionState {
             .as_deref()
             .ok_or_else(|| "Spine trim rollout is unavailable".to_string())?;
         crate::spine::validate_trim_request(rollout, current_call_id, request)
+    }
+
+    pub(crate) fn validate_nested_spine_trim(
+        &self,
+        outer_exec_call_id: &str,
+        request: &codex_spine_core::TrimRequest,
+    ) -> Result<(), String> {
+        if !self.session_configuration.spine_trim_enabled() {
+            return Err("Spine trim is not enabled for this session".to_string());
+        }
+        let rollout = self
+            .spine_rollout
+            .as_deref()
+            .ok_or_else(|| "Spine trim rollout is unavailable".to_string())?;
+        crate::spine::validate_nested_trim_request(rollout, outer_exec_call_id, request)
     }
 
     pub(crate) fn spine_spawn_calls_in_response_group(

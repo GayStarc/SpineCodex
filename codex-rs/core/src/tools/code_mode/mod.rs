@@ -2,6 +2,7 @@ mod delegate;
 mod execute_handler;
 pub(crate) mod execute_spec;
 mod response_adapter;
+pub(crate) mod spine_bridge;
 mod wait_handler;
 pub(crate) mod wait_spec;
 
@@ -44,8 +45,11 @@ use codex_utils_output_truncation::truncate_function_output_items_with_policy;
 
 use delegate::CodeModeDispatchBroker;
 use delegate::CodeModeDispatchWorker;
+use delegate::FirstOutputJoin;
 pub(crate) use execute_handler::CodeModeExecuteHandler;
 use response_adapter::into_function_call_output_content_items;
+use spine_bridge::NestedSpineAdmission;
+use spine_bridge::NestedSpineToolName;
 pub(crate) use wait_handler::CodeModeWaitHandler;
 
 pub(crate) const PUBLIC_TOOL_NAME: &str = codex_code_mode::PUBLIC_TOOL_NAME;
@@ -127,8 +131,42 @@ impl CodeModeService {
         self.dispatch_broker.mark_cell_ready_for_dispatch(cell_id);
     }
 
+    pub(crate) fn register_cell(
+        &self,
+        cell_id: &CellId,
+        outer_exec_call_id: &str,
+        spine_admission_enabled: bool,
+    ) -> Result<(), String> {
+        self.dispatch_broker
+            .register_cell(cell_id, outer_exec_call_id, spine_admission_enabled)
+    }
+
+    pub(crate) fn admit_spine(
+        &self,
+        cell_id: &CellId,
+        runtime_call_id: String,
+        name: NestedSpineToolName,
+        arguments: String,
+    ) -> Result<NestedSpineAdmission, String> {
+        self.dispatch_broker
+            .admit_spine(cell_id, runtime_call_id, name, arguments)
+    }
+
+    pub(crate) fn begin_first_output(&self, cell_id: &CellId) -> Result<FirstOutputJoin, String> {
+        self.dispatch_broker.begin_first_output(cell_id)
+    }
+
     pub(crate) fn finish_cell_dispatch(&self, cell_id: &CellId) {
         self.dispatch_broker.close_cell(cell_id);
+    }
+
+    pub(crate) fn abort_cell_dispatch(&self, cell_id: &CellId) {
+        self.dispatch_broker.abort_cell(cell_id);
+    }
+
+    pub(crate) fn is_waiting_for_first_output(&self, outer_exec_call_id: &str) -> bool {
+        self.dispatch_broker
+            .is_waiting_for_first_output(outer_exec_call_id)
     }
 
     pub(crate) fn start_turn_worker(
@@ -363,13 +401,19 @@ mod tests {
 
     use super::CodeModeService;
     use super::build_nested_tool_payload;
+    use super::execute_handler::CodeModeExecuteOutput;
+    use super::spine_bridge::CODE_MODE_SPINE_CARRIER_MARKER;
+    use super::spine_bridge::decode_marked_body;
     use super::truncate_code_mode_result;
+    use crate::tools::context::FunctionToolOutput;
+    use crate::tools::context::ToolOutput;
     use crate::tools::context::ToolPayload;
     use codex_code_mode::CodeModeToolKind;
     use codex_code_mode::ExecuteRequest;
     use codex_code_mode::FunctionCallOutputContentItem as CodeModeOutputContentItem;
     use codex_code_mode::ProcessOwnedCodeModeSessionProvider;
     use codex_code_mode::RuntimeResponse;
+    use codex_protocol::models::FunctionCallOutputBody;
     use codex_protocol::models::FunctionCallOutputContentItem;
     use codex_tools::ToolName;
     use serde_json::json;
@@ -425,6 +469,50 @@ mod tests {
                 .to_string(),
             }]
         );
+    }
+
+    #[test]
+    fn execute_output_wraps_and_marks_the_exact_visible_body() {
+        let visible_body = FunctionCallOutputBody::ContentItems(vec![
+            FunctionCallOutputContentItem::InputText {
+                text: "visible".to_string(),
+            },
+            FunctionCallOutputContentItem::InputImage {
+                image_url: "data:image/png;base64,AA==".to_string(),
+                detail: None,
+            },
+        ]);
+        let visible = FunctionToolOutput::from_content(
+            match &visible_body {
+                FunctionCallOutputBody::ContentItems(items) => items.clone(),
+                FunctionCallOutputBody::Text(_) => unreachable!(),
+            },
+            Some(false),
+        );
+        let output = CodeModeExecuteOutput::new(
+            visible,
+            Some((codex_code_mode::CellId::new("cell-1".to_string()), vec![])),
+        )
+        .expect("carrier output");
+
+        let response = output.to_response_item(
+            "exec-1",
+            &ToolPayload::Custom {
+                input: "text('visible')".to_string(),
+            },
+        );
+        let codex_protocol::models::ResponseInputItem::CustomToolCallOutput {
+            name, output, ..
+        } = response
+        else {
+            panic!("expected custom tool output");
+        };
+        assert_eq!(name.as_deref(), Some(CODE_MODE_SPINE_CARRIER_MARKER));
+        assert_eq!(output.success, Some(false));
+        let carrier = decode_marked_body(name.as_deref(), &output.body)
+            .expect("valid carrier")
+            .expect("marked carrier");
+        assert_eq!(carrier.visible_body, visible_body);
     }
 
     #[tokio::test]

@@ -52,12 +52,12 @@ fn enabling_default_disabled_spine_spawn_persists_explicit_true() {
 }
 
 #[test]
-fn disabling_default_enabled_spine_status_persists_explicit_false() {
+fn disabling_default_disabled_spine_spawn_clears_the_override() {
     assert_eq!(
-        build_feature_enabled_edit("spine_status", /*enabled*/ false),
+        build_feature_enabled_edit("spine_spawn", /*enabled*/ false),
         ConfigEdit {
-            key_path: "features.spine_status".to_string(),
-            value: serde_json::json!(false),
+            key_path: "features.spine_spawn".to_string(),
+            value: serde_json::Value::Null,
             merge_strategy: MergeStrategy::Replace,
         }
     );

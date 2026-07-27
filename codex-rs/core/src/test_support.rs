@@ -80,6 +80,18 @@ pub fn with_code_mode_host_program(
     thread_manager.with_code_mode_host_program_for_tests(host_program)
 }
 
+pub fn code_mode_is_waiting_for_first_output(
+    thread: &crate::CodexThread,
+    outer_exec_call_id: &str,
+) -> bool {
+    thread
+        .codex
+        .session
+        .services
+        .code_mode_service
+        .is_waiting_for_first_output(outer_exec_call_id)
+}
+
 pub fn thread_manager_with_models_provider(
     auth: CodexAuth,
     provider: ModelProviderInfo,

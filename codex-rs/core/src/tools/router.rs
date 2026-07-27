@@ -5,6 +5,7 @@ use crate::tools::context::SharedTurnDiffTracker;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
 use crate::tools::handlers::ToolSearchHandlerCache;
+use crate::tools::parallel::DirectSpineControlAdmission;
 use crate::tools::registry::AnyToolResult;
 use crate::tools::registry::ToolArgumentDiffConsumer;
 use crate::tools::registry::ToolRegistry;
@@ -179,6 +180,7 @@ impl ToolRouter {
             call,
             source,
             /*terminal_outcome_reached*/ None,
+            /*direct_spine_control_admission*/ None,
         )
         .await
     }
@@ -194,6 +196,7 @@ impl ToolRouter {
         call: ToolCall,
         source: ToolCallSource,
         terminal_outcome_reached: Arc<AtomicBool>,
+        direct_spine_control_admission: Option<Arc<DirectSpineControlAdmission>>,
     ) -> Result<AnyToolResult, FunctionCallError> {
         self.dispatch_tool_call_with_code_mode_result_inner(
             session,
@@ -203,6 +206,7 @@ impl ToolRouter {
             call,
             source,
             Some(terminal_outcome_reached),
+            direct_spine_control_admission,
         )
         .await
     }
@@ -217,6 +221,7 @@ impl ToolRouter {
         call: ToolCall,
         source: ToolCallSource,
         terminal_outcome_reached: Option<Arc<AtomicBool>>,
+        direct_spine_control_admission: Option<Arc<DirectSpineControlAdmission>>,
     ) -> Result<AnyToolResult, FunctionCallError> {
         let ToolCall {
             tool_name,
@@ -239,7 +244,11 @@ impl ToolRouter {
         };
 
         self.registry
-            .dispatch_any_with_terminal_outcome(invocation, terminal_outcome_reached)
+            .dispatch_any_with_terminal_outcome(
+                invocation,
+                terminal_outcome_reached,
+                direct_spine_control_admission,
+            )
             .await
     }
 }

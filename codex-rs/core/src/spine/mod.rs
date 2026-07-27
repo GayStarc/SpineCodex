@@ -2,8 +2,14 @@ use crate::context_manager::ContextManager;
 use crate::context_manager::is_user_turn_boundary;
 use crate::event_mapping::is_contextual_dev_message_content;
 use crate::event_mapping::is_contextual_user_message_content;
+use crate::tools::code_mode::is_exec_tool_name;
+use crate::tools::code_mode::spine_bridge::CODE_MODE_SPINE_CARRIER_MARKER;
+use crate::tools::code_mode::spine_bridge::NestedSpineCallV1;
+use crate::tools::code_mode::spine_bridge::NestedSpineToolName;
+use crate::tools::code_mode::spine_bridge::decode_marked_body;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputBody;
+use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::RolloutItem;
@@ -23,6 +29,7 @@ use codex_spine_core::ToolUse;
 use codex_spine_core::TrimEdit;
 use codex_spine_core::TrimProjection;
 use codex_spine_core::TrimRequest;
+use serde::Deserialize;
 
 pub(crate) mod instructions;
 pub(crate) mod memory_projection;
@@ -43,6 +50,20 @@ pub(crate) enum SpineControlKind {
 impl SpineControlKind {
     pub(crate) fn requires_task(self) -> bool {
         matches!(self, Self::Close | Self::Next)
+    }
+
+    pub(crate) fn from_tool_name(tool_name: &codex_tools::ToolName) -> Option<Self> {
+        if tool_name.namespace.as_deref()
+            != Some(crate::tools::handlers::spine_spec::SPINE_NAMESPACE)
+        {
+            return None;
+        }
+        match tool_name.name.as_str() {
+            crate::tools::handlers::spine_spec::SPINE_OPEN => Some(Self::Open),
+            crate::tools::handlers::spine_spec::SPINE_CLOSE => Some(Self::Close),
+            crate::tools::handlers::spine_spec::SPINE_NEXT => Some(Self::Next),
+            _ => None,
+        }
     }
 }
 
@@ -168,7 +189,7 @@ fn projection_from_effective_rollout(
             spawn_enabled,
         )
     } else {
-        materialize_trim_only_context(effective, rollout, trim.as_ref(), host_history)
+        materialize_trim_only_context(effective, &events, rollout, trim.as_ref(), host_history)
     };
     CodexSpineProjection { spine, context }
 }
@@ -203,6 +224,83 @@ pub(crate) fn validate_trim_request(
         .map(|event| TrimProjection::derive(std::slice::from_ref(event)))
         .unwrap_or_default();
     projection.validate(request)
+}
+
+pub(crate) fn validate_nested_trim_request(
+    rollout: &[RolloutItem],
+    outer_exec_call_id: &str,
+    request: &TrimRequest,
+) -> Result<(), String> {
+    let effective = effective_rollout(rollout);
+    let Some(outer_exec_index) = effective.iter().rposition(|(_, item)| {
+        matches!(
+            item,
+            RolloutItem::ResponseItem(
+                item @ ResponseItem::CustomToolCall { call_id, .. }
+            ) if call_id == outer_exec_call_id && is_registered_code_mode_exec_request(item)
+        )
+    }) else {
+        return Err(
+            "spine.trim failed: outer exec toolcall is unavailable; do not retry".to_string(),
+        );
+    };
+    let events = lex_rollout(&effective[..outer_exec_index], true);
+    let previous_completed_group = events
+        .iter()
+        .rev()
+        .find(|event| matches!(event, RolloutEvent::ToolCall(group) if group.is_complete()));
+    let projection = previous_completed_group
+        .map(|event| TrimProjection::derive(std::slice::from_ref(event)))
+        .unwrap_or_default();
+    projection.validate(request)
+}
+
+pub(crate) fn validate_code_mode_spine_outer_exec(
+    rollout: &[RolloutItem],
+    call_id: &str,
+) -> Result<(), String> {
+    let effective = effective_rollout(rollout);
+    let Some(index) = effective.iter().rposition(|(_, item)| {
+        matches!(
+            item,
+            RolloutItem::ResponseItem(
+                item @ ResponseItem::CustomToolCall {
+                    call_id: candidate,
+                    ..
+                }
+            ) if candidate == call_id && is_registered_code_mode_exec_request(item)
+        )
+    }) else {
+        return Err(format!(
+            "Code Mode outer exec `{call_id}` is unavailable from the native rollout"
+        ));
+    };
+
+    let mut first_call = index;
+    while first_call > 0
+        && matches!(
+            effective[first_call - 1].1,
+            RolloutItem::ResponseItem(item) if normalized_tool_request(item).is_some()
+        )
+    {
+        first_call -= 1;
+    }
+    let mut call_end = index + 1;
+    while call_end < effective.len()
+        && matches!(
+            effective[call_end].1,
+            RolloutItem::ResponseItem(item) if normalized_tool_request(item).is_some()
+        )
+    {
+        call_end += 1;
+    }
+    if first_call != index || call_end != index + 1 {
+        return Err(
+            "Code Mode nested Spine calls require outer exec to be the sole callable item"
+                .to_string(),
+        );
+    }
+    Ok(())
 }
 
 fn effective_rollout(rollout: &[RolloutItem]) -> Vec<(usize, &RolloutItem)> {
@@ -378,19 +476,90 @@ fn completed_tool_group(
         return None;
     }
 
+    let request_end = cursor;
+    let response_start = cursor;
     let mut last_group_index = cursor.saturating_sub(1);
-    while let Some((raw_index, RolloutItem::ResponseItem(item))) = effective.get(cursor).copied() {
-        let Some((call_id, output)) = normalized_tool_response(item) else {
+    while let Some((_, RolloutItem::ResponseItem(item))) = effective.get(cursor).copied() {
+        let Some(response) = normalized_tool_response(item) else {
             break;
         };
-        let Some(call) = calls.iter_mut().find(|call| call.call_id == call_id) else {
+        if !calls.iter().any(|call| call.call_id == response.call_id) {
             break;
-        };
-        call.outcome = Some(classify_tool_outcome(call, output, spawn_enabled));
-        call.output = Some(output.body.to_text().unwrap_or_default());
-        call.output_boundary = Some(RawBoundary(raw_index as u64));
+        }
         last_group_index = cursor;
         cursor += 1;
+    }
+
+    let request_items = effective[first_call..request_end]
+        .iter()
+        .filter_map(|entry| match entry.1 {
+            RolloutItem::ResponseItem(item) => Some(item),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let response_items = effective[response_start..cursor]
+        .iter()
+        .filter_map(|entry| match entry.1 {
+            RolloutItem::ResponseItem(item) => Some(item),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    match code_mode_carrier_verdict(&request_items, &response_items) {
+        CarrierGroupVerdict::Absent => {
+            for (raw_index, item) in effective[response_start..cursor].iter().copied() {
+                let RolloutItem::ResponseItem(item) = item else {
+                    unreachable!("response range was prevalidated")
+                };
+                let response = normalized_tool_response(item).expect("prevalidated response");
+                let call_index = calls
+                    .iter()
+                    .position(|call| call.call_id == response.call_id)
+                    .expect("response call id was prevalidated");
+                let output_boundary = RawBoundary(raw_index as u64);
+                let call = &mut calls[call_index];
+                call.outcome = Some(classify_tool_outcome(call, response.output, spawn_enabled));
+                call.output = Some(response.output.body.to_text().unwrap_or_default());
+                call.output_boundary = Some(output_boundary);
+            }
+        }
+        CarrierGroupVerdict::Valid(analysis) => {
+            let (raw_index, _) = effective[response_start];
+            let output_boundary = RawBoundary(raw_index as u64);
+            let AnalyzedCodeModeCarrier {
+                outer_call_id,
+                visible_output,
+                nested_calls,
+            } = analysis;
+            let nested = normalize_code_mode_carrier_calls(
+                &outer_call_id,
+                nested_calls,
+                output_boundary,
+                spawn_enabled,
+            );
+            let call = &mut calls[0];
+            call.outcome = Some(classify_tool_outcome(call, &visible_output, spawn_enabled));
+            call.output = Some(visible_output.body.to_text().unwrap_or_default());
+            call.output_boundary = Some(output_boundary);
+            calls.extend(nested);
+        }
+        CarrierGroupVerdict::Corrupt(error) => {
+            tracing::error!(%error, "invalid Code Mode Spine carrier group");
+            for (raw_index, item) in effective[response_start..cursor].iter().copied() {
+                let RolloutItem::ResponseItem(item) = item else {
+                    unreachable!("response range was prevalidated")
+                };
+                let response = normalized_tool_response(item).expect("prevalidated response");
+                let call_index = calls
+                    .iter()
+                    .position(|call| call.call_id == response.call_id)
+                    .expect("response call id was prevalidated");
+                let call = &mut calls[call_index];
+                call.outcome = Some(ToolOutcome::Failed);
+                call.output = Some(String::new());
+                call.output_boundary = Some(RawBoundary(raw_index as u64));
+            }
+        }
     }
 
     let raw_start = effective[start].0;
@@ -429,23 +598,254 @@ fn normalized_tool_request(item: &ResponseItem) -> Option<ToolUse> {
         call_id: call_id.clone(),
         name: qualified_tool_name(namespace, name),
         arguments: arguments.clone(),
+        call_ordinal: None,
         outcome: None,
         output: None,
         output_boundary: None,
     })
 }
 
-fn normalized_tool_response(
-    item: &ResponseItem,
-) -> Option<(&str, &codex_protocol::models::FunctionCallOutputPayload)> {
+fn normalized_tool_response(item: &ResponseItem) -> Option<NormalizedToolResponse<'_>> {
     match item {
         ResponseItem::FunctionCallOutput {
             call_id, output, ..
-        }
-        | ResponseItem::CustomToolCallOutput {
-            call_id, output, ..
-        } => Some((call_id, output)),
+        } => Some(NormalizedToolResponse {
+            call_id,
+            output,
+            output_name: None,
+        }),
+        ResponseItem::CustomToolCallOutput {
+            call_id,
+            name,
+            output,
+            ..
+        } => Some(NormalizedToolResponse {
+            call_id,
+            output,
+            output_name: name.as_deref(),
+        }),
         _ => None,
+    }
+}
+
+struct NormalizedToolResponse<'a> {
+    call_id: &'a str,
+    output: &'a FunctionCallOutputPayload,
+    output_name: Option<&'a str>,
+}
+
+enum CarrierGroupVerdict {
+    Absent,
+    Valid(AnalyzedCodeModeCarrier),
+    Corrupt(String),
+}
+
+struct AnalyzedCodeModeCarrier {
+    outer_call_id: String,
+    visible_output: FunctionCallOutputPayload,
+    nested_calls: Vec<AnalyzedNestedSpineCall>,
+}
+
+struct AnalyzedNestedSpineCall {
+    invocation_ordinal: u64,
+    tool_name: &'static str,
+    arguments: String,
+    output: String,
+    success: bool,
+}
+
+fn code_mode_carrier_verdict(
+    request_items: &[&ResponseItem],
+    response_items: &[&ResponseItem],
+) -> CarrierGroupVerdict {
+    if !response_items
+        .iter()
+        .any(|item| is_marked_code_mode_carrier_output(item))
+    {
+        return CarrierGroupVerdict::Absent;
+    }
+    if request_items.len() != 1 || !is_registered_code_mode_exec_request(request_items[0]) {
+        return CarrierGroupVerdict::Corrupt(
+            "marked carrier requires the sole outer exec request".to_string(),
+        );
+    }
+    if response_items.len() != 1 {
+        return CarrierGroupVerdict::Corrupt(
+            "marked carrier requires exactly one matching output".to_string(),
+        );
+    }
+    let Some(request) = normalized_tool_request(request_items[0]) else {
+        return CarrierGroupVerdict::Corrupt("invalid outer exec request".to_string());
+    };
+    let Some(response) = normalized_tool_response(response_items[0]) else {
+        return CarrierGroupVerdict::Corrupt("invalid outer exec output".to_string());
+    };
+    if request.call_id != response.call_id
+        || response.output_name != Some(CODE_MODE_SPINE_CARRIER_MARKER)
+    {
+        return CarrierGroupVerdict::Corrupt(
+            "marked carrier request/output pairing is ambiguous".to_string(),
+        );
+    }
+    match analyze_code_mode_carrier(request.call_id, response.output_name, &response.output.body) {
+        Ok(analysis) => CarrierGroupVerdict::Valid(analysis),
+        Err(error) => CarrierGroupVerdict::Corrupt(error),
+    }
+}
+
+fn is_registered_code_mode_exec_request(item: &ResponseItem) -> bool {
+    matches!(
+        item,
+        ResponseItem::CustomToolCall {
+            name,
+            namespace,
+            ..
+        } if is_exec_tool_name(&codex_tools::ToolName {
+            namespace: namespace.clone(),
+            name: name.clone(),
+        })
+    )
+}
+
+fn normalize_code_mode_carrier_calls(
+    outer_call_id: &str,
+    nested_calls: Vec<AnalyzedNestedSpineCall>,
+    output_boundary: RawBoundary,
+    spawn_enabled: bool,
+) -> Vec<ToolUse> {
+    nested_calls
+        .into_iter()
+        .map(|call| {
+            let outcome = if !call.success {
+                ToolOutcome::Failed
+            } else if call.tool_name == "spine.spawn" && !spawn_enabled {
+                ToolOutcome::Unknown
+            } else {
+                ToolOutcome::Succeeded
+            };
+            ToolUse {
+                call_id: format!("{outer_call_id}:spine:{}", call.invocation_ordinal),
+                name: call.tool_name.to_string(),
+                arguments: call.arguments,
+                call_ordinal: Some(call.invocation_ordinal),
+                outcome: Some(outcome),
+                output: Some(call.output),
+                output_boundary: Some(output_boundary),
+            }
+        })
+        .collect()
+}
+
+fn analyze_code_mode_carrier(
+    outer_call_id: String,
+    output_name: Option<&str>,
+    body: &FunctionCallOutputBody,
+) -> Result<AnalyzedCodeModeCarrier, String> {
+    let carrier = decode_marked_body(output_name, body)?
+        .ok_or_else(|| "missing Code Mode Spine carrier".to_string())?;
+    let nested_calls = carrier
+        .nested_spine_calls
+        .into_iter()
+        .map(analyze_nested_spine_call)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(AnalyzedCodeModeCarrier {
+        outer_call_id,
+        visible_output: FunctionCallOutputPayload {
+            body: carrier.visible_body,
+            success: carrier.outer_success,
+        },
+        nested_calls,
+    })
+}
+
+fn nested_spine_tool_name(name: NestedSpineToolName) -> &'static str {
+    match name {
+        NestedSpineToolName::Open => "spine.open",
+        NestedSpineToolName::Close => "spine.close",
+        NestedSpineToolName::Next => "spine.next",
+        NestedSpineToolName::Trim => "spine.trim",
+        NestedSpineToolName::Spawn => "spine.spawn",
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NestedOpenArgs {
+    summary: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NestedCloseArgs {
+    memory: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NestedNextArgs {
+    summary: String,
+    memory: String,
+}
+
+fn analyze_nested_spine_call(call: NestedSpineCallV1) -> Result<AnalyzedNestedSpineCall, String> {
+    let expected_success = match call.name {
+        NestedSpineToolName::Open => {
+            let args: NestedOpenArgs =
+                serde_json::from_str(&call.arguments).map_err(|error| error.to_string())?;
+            require_non_empty(&args.summary, "spine.open summary")?;
+            Some(tool_response::SpineToolResponse::Open)
+        }
+        NestedSpineToolName::Close => {
+            let args: NestedCloseArgs =
+                serde_json::from_str(&call.arguments).map_err(|error| error.to_string())?;
+            require_non_empty(&args.memory, "spine.close memory")?;
+            Some(tool_response::SpineToolResponse::Close)
+        }
+        NestedSpineToolName::Next => {
+            let args: NestedNextArgs =
+                serde_json::from_str(&call.arguments).map_err(|error| error.to_string())?;
+            require_non_empty(&args.summary, "spine.next summary")?;
+            require_non_empty(&args.memory, "spine.next memory")?;
+            Some(tool_response::SpineToolResponse::Next)
+        }
+        NestedSpineToolName::Trim => {
+            TrimRequest::parse(&call.arguments)?;
+            Some(tool_response::SpineToolResponse::Trim)
+        }
+        NestedSpineToolName::Spawn => {
+            let tasks = spawn::parse_tasks(&call.arguments)?;
+            if call.output.success {
+                let receipt = spawn::decode_receipt(&call.output.body)
+                    .map_err(|error| format!("invalid nested spine.spawn receipt: {error}"))?;
+                receipt
+                    .validate_for(&tasks)
+                    .map_err(|error| error.to_string())?;
+            }
+            None
+        }
+    };
+    if call.output.success
+        && expected_success.is_some_and(|response| !response.is_success_carrier(&call.output.body))
+    {
+        return Err(format!(
+            "invalid nested {} success output",
+            nested_spine_tool_name(call.name)
+        ));
+    }
+    Ok(AnalyzedNestedSpineCall {
+        invocation_ordinal: call.invocation_ordinal,
+        tool_name: nested_spine_tool_name(call.name),
+        arguments: call.arguments,
+        output: call.output.body,
+        success: call.output.success,
+    })
+}
+
+fn require_non_empty(value: &str, field: &str) -> Result<(), String> {
+    if value.trim().is_empty() {
+        Err(format!("{field} must not be empty"))
+    } else {
+        Ok(())
     }
 }
 
@@ -546,6 +946,9 @@ fn materialize_context(
                 user_anchor,
             } => {
                 if let Some(mut item) = response_item_at(rollout, message.boundary, host_history) {
+                    if is_marked_code_mode_carrier_output(&item) {
+                        item = project_code_mode_carrier_item(item, None, rollout);
+                    }
                     if let Some(anchor) = user_anchor {
                         tag_user_message(&mut item, *anchor);
                     }
@@ -556,15 +959,15 @@ fn materialize_context(
             }
             ContextItem::ToolCall(group) => {
                 for raw_index in group.start.0..=group.end.0 {
-                    if let Some(item) =
-                        response_item_at(rollout, RawBoundary(raw_index), host_history)
-                    {
+                    if let Some(item) = response_item_at(rollout, RawBoundary(raw_index), None) {
                         materialized.push(project_toolcall_item(
                             item,
                             group,
                             usize::try_from(raw_index).unwrap_or(usize::MAX),
                             trim,
                             spawn_enabled,
+                            host_history,
+                            rollout,
                         ));
                     }
                 }
@@ -641,12 +1044,23 @@ fn materialize_context(
 }
 
 fn project_toolcall_item(
-    mut item: ResponseItem,
+    item: ResponseItem,
     group: &ToolCallGroup,
     raw_ordinal: usize,
     trim: Option<&TrimProjection>,
     spawn_enabled: bool,
+    host_history: Option<&ContextManager>,
+    rollout: &[RolloutItem],
 ) -> ResponseItem {
+    let was_code_mode_carrier = is_marked_code_mode_carrier_output(&item);
+    let item = project_code_mode_carrier_item(item, Some(group), rollout);
+    let mut item = if was_code_mode_carrier {
+        item
+    } else {
+        host_history
+            .map(|history| history.canonical_projected_item(&item))
+            .unwrap_or(item)
+    };
     if spawn_enabled && group.is_complete() {
         if let ResponseItem::FunctionCallOutput {
             call_id, output, ..
@@ -681,6 +1095,7 @@ fn project_toolcall_item(
 
 fn materialize_trim_only_context(
     effective: &[(usize, &RolloutItem)],
+    events: &[RolloutEvent],
     rollout: &[RolloutItem],
     trim: Option<&TrimProjection>,
     host_history: Option<&ContextManager>,
@@ -693,9 +1108,22 @@ fn materialize_trim_only_context(
     for (raw_index, item) in effective.iter().skip(start) {
         match item {
             RolloutItem::ResponseItem(item) => {
-                let item = host_history
-                    .map(|history| history.canonical_projected_item(item))
-                    .unwrap_or_else(|| item.clone());
+                let group = events.iter().find_map(|event| {
+                    let RolloutEvent::ToolCall(group) = event else {
+                        return None;
+                    };
+                    (group.start.0 <= *raw_index as u64 && *raw_index as u64 <= group.end.0)
+                        .then_some(group)
+                });
+                let was_code_mode_carrier = is_marked_code_mode_carrier_output(item);
+                let item = project_code_mode_carrier_item(item.clone(), group, rollout);
+                let item = if was_code_mode_carrier {
+                    item
+                } else {
+                    host_history
+                        .map(|history| history.canonical_projected_item(&item))
+                        .unwrap_or(item)
+                };
                 context.push(project_trim_item(item, *raw_index, trim))
             }
             RolloutItem::InterAgentCommunication(communication) => {
@@ -734,6 +1162,96 @@ fn materialize_trim_only_context(
         );
     }
     context
+}
+
+fn is_marked_code_mode_carrier_output(item: &ResponseItem) -> bool {
+    matches!(
+        item,
+        ResponseItem::CustomToolCallOutput { name, .. }
+            if name.as_deref() == Some(CODE_MODE_SPINE_CARRIER_MARKER)
+    )
+}
+
+pub(crate) fn is_code_mode_spine_carrier_rollout_item(item: &RolloutItem) -> bool {
+    matches!(
+        item,
+        RolloutItem::ResponseItem(ResponseItem::CustomToolCallOutput { name, .. })
+            if name.as_deref() == Some(CODE_MODE_SPINE_CARRIER_MARKER)
+    )
+}
+
+fn project_code_mode_carrier_item(
+    mut item: ResponseItem,
+    group: Option<&ToolCallGroup>,
+    rollout: &[RolloutItem],
+) -> ResponseItem {
+    let ResponseItem::CustomToolCallOutput {
+        call_id,
+        name,
+        output,
+        ..
+    } = &mut item
+    else {
+        return item;
+    };
+    if name.as_deref() != Some(CODE_MODE_SPINE_CARRIER_MARKER) {
+        return item;
+    }
+    let verdict = group
+        .map(|group| code_mode_carrier_verdict_for_rollout_group(group, rollout))
+        .unwrap_or_else(|| {
+            CarrierGroupVerdict::Corrupt(
+                "marked carrier is outside a completed tool group".to_string(),
+            )
+        });
+    match verdict {
+        CarrierGroupVerdict::Valid(analysis) => {
+            *output = analysis.visible_output;
+            *name = None;
+        }
+        CarrierGroupVerdict::Absent => {
+            tracing::error!(
+                call_id = call_id.as_str(),
+                "marked carrier was absent from its completed tool group"
+            );
+            output.body = FunctionCallOutputBody::Text(
+                "Code Mode Spine evidence is invalid and was not applied.".to_string(),
+            );
+            output.success = Some(false);
+            *name = None;
+        }
+        CarrierGroupVerdict::Corrupt(error) => {
+            tracing::error!(
+                call_id = call_id.as_str(),
+                %error,
+                "failed to project Code Mode Spine carrier"
+            );
+            output.body = FunctionCallOutputBody::Text(
+                "Code Mode Spine evidence is invalid and was not applied.".to_string(),
+            );
+            output.success = Some(false);
+            *name = None;
+        }
+    }
+    item
+}
+
+fn code_mode_carrier_verdict_for_rollout_group(
+    group: &ToolCallGroup,
+    rollout: &[RolloutItem],
+) -> CarrierGroupVerdict {
+    let items = (group.start.0..=group.end.0)
+        .filter_map(|raw_index| response_item_at(rollout, RawBoundary(raw_index), None))
+        .collect::<Vec<_>>();
+    let request_items = items
+        .iter()
+        .filter(|item| normalized_tool_request(item).is_some())
+        .collect::<Vec<_>>();
+    let response_items = items
+        .iter()
+        .filter(|item| normalized_tool_response(item).is_some())
+        .collect::<Vec<_>>();
+    code_mode_carrier_verdict(&request_items, &response_items)
 }
 
 fn project_trim_item(

@@ -51,18 +51,33 @@ fn spine_jit_is_stable_and_enabled_by_default() {
 }
 
 #[test]
-fn spine_status_is_experimental_enabled_by_default_and_explicitly_disableable() {
+fn spine_status_is_removed_and_disabled_by_default() {
     assert_eq!(feature_for_key("spine_status"), Some(Feature::SpineStatus));
-    let stage = Feature::SpineStatus.stage();
-    assert!(matches!(stage, Stage::Experimental { .. }));
-    assert_eq!(stage.experimental_menu_name(), Some("Spine status"));
-    assert!(stage.experimental_menu_description().is_some());
-    assert!(Feature::SpineStatus.default_enabled());
+    assert_eq!(Feature::SpineStatus.stage(), Stage::Removed);
+    assert!(!Feature::SpineStatus.default_enabled());
+    assert!(!Features::with_defaults().enabled(Feature::SpineStatus));
+}
 
-    let mut features = Features::with_defaults();
-    assert!(features.enabled(Feature::SpineStatus));
-    features.apply_map(&BTreeMap::from([("spine_status".to_string(), false)]));
-    assert!(!features.enabled(Feature::SpineStatus));
+#[test]
+fn from_sources_ignores_removed_spine_status_feature_key() {
+    for configured_value in [false, true] {
+        let features_toml = FeaturesToml::from(BTreeMap::from([(
+            "spine_status".to_string(),
+            configured_value,
+        )]));
+
+        let features = Features::from_sources(
+            FeatureConfigSource {
+                features: Some(&features_toml),
+                ..Default::default()
+            },
+            FeatureConfigSource::default(),
+            FeatureOverrides::default(),
+        );
+
+        assert_eq!(features, Features::with_defaults());
+        assert!(!features.enabled(Feature::SpineStatus));
+    }
 }
 
 #[test]

@@ -19,6 +19,13 @@ pub enum ToolExposure {
     /// code-mode tool.
     Direct,
 
+    /// Include this tool in both the initial model-visible tool list and the
+    /// nested code-mode tool surface.
+    ///
+    /// Unlike [`Self::Direct`], this remains directly callable in
+    /// code-mode-only sessions.
+    DirectAndCodeMode,
+
     /// Register this tool for later discovery, but omit it from the initial
     /// model-visible tool list. Deferred tools must provide search metadata via
     /// [`ToolExecutor::search_info`]. The default implementation derives
@@ -37,7 +44,10 @@ pub enum ToolExposure {
 
 impl ToolExposure {
     pub fn is_direct(self) -> bool {
-        matches!(self, Self::Direct | Self::DirectModelOnly)
+        matches!(
+            self,
+            Self::Direct | Self::DirectAndCodeMode | Self::DirectModelOnly
+        )
     }
 }
 

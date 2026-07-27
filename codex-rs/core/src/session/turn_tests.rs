@@ -65,3 +65,88 @@ async fn plan_mode_uses_contributed_turn_item_for_last_agent_message() {
         Some("plan contributed assistant text")
     );
 }
+
+async fn assert_no_spine_transition_status(session: &Session) {
+    let history = session.clone_history().await;
+    assert!(history.raw_items().iter().all(|item| !matches!(
+        item,
+        ResponseItem::Message { content, .. }
+            if content.iter().any(|item| matches!(
+                item,
+                ContentItem::InputText { text }
+                    if text.starts_with("<spine_tran_status ")
+            ))
+    )));
+}
+
+async fn assert_spine_transition_status_available(session: &Session, turn_context: &TurnContext) {
+    let state = session.state.lock().await;
+    assert!(
+        state
+            .spine_transition_status_item(
+                Some(1),
+                turn_context.model_info.auto_compact_token_limit(),
+            )
+            .is_some(),
+        "test fixture must be able to generate a Spine transition status"
+    );
+}
+
+#[cfg(debug_assertions)]
+#[tokio::test]
+async fn failed_in_flight_output_panics_before_persisting_spine_transition_status() {
+    let (session, turn_context) = crate::session::tests::make_session_and_context().await;
+    assert_spine_transition_status_available(&session, &turn_context).await;
+    let session = Arc::new(session);
+    let turn_context = Arc::new(turn_context);
+    let mut in_flight = FuturesOrdered::new();
+    let failed: BoxFuture<'static, CodexResult<ResponseInputItem>> =
+        Box::pin(async { Err(CodexErr::Fatal("tool failed".to_string())) });
+    in_flight.push_back(failed);
+
+    let task = tokio::spawn({
+        let session = Arc::clone(&session);
+        let turn_context = Arc::clone(&turn_context);
+        async move {
+            drain_in_flight(
+                &mut in_flight,
+                session,
+                turn_context,
+                /*has_spine_control_call*/ true,
+                Some(1),
+            )
+            .await
+        }
+    });
+    let error = task
+        .await
+        .expect_err("debug builds panic on failed futures");
+    assert!(error.is_panic());
+
+    assert_no_spine_transition_status(&session).await;
+}
+
+#[cfg(not(debug_assertions))]
+#[tokio::test]
+async fn failed_in_flight_output_is_logged_without_persisting_spine_transition_status() {
+    let (session, turn_context) = crate::session::tests::make_session_and_context().await;
+    assert_spine_transition_status_available(&session, &turn_context).await;
+    let session = Arc::new(session);
+    let turn_context = Arc::new(turn_context);
+    let mut in_flight = FuturesOrdered::new();
+    let failed: BoxFuture<'static, CodexResult<ResponseInputItem>> =
+        Box::pin(async { Err(CodexErr::Fatal("tool failed".to_string())) });
+    in_flight.push_back(failed);
+
+    drain_in_flight(
+        &mut in_flight,
+        Arc::clone(&session),
+        turn_context,
+        /*has_spine_control_call*/ true,
+        Some(1),
+    )
+    .await
+    .expect("release builds log failed futures and finish draining");
+
+    assert_no_spine_transition_status(&session).await;
+}

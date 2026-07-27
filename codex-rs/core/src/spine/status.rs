@@ -8,7 +8,7 @@ use super::effective_rollout;
 use super::pressure;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct SpineStatusPromptSignal {
+struct SpineTransitionStatusSignal {
     cursor: String,
     node_summary: Option<String>,
     parent: Option<String>,
@@ -17,8 +17,9 @@ struct SpineStatusPromptSignal {
     context_left_tokens: Option<i64>,
 }
 
-pub(crate) fn prompt_overlay(
+pub(crate) fn transition_item(
     rollout: &[RolloutItem],
+    current_provider_input_tokens: Option<i64>,
     context_left_tokens: Option<i64>,
     spawn_enabled: bool,
 ) -> ResponseItem {
@@ -32,15 +33,21 @@ pub(crate) fn prompt_overlay(
         None,
     )
     .spine;
-    let signal = status_prompt_signal(&projection, &effective, context_left_tokens);
-    developer_prompt_overlay_item(format_spine_status_prompt_overlay(&signal))
+    let signal = status_prompt_signal(
+        &projection,
+        &effective,
+        current_provider_input_tokens,
+        context_left_tokens,
+    );
+    developer_status_item(format_spine_transition_status(&signal))
 }
 
 fn status_prompt_signal(
     projection: &SpineProjection,
     effective_rollout: &[(usize, &RolloutItem)],
+    current_provider_input_tokens: Option<i64>,
     context_left_tokens: Option<i64>,
-) -> SpineStatusPromptSignal {
+) -> SpineTransitionStatusSignal {
     let active_node = projection
         .nodes
         .iter()
@@ -54,12 +61,16 @@ fn status_prompt_signal(
             .and_then(|node| node.summary.clone())
     });
     let node_summary = active_node.and_then(|node| node.summary.clone());
-    let pressures = pressure::project_from_effective(effective_rollout, projection);
+    let pressures = pressure::project_from_effective_with_current_input(
+        effective_rollout,
+        projection,
+        current_provider_input_tokens,
+    );
     let cursor_node_context_tokens = pressures
         .get(&projection.cursor)
         .and_then(|pressure| pressure.context_tokens);
 
-    SpineStatusPromptSignal {
+    SpineTransitionStatusSignal {
         cursor: projection.cursor.to_string(),
         node_summary,
         parent: parent.map(|node_id| node_id.to_string()),
@@ -69,7 +80,7 @@ fn status_prompt_signal(
     }
 }
 
-fn developer_prompt_overlay_item(text: String) -> ResponseItem {
+fn developer_status_item(text: String) -> ResponseItem {
     ResponseItem::Message {
         id: None,
         role: "developer".to_string(),
@@ -86,7 +97,7 @@ fn format_optional_summary_attribute(summary: Option<&str>) -> String {
     }
 }
 
-fn format_spine_status_prompt_overlay(signal: &SpineStatusPromptSignal) -> String {
+fn format_spine_transition_status(signal: &SpineTransitionStatusSignal) -> String {
     let cursor_node_context = signal
         .cursor_node_context_tokens
         .map(format_si_suffix)
@@ -98,7 +109,7 @@ fn format_spine_status_prompt_overlay(signal: &SpineStatusPromptSignal) -> Strin
     let summary = format_optional_summary_attribute(signal.node_summary.as_deref());
     let parent_summary = format_optional_summary_attribute(signal.parent_summary.as_deref());
     format!(
-        r#"<spine_status cursor="{}" summary="{}" parent="{}" parent_summary="{}" cursor_context="{}" context_left="{}""#,
+        r#"<spine_tran_status cursor="{}" summary="{}" parent="{}" parent_summary="{}" cursor_context="{}" context_left="{}""#,
         signal.cursor,
         summary,
         signal.parent.as_deref().unwrap_or("none"),

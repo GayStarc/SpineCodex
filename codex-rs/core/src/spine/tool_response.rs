@@ -80,8 +80,12 @@ impl SpineToolResponse {
         }
     }
 
-    fn success_carrier(self) -> String {
+    pub(crate) fn success_carrier(self) -> String {
         format!("Spine {} accepted.", self.tool_name())
+    }
+
+    pub(crate) fn is_success_carrier(self, body: &str) -> bool {
+        body == self.success_carrier()
     }
 }
 

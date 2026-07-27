@@ -1281,12 +1281,26 @@ impl Session {
         state.token_info()
     }
 
-    pub(crate) async fn spine_status_prompt_overlay(
+    pub(crate) async fn record_spine_transition_status(
         &self,
         turn_context: &TurnContext,
-    ) -> Option<ResponseItem> {
-        let state = self.state.lock().await;
-        state.spine_status_prompt_overlay(turn_context.model_info.auto_compact_token_limit())
+        current_provider_input_tokens: Option<i64>,
+    ) {
+        let context_left_tokens = if current_provider_input_tokens.is_some() {
+            context_window::context_window_token_status(self, turn_context)
+                .await
+                .tokens_until_compaction
+        } else {
+            None
+        };
+        let item = {
+            let state = self.state.lock().await;
+            state.spine_transition_status_item(current_provider_input_tokens, context_left_tokens)
+        };
+        if let Some(item) = item {
+            self.record_conversation_items(turn_context, std::slice::from_ref(&item))
+                .await;
+        }
     }
 
     pub(crate) async fn get_estimated_token_count(
@@ -1312,6 +1326,14 @@ impl Session {
         state.validate_spine_control(kind)
     }
 
+    pub(crate) async fn validate_code_mode_spine_outer_exec(
+        &self,
+        call_id: &str,
+    ) -> Result<(), String> {
+        let state = self.state.lock().await;
+        state.validate_code_mode_spine_outer_exec(call_id)
+    }
+
     pub(crate) async fn validate_spine_trim(
         &self,
         current_call_id: &str,
@@ -1319,6 +1341,15 @@ impl Session {
     ) -> Result<(), String> {
         let state = self.state.lock().await;
         state.validate_spine_trim(current_call_id, request)
+    }
+
+    pub(crate) async fn validate_nested_spine_trim(
+        &self,
+        outer_exec_call_id: &str,
+        request: &codex_spine_core::TrimRequest,
+    ) -> Result<(), String> {
+        let state = self.state.lock().await;
+        state.validate_nested_spine_trim(outer_exec_call_id, request)
     }
 
     pub(crate) async fn spine_spawn_calls_in_response_group(

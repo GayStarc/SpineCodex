@@ -114,31 +114,52 @@ fn is_multi_agent_v2_usage_hint_message(item: &ResponseItem, usage_hint_texts: &
         .any(|usage_hint_text| usage_hint_text == text)
 }
 
-fn is_tool_call_related_response_item(item: &ResponseItem) -> bool {
+fn is_tool_call_request_response_item(item: &ResponseItem) -> bool {
     matches!(
         item,
         ResponseItem::LocalShellCall { .. }
             | ResponseItem::FunctionCall { .. }
             | ResponseItem::ToolSearchCall { .. }
-            | ResponseItem::FunctionCallOutput { .. }
             | ResponseItem::CustomToolCall { .. }
-            | ResponseItem::CustomToolCallOutput { .. }
-            | ResponseItem::ToolSearchOutput { .. }
             | ResponseItem::WebSearchCall { .. }
             | ResponseItem::ImageGenerationCall { .. }
     )
 }
 
-pub(super) fn trim_tool_call_related_suffix(items: &mut Vec<RolloutItem>) {
-    while items.last().is_some_and(|item| {
+fn response_item_call_id(item: &ResponseItem) -> Option<&str> {
+    match item {
+        ResponseItem::FunctionCall { call_id, .. }
+        | ResponseItem::CustomToolCall { call_id, .. } => Some(call_id),
+        _ => None,
+    }
+}
+
+pub(super) fn trim_tool_call_related_suffix(
+    items: &mut Vec<RolloutItem>,
+    parent_call_id: &str,
+) -> bool {
+    let Some(anchor) = items.iter().rposition(|item| {
         matches!(
             item,
             RolloutItem::ResponseItem(response_item)
-                if is_tool_call_related_response_item(response_item)
+                if response_item_call_id(response_item) == Some(parent_call_id)
         )
-    }) {
-        items.pop();
+    }) else {
+        return false;
+    };
+
+    let mut batch_start = anchor;
+    while batch_start > 0
+        && matches!(
+            &items[batch_start - 1],
+            RolloutItem::ResponseItem(response_item)
+                if is_tool_call_request_response_item(response_item)
+        )
+    {
+        batch_start -= 1;
     }
+    items.truncate(batch_start);
+    true
 }
 
 impl AgentControl {
@@ -746,7 +767,15 @@ impl AgentControl {
                     truncate_rollout_to_last_n_fork_turns(&forked_rollout_items, *last_n_turns);
             }
             SpawnAgentForkMode::FullHistoryTrimToolCallSuffix => {
-                trim_tool_call_related_suffix(&mut forked_rollout_items);
+                let parent_call_id = options
+                    .fork_parent_spawn_call_id
+                    .as_deref()
+                    .expect("full-history suffix trim requires a parent call id");
+                if !trim_tool_call_related_suffix(&mut forked_rollout_items, parent_call_id) {
+                    return Err(CodexErr::Fatal(format!(
+                        "parent tool call `{parent_call_id}` is unavailable for full-history fork"
+                    )));
+                }
             }
             SpawnAgentForkMode::FullHistory => {}
         }

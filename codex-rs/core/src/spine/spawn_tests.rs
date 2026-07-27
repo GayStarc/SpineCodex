@@ -263,6 +263,7 @@ fn batch_receipts_partition_flat_results_and_restore_task_ordinals() {
     let calls = vec![
         SpawnBatchCall {
             call_id: "spawn-1".to_string(),
+            fork_parent_call_id: "spawn-1".to_string(),
             tasks: parse_tasks(
                 r#"{"tasks":[{"summary":"a","prompt":"pa"},{"summary":"b","prompt":"pb"}]}"#,
             )
@@ -270,6 +271,7 @@ fn batch_receipts_partition_flat_results_and_restore_task_ordinals() {
         },
         SpawnBatchCall {
             call_id: "spawn-2".to_string(),
+            fork_parent_call_id: "spawn-2".to_string(),
             tasks: parse_tasks(
                 r#"{"tasks":[{"summary":"c","prompt":"pc"},{"summary":"d","prompt":"pd"}]}"#,
             )
@@ -312,6 +314,7 @@ fn capacity_rejection_partitions_multiple_calls_without_losing_task_identity() {
     let calls = vec![
         SpawnBatchCall {
             call_id: "spawn-1".to_string(),
+            fork_parent_call_id: "spawn-1".to_string(),
             tasks: parse_tasks(
                 r#"{"tasks":[{"summary":"a","prompt":"pa"},{"summary":"b","prompt":"pb"}]}"#,
             )
@@ -319,6 +322,7 @@ fn capacity_rejection_partitions_multiple_calls_without_losing_task_identity() {
         },
         SpawnBatchCall {
             call_id: "spawn-2".to_string(),
+            fork_parent_call_id: "spawn-2".to_string(),
             tasks: parse_tasks(
                 r#"{"tasks":[{"summary":"c","prompt":"pc"},{"summary":"d","prompt":"pd"}]}"#,
             )

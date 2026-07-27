@@ -15,8 +15,13 @@ use anyhow::Context;
 use anyhow::Result;
 use codex_features::Feature;
 use codex_login::CodexAuth;
+use codex_protocol::models::ContentItem;
+use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::RolloutItem;
+use codex_protocol::protocol::RolloutLine;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_function_call;
+use core_test_support::responses::ev_function_call_with_namespace;
 use core_test_support::responses::ev_response_created;
 use core_test_support::responses::mount_sse_once;
 use core_test_support::responses::mount_sse_sequence;
@@ -31,7 +36,7 @@ use std::os::unix::fs::PermissionsExt;
 use tempfile::TempDir;
 
 #[tokio::test]
-async fn spine_adapter_profile_projects_anchored_input_and_status() -> Result<()> {
+async fn spine_adapter_profile_has_no_status_without_transition() -> Result<()> {
     let server = start_mock_server().await;
     let response_mock = mount_sse_once(
         &server,
@@ -47,28 +52,45 @@ async fn spine_adapter_profile_projects_anchored_input_and_status() -> Result<()
     assert!(test.config.features.enabled(Feature::SpineJit));
     assert!(!test.config.features.enabled(Feature::SpineTrim));
     assert!(!test.config.features.enabled(Feature::SpineSpawn));
+    assert!(!test.config.features.enabled(Feature::SpineStatus));
 
     test.submit_turn("adapter profile probe").await?;
 
     let input = response_mock.single_request().input();
     let user_text = message_text(&input, "user").context("missing projected user input")?;
     assert_anchored_user_text(user_text, "adapter profile probe")?;
-    let status_text = message_text(&input, "developer").context("missing Spine status overlay")?;
-    assert!(status_text.starts_with("<spine_status "));
-    assert!(status_text.ends_with("/>") || status_text.ends_with(" />"));
+    assert!(
+        input.iter().all(|item| {
+            let item = item.to_string();
+            !item.contains("<spine_status ") && !item.contains("<spine_tran_status ")
+        }),
+        "a request without a completed Spine control must not synthesize any status"
+    );
 
     Ok(())
 }
 
 #[tokio::test]
-async fn spine_adapter_omits_status_when_feature_is_disabled() -> Result<()> {
+async fn legacy_spine_status_feature_does_not_gate_transition_status() -> Result<()> {
     let server = start_mock_server().await;
-    let response_mock = mount_sse_once(
+    let response_mock = mount_sse_sequence(
         &server,
-        sse(vec![
-            ev_response_created("spine-status-disabled"),
-            ev_completed("spine-status-disabled"),
-        ]),
+        vec![
+            sse(vec![
+                ev_response_created("spine-status-disabled-open"),
+                ev_function_call_with_namespace(
+                    "spine-status-disabled-open",
+                    "spine",
+                    "open",
+                    r#"{"summary":"gate independent"}"#,
+                ),
+                ev_completed("spine-status-disabled-open"),
+            ]),
+            sse(vec![
+                ev_response_created("spine-status-disabled-done"),
+                ev_completed("spine-status-disabled-done"),
+            ]),
+        ],
     )
     .await;
     let mut builder = spine_test_codex().with_config(|config| {
@@ -79,28 +101,81 @@ async fn spine_adapter_omits_status_when_feature_is_disabled() -> Result<()> {
     });
     let test = builder.build(&server).await?;
 
-    test.submit_turn("status-off probe").await?;
+    test.submit_turn("legacy status gate probe").await?;
 
-    let input = response_mock.single_request().input();
+    let requests = response_mock.requests();
+    assert_eq!(requests.len(), 2);
     assert!(
-        input
-            .iter()
-            .all(|item| !item.to_string().contains("<spine_status ")),
-        "status-off request must not contain a Spine status developer tail"
+        requests[0].input().iter().all(|item| {
+            let item = item.to_string();
+            !item.contains("<spine_status ") && !item.contains("<spine_tran_status ")
+        }),
+        "initial request must not synthesize any status"
+    );
+    let input = requests[1].input();
+    let status = input
+        .iter()
+        .find(|item| item.to_string().contains("<spine_tran_status "))
+        .context("completed Spine control must persist transition status")?;
+    assert_eq!(status["role"], "developer");
+    assert_eq!(
+        status["content"][0]["text"]
+            .as_str()
+            .map(|text| text.contains(r#"cursor="1.1""#)),
+        Some(true)
+    );
+    let status_text = status["content"][0]["text"]
+        .as_str()
+        .context("transition status text")?
+        .to_string();
+    test.codex.flush_rollout().await?;
+    let rollout_path = test.codex.rollout_path().context("rollout path")?;
+    let persisted = fs::read_to_string(rollout_path)?
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(serde_json::from_str::<RolloutLine>)
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .any(|line| {
+            matches!(
+                line.item,
+                RolloutItem::ResponseItem(ResponseItem::Message { role, content, .. })
+                    if role == "developer"
+                        && matches!(
+                            content.as_slice(),
+                            [ContentItem::InputText { text }] if text == &status_text
+                        )
+            )
+        });
+    assert!(
+        persisted,
+        "legacy SpineStatus=false must not suppress transition-status persistence"
     );
 
     Ok(())
 }
 
 #[tokio::test]
-async fn spine_adapter_item_ids_cover_projection_only_status() -> Result<()> {
+async fn spine_adapter_item_ids_cover_persisted_transition_status() -> Result<()> {
     let server = start_mock_server().await;
-    let response_mock = mount_sse_once(
+    let response_mock = mount_sse_sequence(
         &server,
-        sse(vec![
-            ev_response_created("spine-adapter-item-ids"),
-            ev_completed("spine-adapter-item-ids"),
-        ]),
+        vec![
+            sse(vec![
+                ev_response_created("spine-adapter-item-ids-open"),
+                ev_function_call_with_namespace(
+                    "spine-adapter-item-ids-open",
+                    "spine",
+                    "open",
+                    r#"{"summary":"item identity"}"#,
+                ),
+                ev_completed("spine-adapter-item-ids-open"),
+            ]),
+            sse(vec![
+                ev_response_created("spine-adapter-item-ids-done"),
+                ev_completed("spine-adapter-item-ids-done"),
+            ]),
+        ],
     )
     .await;
     let mut builder = spine_test_codex()
@@ -114,22 +189,52 @@ async fn spine_adapter_item_ids_cover_projection_only_status() -> Result<()> {
     let test = builder.build(&server).await?;
 
     test.submit_turn("item identity probe").await?;
+    test.codex.flush_rollout().await?;
 
-    let input = response_mock.single_request().input();
+    let requests = response_mock.requests();
+    assert_eq!(requests.len(), 2);
+    let input = requests[1].input();
     let status = input
         .iter()
         .find(|item| {
             item.get("role").and_then(Value::as_str) == Some("developer")
-                && item.to_string().contains("<spine_status ")
+                && item.to_string().contains("<spine_tran_status ")
         })
-        .context("missing projection-only status")?;
-    assert!(status.get("id").and_then(Value::as_str).is_some());
-    for item in input {
+        .context("missing persisted transition status")?;
+    let request_status_id = status
+        .get("id")
+        .and_then(Value::as_str)
+        .context("persisted transition status request item is missing an ID")?
+        .to_string();
+    for item in &input {
         assert!(
             item.get("id").and_then(Value::as_str).is_some(),
             "model-visible input item is missing an ID: {item:#?}"
         );
     }
+    let rollout_path = test.codex.rollout_path().context("rollout path")?;
+    let rollout = fs::read_to_string(rollout_path)?;
+    let disk_status_id = rollout
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(serde_json::from_str::<RolloutLine>)
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .find_map(|line| match line.item {
+            RolloutItem::ResponseItem(ResponseItem::Message {
+                id, role, content, ..
+            }) if role == "developer"
+                && matches!(
+                    content.as_slice(),
+                    [ContentItem::InputText { text }] if text.starts_with("<spine_tran_status ")
+                ) =>
+            {
+                id
+            }
+            _ => None,
+        })
+        .context("persisted rollout transition status is missing an ID")?;
+    assert_eq!(disk_status_id, request_status_id);
 
     Ok(())
 }

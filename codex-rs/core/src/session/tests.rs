@@ -1593,7 +1593,7 @@ destructive_enabled = false
 
 [features]
 spine_spawn = true
-spine_status = false
+spine_status = true
 
 [tool_suggest]
 disabled_tools = [
@@ -1610,7 +1610,7 @@ disabled_tools = [
     next_config.notify = Some(vec!["echo".to_string()]);
     assert!(!original.features.enabled(Feature::SpineSpawn));
     assert!(next_config.features.enabled(Feature::SpineSpawn));
-    assert!(original.features.enabled(Feature::SpineStatus));
+    assert!(!original.features.enabled(Feature::SpineStatus));
     assert!(!next_config.features.enabled(Feature::SpineStatus));
 
     session.refresh_runtime_config(next_config).await;
@@ -1635,7 +1635,7 @@ disabled_tools = [
     assert_eq!(config.model, original.model);
     assert_eq!(config.notify, original.notify);
     assert!(!config.features.enabled(Feature::SpineSpawn));
-    assert!(config.features.enabled(Feature::SpineStatus));
+    assert!(!config.features.enabled(Feature::SpineStatus));
     assert_eq!(
         config.tool_suggest.disabled_tools,
         vec![

@@ -22,6 +22,7 @@ use crate::tools::handlers::multi_agents_spec::MULTI_AGENT_V1_NAMESPACE;
 use crate::tools::hook_names::HookToolName;
 use crate::tools::lifecycle::notify_tool_finish;
 use crate::tools::lifecycle::notify_tool_start;
+use crate::tools::parallel::DirectSpineControlAdmission;
 use crate::tools::tool_dispatch_trace::ToolDispatchTrace;
 use crate::util::error_or_panic;
 use codex_extension_api::ToolCallOutcome;
@@ -394,8 +395,11 @@ impl ToolRegistry {
         &self,
         invocation: ToolInvocation,
     ) -> Result<AnyToolResult, FunctionCallError> {
-        self.dispatch_any_with_terminal_outcome(invocation, /*terminal_outcome_reached*/ None)
-            .await
+        self.dispatch_any_with_terminal_outcome(
+            invocation, /*terminal_outcome_reached*/ None,
+            /*direct_spine_control_admission*/ None,
+        )
+        .await
     }
 
     #[expect(
@@ -406,6 +410,7 @@ impl ToolRegistry {
         &self,
         mut invocation: ToolInvocation,
         terminal_outcome_reached: Option<Arc<AtomicBool>>,
+        direct_spine_control_admission: Option<Arc<DirectSpineControlAdmission>>,
     ) -> Result<AnyToolResult, FunctionCallError> {
         let tool_name = invocation.tool_name.clone();
         let tool_name_flat = flat_tool_name(&tool_name);
@@ -553,7 +558,12 @@ impl ToolRegistry {
                     let tool = tool.clone();
                     let response_cell = &response_cell;
                     async move {
-                        match handle_any_tool(tool.as_ref(), invocation_for_tool).await {
+                        let result = handle_any_tool(tool.as_ref(), invocation_for_tool).await;
+                        let result = match direct_spine_control_admission {
+                            Some(admission) => admission.provision(result).await,
+                            None => result,
+                        };
+                        match result {
                             Ok(result) => {
                                 let preview = result.result.log_preview();
                                 let success = result.result.success_for_logging();

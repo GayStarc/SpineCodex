@@ -42,6 +42,7 @@ struct SpawnArgs {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SpawnBatchCall {
     pub(crate) call_id: String,
+    pub(crate) fork_parent_call_id: String,
     pub(crate) tasks: Vec<SpawnTask>,
 }
 
@@ -109,6 +110,7 @@ pub(crate) fn calls_in_response_group(
                 match parse_tasks(&call.arguments) {
                     Ok(tasks) => calls.push(SpawnBatchCall {
                         call_id: call.call_id.clone(),
+                        fork_parent_call_id: call.call_id.clone(),
                         tasks,
                     }),
                     Err(error) if call.call_id == call_id => return Err(error),
@@ -175,6 +177,28 @@ pub(crate) async fn execute(
     })
 }
 
+pub(crate) async fn execute_nested(
+    session: Arc<Session>,
+    turn: Arc<TurnContext>,
+    outer_exec_call_id: String,
+    invocation_ordinal: u64,
+    cancellation_token: CancellationToken,
+    tasks: Vec<SpawnTask>,
+) -> Result<SpawnReceipt, String> {
+    let call_id = format!("{outer_exec_call_id}:spine:{invocation_ordinal}");
+    let calls = [SpawnBatchCall {
+        call_id: call_id.clone(),
+        fork_parent_call_id: outer_exec_call_id,
+        tasks,
+    }];
+    execute_batch(session, turn, cancellation_token, &calls)
+        .await?
+        .remove(&call_id)
+        .ok_or_else(|| {
+            format!("nested spine.spawn batch did not produce a result for call `{call_id}`")
+        })
+}
+
 async fn execute_batch(
     session: Arc<Session>,
     turn: Arc<TurnContext>,
@@ -220,7 +244,7 @@ async fn execute_batch(
                 SpawnAgentBatchRequest::new(
                     source,
                     SpawnAgentOptions {
-                        fork_parent_spawn_call_id: Some(call.call_id.clone()),
+                        fork_parent_spawn_call_id: Some(call.fork_parent_call_id.clone()),
                         fork_mode: Some(SpawnAgentForkMode::FullHistoryTrimToolCallSuffix),
                         parent_thread_id: Some(session.thread_id),
                         environments: Some(turn.environments.to_selections()),

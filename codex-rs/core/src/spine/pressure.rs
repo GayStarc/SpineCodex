@@ -39,7 +39,14 @@ pub(super) fn project_from_effective(
         .iter()
         .rev()
         .find_map(|(_, item)| provider_input_tokens(item));
+    project_from_effective_with_current_input(effective_rollout, projection, current_input_tokens)
+}
 
+pub(super) fn project_from_effective_with_current_input(
+    effective_rollout: &[(usize, &RolloutItem)],
+    projection: &SpineProjection,
+    current_input_tokens: Option<i64>,
+) -> BTreeMap<NodeId, NodeContextPressure> {
     projection
         .nodes
         .iter()

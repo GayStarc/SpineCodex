@@ -261,7 +261,7 @@ async fn spine_spawn_is_independent_from_multi_agent_v2() {
     );
     assert_eq!(
         enabled_without_v2.exposure(&ToolName::namespaced("spine", "spawn").to_string()),
-        ToolExposure::DirectModelOnly
+        ToolExposure::DirectAndCodeMode
     );
     enabled_without_v2.assert_visible_lacks(&[MULTI_AGENT_V2_NAMESPACE]);
     assert!(
@@ -497,6 +497,7 @@ fn use_bedrock_provider(turn: &mut TurnContext) {
 struct TestNamespaceExtensionTool {
     namespace: &'static str,
     tool_name: &'static str,
+    exposure: ToolExposure,
 }
 
 impl ToolExecutor<ExtensionToolCall> for TestNamespaceExtensionTool {
@@ -517,6 +518,10 @@ impl ToolExecutor<ExtensionToolCall> for TestNamespaceExtensionTool {
                 output_schema: None,
             })],
         })
+    }
+
+    fn exposure(&self) -> ToolExposure {
+        self.exposure
     }
 
     fn handle(&self, _call: ExtensionToolCall) -> codex_tools::ToolExecutorFuture<'_> {
@@ -1295,6 +1300,68 @@ async fn code_mode_only_exposes_code_executor_and_hides_nested_tools() {
 }
 
 #[tokio::test]
+async fn direct_and_code_mode_exposure_stays_top_level_and_nested_in_every_mode() {
+    for (mode, expects_code_mode) in [
+        (ToolMode::Direct, false),
+        (ToolMode::CodeMode, true),
+        (ToolMode::CodeModeOnly, true),
+    ] {
+        let plan = probe_with(
+            move |turn| {
+                turn.model_info.tool_mode = Some(mode);
+            },
+            ToolPlanInputs {
+                extension_tool_executors: vec![Arc::new(TestNamespaceExtensionTool {
+                    namespace: "dual",
+                    tool_name: "lookup",
+                    exposure: ToolExposure::DirectAndCodeMode,
+                })],
+                ..ToolPlanInputs::default()
+            },
+        )
+        .await;
+
+        assert_eq!(
+            plan.namespace_function_names("dual"),
+            &["lookup".to_string()],
+            "dual tool must stay top-level in {mode:?}"
+        );
+        assert_eq!(
+            plan.exposure(&ToolName::namespaced("dual", "lookup").to_string()),
+            ToolExposure::DirectAndCodeMode
+        );
+
+        let ToolSpec::Namespace(namespace) = plan.visible_spec("dual") else {
+            panic!("expected dual namespace in {mode:?}");
+        };
+        let ResponsesApiNamespaceTool::Function(lookup) = &namespace.tools[0];
+        if expects_code_mode {
+            assert!(
+                lookup.description.contains("dual__lookup(args:"),
+                "dual top-level schema must describe nested use in {mode:?}; description:\n{}",
+                lookup.description
+            );
+            let ToolSpec::Freeform(exec) = plan.visible_spec(codex_code_mode::PUBLIC_TOOL_NAME)
+            else {
+                panic!("expected code mode exec tool in {mode:?}");
+            };
+            if mode == ToolMode::CodeModeOnly {
+                assert!(
+                    exec.description.contains("dual__lookup(args:"),
+                    "code-mode-only exec must include the nested dual definition"
+                );
+            }
+        } else {
+            assert!(!lookup.description.contains("dual__lookup(args:"));
+            plan.assert_visible_lacks(&[
+                codex_code_mode::PUBLIC_TOOL_NAME,
+                codex_code_mode::WAIT_TOOL_NAME,
+            ]);
+        }
+    }
+}
+
+#[tokio::test]
 async fn code_mode_only_exposes_configured_dynamic_namespace_directly() {
     let plan = probe_with(
         |turn| {
@@ -1732,6 +1799,7 @@ async fn hosted_web_search_and_standalone_image_generation_follow_runtime_gates(
     let image_generation_tool = Arc::new(TestNamespaceExtensionTool {
         namespace: "image_gen",
         tool_name: "imagegen",
+        exposure: ToolExposure::Direct,
     });
     let image_generation = probe_with(
         |turn| {
@@ -1840,6 +1908,7 @@ async fn hosted_web_search_and_standalone_image_generation_follow_runtime_gates(
             extension_tool_executors: vec![Arc::new(TestNamespaceExtensionTool {
                 namespace: "web",
                 tool_name: "run",
+                exposure: ToolExposure::Direct,
             })],
             ..Default::default()
         },

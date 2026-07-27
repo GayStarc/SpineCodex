@@ -14,7 +14,6 @@ Scenario: rollback trims pre-turn override context updates before the follow-up 
 04:message/developer:<collaboration_mode>ROLLED_BACK_DEV_INSTRUCTIONS</collaboration_mode>
 05:message/user:<ENVIRONMENT_CONTEXT:cwd=PRETURN_CONTEXT_DIFF_CWD>
 06:message/user:[U2]\nturn 2 user
-07:message/developer:<spine_status cursor="1" summary="root" parent="none" parent_summary="none" cursor_context="unav...
 
 ## follow-up request after rollback
 00:message/developer[2]:
@@ -26,4 +25,3 @@ Scenario: rollback trims pre-turn override context updates before the follow-up 
 04:message/developer:<collaboration_mode>ROLLED_BACK_DEV_INSTRUCTIONS</collaboration_mode>
 05:message/user:<ENVIRONMENT_CONTEXT:cwd=PRETURN_CONTEXT_DIFF_CWD>
 06:message/user:[U2]\nfollow-up user
-07:message/developer:<spine_status cursor="1" summary="root" parent="none" parent_summary="none" cursor_context="unav...

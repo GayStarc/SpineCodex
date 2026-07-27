@@ -288,7 +288,6 @@ impl SpineReducer {
         let mut children = Vec::with_capacity(child_count);
         let mut child_offset = 0usize;
         for call in calls {
-            debug_assert!(call.call_ordinal < group.calls.len());
             for (task, result) in call.tasks.into_iter().zip(call.receipt.results) {
                 let offset = u32::try_from(child_offset).unwrap_or(u32::MAX);
                 let child_id = parent_id.child(first_child_ordinal.saturating_add(offset));
@@ -498,7 +497,7 @@ enum Control {
 
 #[derive(Debug)]
 struct ValidSpawnCall {
-    call_ordinal: usize,
+    call_ordinal: u64,
     tasks: Vec<SpawnTask>,
     receipt: SpawnReceipt,
 }
@@ -547,14 +546,17 @@ fn classify_spawn(group: &ToolCallGroup) -> Option<Control> {
         return Some(Control::Spawn { calls: Vec::new() });
     }
 
-    let calls = group
+    let mut calls = group
         .calls
         .iter()
         .enumerate()
-        .filter_map(|(call_ordinal, call)| {
+        .filter_map(|(native_ordinal, call)| {
             if call.name != SPINE_SPAWN || call.outcome != Some(ToolOutcome::Succeeded) {
                 return None;
             }
+            let call_ordinal = call
+                .call_ordinal
+                .unwrap_or_else(|| u64::try_from(native_ordinal).unwrap_or(u64::MAX));
             let tasks = serde_json::from_str::<SpawnArgs>(&call.arguments)
                 .ok()?
                 .tasks;
@@ -566,7 +568,8 @@ fn classify_spawn(group: &ToolCallGroup) -> Option<Control> {
                 receipt,
             })
         })
-        .collect();
+        .collect::<Vec<_>>();
+    calls.sort_by_key(|call| call.call_ordinal);
     Some(Control::Spawn { calls })
 }
 

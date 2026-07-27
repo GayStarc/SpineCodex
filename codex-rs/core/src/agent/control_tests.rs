@@ -993,7 +993,7 @@ async fn prepared_spawn_batch_creates_no_partial_threads_and_consumes_full_histo
 }
 
 #[test]
-fn prepared_full_history_trims_only_the_trailing_tool_call_batch() {
+fn prepared_full_history_trims_from_the_anchored_tool_call_batch() {
     let parent_spawn_call_id = "spine-spawn-prefix-call";
     let historical_call_id = "historical-completed-call";
     let batch_peer_call_id = "current-batch-peer-call";
@@ -1017,11 +1017,15 @@ fn prepared_full_history_trims_only_the_trailing_tool_call_batch() {
             spine_spawn_call(parent_spawn_call_id),
             function_call_output(batch_peer_call_id, "aborted"),
             function_call_output(parent_spawn_call_id, "aborted"),
+            assistant_message("later persisted metadata", Some(MessagePhase::Commentary)),
         ])
         .map(RolloutItem::ResponseItem)
         .collect::<Vec<_>>();
 
-    super::spawn::trim_tool_call_related_suffix(&mut rollout);
+    assert!(super::spawn::trim_tool_call_related_suffix(
+        &mut rollout,
+        parent_spawn_call_id
+    ));
 
     let actual_prefix = rollout
         .into_iter()

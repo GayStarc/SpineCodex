@@ -12,6 +12,9 @@ use crate::image_url::is_remote_image_url;
 
 const DIRECT_INPUT_TO_MULTI_AGENT_V2_SUBAGENT_ERROR: &str =
     "direct app-server input is not allowed for multi-agent v2 sub-agents";
+const RESERVED_CODE_MODE_SPINE_CARRIER_MARKER: &str = "spine.code_mode.output.v1";
+const RESERVED_CODE_MODE_SPINE_CARRIER_INJECTION_ERROR: &str =
+    "thread/inject_items cannot inject the host-reserved Spine carrier marker";
 
 fn validate_user_input_image_urls(input: &[V2UserInput]) -> Result<(), JSONRPCErrorError> {
     if input.iter().any(|item| {
@@ -61,6 +64,22 @@ fn validate_response_item_image_urls(items: &[ResponseItem]) -> Result<(), JSONR
         | ResponseItem::Other => false,
     }) {
         return Err(invalid_request(REMOTE_IMAGE_URL_ERROR));
+    }
+    Ok(())
+}
+
+fn validate_response_items_for_injection(items: &[ResponseItem]) -> Result<(), JSONRPCErrorError> {
+    validate_response_item_image_urls(items)?;
+    if items.iter().any(|item| {
+        matches!(
+            item,
+            ResponseItem::CustomToolCallOutput { name: Some(name), .. }
+                if name == RESERVED_CODE_MODE_SPINE_CARRIER_MARKER
+        )
+    }) {
+        return Err(invalid_request(
+            RESERVED_CODE_MODE_SPINE_CARRIER_INJECTION_ERROR,
+        ));
     }
     Ok(())
 }
@@ -815,7 +834,7 @@ impl TurnRequestProcessor {
             })
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(invalid_request)?;
-        validate_response_item_image_urls(&items)?;
+        validate_response_items_for_injection(&items)?;
 
         thread
             .inject_response_items(items)

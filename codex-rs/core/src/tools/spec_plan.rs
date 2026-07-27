@@ -219,11 +219,14 @@ fn apply_direct_model_only_namespace_overrides(
                     .contains(namespace)
             });
         match runtime.exposure() {
-            ToolExposure::Direct | ToolExposure::Deferred if configured => {
+            ToolExposure::Direct | ToolExposure::DirectAndCodeMode | ToolExposure::Deferred
+                if configured =>
+            {
                 *runtime =
                     override_tool_exposure(Arc::clone(runtime), ToolExposure::DirectModelOnly);
             }
             ToolExposure::Direct
+            | ToolExposure::DirectAndCodeMode
             | ToolExposure::Deferred
             | ToolExposure::DirectModelOnly
             | ToolExposure::Hidden => {}
@@ -444,7 +447,10 @@ fn is_hidden_by_code_mode_only(
 ) -> bool {
     let tool_mode = effective_tool_mode(turn_context);
     tool_mode == ToolMode::CodeModeOnly
-        && exposure != ToolExposure::DirectModelOnly
+        && !matches!(
+            exposure,
+            ToolExposure::DirectModelOnly | ToolExposure::DirectAndCodeMode
+        )
         && codex_code_mode::is_code_mode_nested_tool(&codex_tools::code_mode_name_for_tool_name(
             tool_name,
         ))

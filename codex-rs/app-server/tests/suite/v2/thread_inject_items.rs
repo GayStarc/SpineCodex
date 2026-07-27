@@ -2,6 +2,7 @@ use anyhow::Context;
 use anyhow::Result;
 use app_test_support::TestAppServer;
 use app_test_support::to_response;
+use codex_app_server_protocol::JSONRPCError;
 use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ThreadInjectItemsParams;
@@ -12,6 +13,7 @@ use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::UserInput as V2UserInput;
 use codex_core::RolloutRecorder;
 use codex_protocol::models::ContentItem;
+use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::InitialHistory;
 use codex_protocol::protocol::RolloutItem;
@@ -22,6 +24,78 @@ use tempfile::TempDir;
 use tokio::time::timeout;
 
 const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const RESERVED_CODE_MODE_SPINE_CARRIER_MARKER: &str = "spine.code_mode.output.v1";
+const RESERVED_CODE_MODE_SPINE_CARRIER_INJECTION_ERROR: &str =
+    "thread/inject_items cannot inject the host-reserved Spine carrier marker";
+
+#[tokio::test]
+async fn thread_inject_items_rejects_only_the_reserved_spine_carrier_marker() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build()
+        .await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let thread_req = mcp
+        .send_thread_start_request_with_auto_env(ThreadStartParams::default())
+        .await?;
+    let thread_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(thread_req)),
+    )
+    .await??;
+    let ThreadStartResponse { thread, .. } = to_response::<ThreadStartResponse>(thread_resp)?;
+
+    let carrier_like_body = FunctionCallOutputPayload::from_text(
+        r#"{"schema":"spine.code_mode.output.v1","nested_spine_calls":[]}"#.to_string(),
+    );
+    let marked_item = ResponseItem::CustomToolCallOutput {
+        id: None,
+        call_id: "injected-marked-output".to_string(),
+        name: Some(RESERVED_CODE_MODE_SPINE_CARRIER_MARKER.to_string()),
+        output: carrier_like_body.clone(),
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let marked_request = mcp
+        .send_thread_inject_items_request(ThreadInjectItemsParams {
+            thread_id: thread.id.clone(),
+            items: vec![serde_json::to_value(marked_item)?],
+        })
+        .await?;
+    let marked_error: JSONRPCError = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(marked_request)),
+    )
+    .await??;
+    assert_eq!(marked_error.error.code, -32600);
+    assert_eq!(
+        marked_error.error.message,
+        RESERVED_CODE_MODE_SPINE_CARRIER_INJECTION_ERROR
+    );
+
+    let unmarked_item = ResponseItem::CustomToolCallOutput {
+        id: None,
+        call_id: "injected-unmarked-output".to_string(),
+        name: None,
+        output: carrier_like_body,
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let unmarked_request = mcp
+        .send_thread_inject_items_request(ThreadInjectItemsParams {
+            thread_id: thread.id,
+            items: vec![serde_json::to_value(unmarked_item)?],
+        })
+        .await?;
+    let unmarked_response: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(unmarked_request)),
+    )
+    .await??;
+    let _: ThreadInjectItemsResponse = to_response::<ThreadInjectItemsResponse>(unmarked_response)?;
+
+    Ok(())
+}
 
 #[tokio::test]
 async fn thread_inject_items_adds_raw_response_items_to_thread_history() -> Result<()> {

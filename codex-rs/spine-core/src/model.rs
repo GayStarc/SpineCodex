@@ -228,6 +228,8 @@ pub struct ToolUse {
     pub call_id: String,
     pub name: String,
     pub arguments: String,
+    #[serde(default)]
+    pub call_ordinal: Option<u64>,
     pub outcome: Option<ToolOutcome>,
     pub output: Option<String>,
     #[serde(default)]
