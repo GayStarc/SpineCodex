@@ -334,8 +334,8 @@ async fn execute_batch(
     )
     .await;
     let mut progress_statuses = vec![AgentStatus::PendingInit; task_count];
-    for ((ordinal, _, _), status) in live.iter().zip(initial_statuses) {
-        progress_statuses[*ordinal] = status;
+    for ((ordinal, thread_id, _), status) in live.iter().zip(initial_statuses) {
+        progress_statuses[*ordinal] = normalized_progress_status(*ordinal, *thread_id, status);
     }
     let progress_statuses = Arc::new(tokio::sync::Mutex::new(progress_statuses));
     for call_ordinal in 0..progress_calls.len() {
@@ -365,9 +365,10 @@ async fn execute_batch(
         let thread_id = *thread_id;
         async move {
             let status = wait_for_terminal(&control, thread_id).await;
+            let result = result_from_status(ordinal, thread_id, status);
             let event = {
                 let mut statuses = progress_statuses.lock().await;
-                statuses[ordinal] = status.clone();
+                statuses[ordinal] = result_status(&result);
                 batch_progress_event(
                     progress_calls.as_ref(),
                     call_ordinal,
@@ -379,7 +380,7 @@ async fn execute_batch(
             session
                 .emit_spine_spawn_progress(turn.as_ref(), event)
                 .await;
-            (ordinal, thread_id, status)
+            (ordinal, result)
         }
     });
     let wait_all = join_all(waits);
@@ -403,9 +404,9 @@ async fn execute_batch(
     correct_intermediate_messages(&session, &parent_path, &child_by_path, &mut corrected_ids).await;
 
     let cancelled = match terminal {
-        Some(statuses) => {
-            for (ordinal, thread_id, status) in statuses {
-                results[ordinal] = Some(result_from_status(ordinal, thread_id, status));
+        Some(completed_results) => {
+            for (ordinal, result) in completed_results {
+                results[ordinal] = Some(result);
             }
             false
         }
@@ -607,7 +608,7 @@ fn spawn_progress_event(
 
 fn result_status(result: &SpawnResult) -> AgentStatus {
     match result.outcome {
-        SpawnOutcome::Completed => AgentStatus::Completed(Some(result.memory_body.clone())),
+        SpawnOutcome::Completed => AgentStatus::Completed(None),
         SpawnOutcome::Errored => AgentStatus::Errored(
             result
                 .diagnostic
@@ -615,6 +616,18 @@ fn result_status(result: &SpawnResult) -> AgentStatus {
                 .unwrap_or_else(|| result.memory_body.clone()),
         ),
         SpawnOutcome::Aborted => AgentStatus::Shutdown,
+    }
+}
+
+fn normalized_progress_status(
+    ordinal: usize,
+    thread_id: ThreadId,
+    status: AgentStatus,
+) -> AgentStatus {
+    if is_spawn_terminal(&status) {
+        result_status(&result_from_status(ordinal, thread_id, status))
+    } else {
+        status
     }
 }
 

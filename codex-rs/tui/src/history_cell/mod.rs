@@ -121,6 +121,7 @@ mod request_user_input;
 mod search;
 mod separators;
 mod session;
+mod spine_spawn_completion;
 mod spine_spawn_progress;
 #[cfg(test)]
 #[path = "spine_spawn_progress_tests.rs"]

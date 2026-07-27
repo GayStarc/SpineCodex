@@ -1,3 +1,5 @@
+use super::spine_spawn_completion::SettledTaskVisual;
+use super::spine_spawn_completion::plan_handoff;
 use super::spine_spawn_progress::SpineSpawnOverlay;
 use super::*;
 use crate::product_brand::SPINE_BRAND_COLOR;
@@ -9,6 +11,8 @@ use codex_app_server_protocol::SpineTreeNodeKind;
 use codex_app_server_protocol::SpineTreeNodeStatus;
 use codex_app_server_protocol::SpineTreeUpdatedNotification;
 use std::collections::HashSet;
+use std::time::Duration;
+use std::time::Instant;
 
 #[path = "spine_tree_debug.rs"]
 mod debug;
@@ -24,6 +28,7 @@ pub(crate) fn new_spine_tree_snapshot(
         snapshot,
         display_mode: SpineTreeDisplayMode::Pretty,
         spawn_overlays: Vec::new(),
+        pending_handoff: None,
         animations_enabled: false,
     }
 }
@@ -35,6 +40,7 @@ pub(crate) fn new_debug_spine_tree_snapshot(
         snapshot,
         display_mode: SpineTreeDisplayMode::Debug(None),
         spawn_overlays: Vec::new(),
+        pending_handoff: None,
         animations_enabled: false,
     }
 }
@@ -47,6 +53,7 @@ pub(crate) fn new_debug_spine_node_snapshot(
         snapshot,
         display_mode: SpineTreeDisplayMode::Debug(Some(node_id)),
         spawn_overlays: Vec::new(),
+        pending_handoff: None,
         animations_enabled: false,
     }
 }
@@ -57,7 +64,15 @@ pub(crate) struct SpineTreeViewState {
     tree_change_observed: bool,
     overlays: Vec<SpineSpawnOverlay>,
     settled_spawn_call_ids: HashSet<String>,
+    pending_handoff: Option<PendingTreeHandoff>,
     animations_enabled: bool,
+}
+
+#[derive(Debug, Clone)]
+struct PendingTreeHandoff {
+    snapshot: SpineTreeUpdatedNotification,
+    reveal_at: Instant,
+    overlays: Vec<SpineSpawnOverlay>,
 }
 
 impl Default for SpineTreeViewState {
@@ -73,6 +88,7 @@ impl SpineTreeViewState {
             tree_change_observed: false,
             overlays: Vec::new(),
             settled_spawn_call_ids: HashSet::new(),
+            pending_handoff: None,
             animations_enabled,
         }
     }
@@ -82,6 +98,12 @@ impl SpineTreeViewState {
     }
 
     pub(crate) fn apply_tree_update(&mut self, snapshot: SpineTreeUpdatedNotification) {
+        self.apply_tree_update_at(snapshot, Instant::now());
+    }
+
+    fn apply_tree_update_at(&mut self, snapshot: SpineTreeUpdatedNotification, now: Instant) {
+        self.pending_handoff
+            .take_if(|pending| now >= pending.reveal_at);
         if self
             .snapshot
             .as_ref()
@@ -89,26 +111,84 @@ impl SpineTreeViewState {
         {
             return;
         }
-        self.tree_change_observed |= self
+        let newly_settled = snapshot
+            .settled_spawn_call_ids
+            .iter()
+            .filter(|call_id| !self.settled_spawn_call_ids.contains(call_id.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+        let display_changed = self
             .snapshot
             .as_ref()
             .is_some_and(|current| display_tree_changed(current, &snapshot));
-        let removed_call_ids = snapshot.settled_spawn_call_ids.clone();
-        self.snapshot = Some(snapshot);
+        if self.pending_handoff.is_some() && (!newly_settled.is_empty() || display_changed) {
+            self.pending_handoff = None;
+        }
+        self.tree_change_observed |= display_changed;
+        let prior = self.snapshot.replace(snapshot);
         self.settled_spawn_call_ids
-            .extend(removed_call_ids.iter().cloned());
-        self.overlays.retain(|overlay| {
-            !removed_call_ids
+            .extend(newly_settled.iter().cloned());
+
+        if !newly_settled.is_empty()
+            && let (true, Some(prior), Some(settled_tasks), Some(latest)) = (
+                self.animations_enabled,
+                prior,
+                self.settled_visuals_for(&newly_settled),
+                self.snapshot.as_ref(),
+            )
+            && let Some(reveal_at) = plan_handoff(&prior, latest, &settled_tasks, now)
+        {
+            self.pending_handoff = Some(PendingTreeHandoff {
+                snapshot: prior,
+                reveal_at,
+                overlays: self
+                    .overlays
+                    .iter()
+                    .filter(|overlay| {
+                        newly_settled
+                            .iter()
+                            .any(|call_id| call_id == overlay.call_id())
+                    })
+                    .cloned()
+                    .collect(),
+            });
+        }
+        self.overlays
+            .retain(|overlay| !self.settled_spawn_call_ids.contains(overlay.call_id()));
+    }
+
+    fn settled_visuals_for(&self, call_ids: &[String]) -> Option<Vec<SettledTaskVisual>> {
+        let mut seen = HashSet::with_capacity(call_ids.len());
+        let mut tasks = Vec::new();
+        for call_id in call_ids {
+            seen.insert(call_id.as_str()).then_some(())?;
+            let mut overlays = self
+                .overlays
                 .iter()
-                .any(|call_id| call_id == overlay.call_id())
-        });
+                .filter(|overlay| overlay.call_id() == call_id);
+            let overlay = overlays.next()?;
+            if overlays.next().is_some() {
+                return None;
+            }
+            tasks.extend(overlay.settled_task_visuals()?);
+        }
+        Some(tasks)
     }
 
     pub(crate) fn clear_incomplete_spawn_overlays(&mut self, turn_id: Option<&str>) -> bool {
+        let pending_cleared = self
+            .pending_handoff
+            .take_if(|pending| {
+                pending
+                    .overlays
+                    .iter()
+                    .any(|overlay| turn_id.is_none_or(|turn_id| overlay.turn_id() == turn_id))
+            })
+            .is_some();
         let before = self.overlays.len();
         self.overlays
             .retain(|overlay| turn_id.is_some_and(|turn_id| overlay.turn_id() != turn_id));
-        self.overlays.len() != before
+        pending_cleared || self.overlays.len() != before
     }
 
     pub(crate) fn apply_spawn_progress(
@@ -203,6 +283,7 @@ impl SpineTreeViewState {
             snapshot,
             display_mode: SpineTreeDisplayMode::Pretty,
             spawn_overlays: self.overlays.clone(),
+            pending_handoff: self.pending_handoff.clone(),
             animations_enabled: self.animations_enabled,
         })
     }
@@ -213,6 +294,7 @@ impl SpineTreeViewState {
             snapshot,
             display_mode: SpineTreeDisplayMode::Pretty,
             spawn_overlays: Vec::new(),
+            pending_handoff: None,
             animations_enabled: false,
         })
     }
@@ -253,6 +335,7 @@ pub(crate) struct SpineTreeUpdateCell {
     snapshot: SpineTreeUpdatedNotification,
     display_mode: SpineTreeDisplayMode,
     spawn_overlays: Vec<SpineSpawnOverlay>,
+    pending_handoff: Option<PendingTreeHandoff>,
     animations_enabled: bool,
 }
 
@@ -264,17 +347,7 @@ enum SpineTreeDisplayMode {
 
 impl HistoryCell for SpineTreeUpdateCell {
     fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
-        match &self.display_mode {
-            SpineTreeDisplayMode::Pretty => pretty_display_lines(
-                &self.snapshot,
-                &self.spawn_overlays,
-                width,
-                self.animations_enabled,
-            ),
-            SpineTreeDisplayMode::Debug(node_id) => {
-                debug::display_lines(&self.snapshot, width, node_id.as_deref())
-            }
-        }
+        self.display_lines_at(width, Instant::now())
     }
 
     fn raw_lines(&self) -> Vec<Line<'static>> {
@@ -290,12 +363,61 @@ impl HistoryCell for SpineTreeUpdateCell {
         if !self.animations_enabled {
             return None;
         }
+        let now = Instant::now();
         let started_at = self
             .spawn_overlays
             .iter()
+            .chain(
+                self.pending_handoff
+                    .iter()
+                    .filter(|pending| now < pending.reveal_at)
+                    .flat_map(|pending| &pending.overlays),
+            )
             .map(SpineSpawnOverlay::animation_start)
             .min()?;
-        Some(started_at.elapsed().as_millis() as u64 / 50)
+        Some(now.saturating_duration_since(started_at).as_millis() as u64 / 50)
+    }
+}
+
+impl SpineTreeUpdateCell {
+    pub(crate) fn next_frame_in(&self, now: Instant) -> Option<Duration> {
+        if !self.animations_enabled || !matches!(self.display_mode, SpineTreeDisplayMode::Pretty) {
+            return None;
+        }
+        let pending = self
+            .pending_handoff
+            .as_ref()
+            .filter(|handoff| now < handoff.reveal_at);
+        self.spawn_overlays
+            .iter()
+            .chain(pending.into_iter().flat_map(|pending| &pending.overlays))
+            .filter_map(|overlay| overlay.next_completion_frame_in(now))
+            .chain(pending.map(|handoff| handoff.reveal_at - now))
+            .min()
+    }
+
+    fn display_lines_at(&self, width: u16, now: Instant) -> Vec<Line<'static>> {
+        match &self.display_mode {
+            SpineTreeDisplayMode::Pretty => {
+                let active_handoff = self
+                    .pending_handoff
+                    .as_ref()
+                    .filter(|pending| now < pending.reveal_at);
+                let mut overlays = self.spawn_overlays.clone();
+                if let Some(pending) = active_handoff {
+                    overlays.extend_from_slice(&pending.overlays);
+                }
+                pretty_display_lines(
+                    active_handoff.map_or(&self.snapshot, |pending| &pending.snapshot),
+                    &overlays,
+                    width,
+                    self.animations_enabled,
+                )
+            }
+            SpineTreeDisplayMode::Debug(node_id) => {
+                debug::display_lines(&self.snapshot, width, node_id.as_deref())
+            }
+        }
     }
 }
 
@@ -898,6 +1020,30 @@ mod tests {
             end: None,
             context_pressure: None,
             spawn_outcome: None,
+        }
+    }
+
+    fn spawn_progress(
+        call_id: &str,
+        tasks: &[(&str, &str, codex_app_server_protocol::CollabAgentStatus)],
+    ) -> SpineSpawnProgressUpdatedNotification {
+        SpineSpawnProgressUpdatedNotification {
+            thread_id: "thread".to_string(),
+            turn_id: "turn".to_string(),
+            call_id: call_id.to_string(),
+            tasks: tasks
+                .iter()
+                .enumerate()
+                .map(|(ordinal, (thread_id, summary, status))| {
+                    codex_app_server_protocol::SpineSpawnTaskProgress {
+                        ordinal: ordinal as u32,
+                        summary: (*summary).to_string(),
+                        thread_id: (*thread_id).to_string(),
+                        agent_path: Some(format!("/root/{thread_id}")),
+                        status: status.clone(),
+                    }
+                })
+                .collect(),
         }
     }
 
@@ -1660,6 +1806,353 @@ mod tests {
                 .display_lines(80),
         );
         assert!(rendered.contains("worker"), "{rendered}");
+    }
+
+    #[test]
+    fn settled_spawn_handoff_installs_authority_before_pretty_reveal() {
+        let start = Instant::now();
+        let mut state = SpineTreeViewState::new(true);
+        state.apply_tree_update_at(
+            snapshot(
+                "1",
+                vec![node("1", None, Some("root"), SpineTreeNodeStatus::Live)],
+            ),
+            start,
+        );
+        state.apply_spawn_progress(spawn_progress(
+            "spawn-animated",
+            &[
+                (
+                    "child-animated",
+                    "retiring worker",
+                    codex_app_server_protocol::CollabAgentStatus::Completed,
+                ),
+                (
+                    "child-errored",
+                    "errored worker",
+                    codex_app_server_protocol::CollabAgentStatus::Errored,
+                ),
+                (
+                    "child-aborted",
+                    "aborted worker",
+                    codex_app_server_protocol::CollabAgentStatus::Shutdown,
+                ),
+            ],
+        ));
+
+        let settle_now = Instant::now();
+        let mut committed = snapshot(
+            "1",
+            vec![
+                node("1", None, Some("root"), SpineTreeNodeStatus::Live),
+                node(
+                    "1.1",
+                    Some("1"),
+                    Some("imported worker"),
+                    SpineTreeNodeStatus::Closed,
+                ),
+                node(
+                    "1.2",
+                    Some("1"),
+                    Some("imported error"),
+                    SpineTreeNodeStatus::Closed,
+                ),
+                node(
+                    "1.3",
+                    Some("1"),
+                    Some("imported abort"),
+                    SpineTreeNodeStatus::Closed,
+                ),
+            ],
+        );
+        committed.nodes[1].spawn_outcome = Some(SpineSpawnOutcome::Completed);
+        committed.nodes[2].spawn_outcome = Some(SpineSpawnOutcome::Errored);
+        committed.nodes[3].spawn_outcome = Some(SpineSpawnOutcome::Aborted);
+        committed.snapshot_seq = 2;
+        committed.settled_spawn_call_ids = vec!["spawn-animated".to_string()];
+        state.apply_tree_update_at(committed.clone(), settle_now);
+
+        assert_eq!(state.snapshot(), Some(&committed));
+        let pending = state
+            .pending_handoff
+            .clone()
+            .expect("matching settlement should retain the presentation");
+        assert_eq!(pending.snapshot.snapshot_seq, 1);
+
+        let cell = state.render_cell().expect("live presentation");
+        assert!(cell.next_frame_in(settle_now).is_some());
+        let active_pretty = render(&cell.display_lines_at(80, settle_now));
+        assert!(active_pretty.contains("retiring worker"), "{active_pretty}");
+        assert!(active_pretty.contains("errored worker"), "{active_pretty}");
+        assert!(active_pretty.contains("aborted worker"), "{active_pretty}");
+        assert!(
+            !active_pretty.contains("imported worker"),
+            "{active_pretty}"
+        );
+        let raw = render(&cell.raw_lines());
+        assert!(raw.contains("imported worker"), "{raw}");
+        assert!(raw.contains("imported error"), "{raw}");
+        assert!(raw.contains("imported abort"), "{raw}");
+        assert!(!raw.contains("retiring worker"), "{raw}");
+
+        let revealed = render(&cell.display_lines_at(80, pending.reveal_at));
+        assert_eq!(cell.next_frame_in(pending.reveal_at), None);
+        assert!(!revealed.contains("retiring worker"), "{revealed}");
+        assert!(revealed.contains("imported worker"), "{revealed}");
+        state.apply_tree_update_at(committed, pending.reveal_at);
+        assert!(!state.has_spawn_call("spawn-animated"));
+        assert!(state.pending_handoff.is_none());
+    }
+
+    #[test]
+    fn clearing_turn_during_handoff_reveals_authoritative_tree() {
+        let start = Instant::now();
+        let mut state = SpineTreeViewState::new(true);
+        state.apply_tree_update_at(
+            snapshot(
+                "1",
+                vec![node("1", None, Some("root"), SpineTreeNodeStatus::Live)],
+            ),
+            start,
+        );
+        state.apply_spawn_progress(spawn_progress(
+            "spawn-clear",
+            &[(
+                "child-clear",
+                "retiring worker",
+                codex_app_server_protocol::CollabAgentStatus::Completed,
+            )],
+        ));
+        let mut committed = snapshot(
+            "1",
+            vec![
+                node("1", None, Some("root"), SpineTreeNodeStatus::Live),
+                node(
+                    "1.1",
+                    Some("1"),
+                    Some("imported worker"),
+                    SpineTreeNodeStatus::Closed,
+                ),
+            ],
+        );
+        committed.nodes[1].spawn_outcome = Some(SpineSpawnOutcome::Completed);
+        committed.snapshot_seq = 2;
+        committed.settled_spawn_call_ids = vec!["spawn-clear".to_string()];
+        state.apply_tree_update_at(committed, start);
+        assert!(state.pending_handoff.is_some());
+
+        assert!(state.clear_incomplete_spawn_overlays(Some("turn")));
+        assert!(state.pending_handoff.is_none());
+        let rendered = render(
+            &state
+                .render_cell()
+                .expect("authoritative tree")
+                .display_lines_at(80, start),
+        );
+        assert!(rendered.contains("imported worker"), "{rendered}");
+        assert!(!rendered.contains("retiring worker"), "{rendered}");
+    }
+
+    #[test]
+    fn handoff_mismatch_and_disabled_motion_reveal_immediately() {
+        for animations_enabled in [true, false] {
+            let start = Instant::now();
+            let mut state = SpineTreeViewState::new(animations_enabled);
+            state.apply_tree_update_at(
+                snapshot(
+                    "1",
+                    vec![node("1", None, Some("root"), SpineTreeNodeStatus::Live)],
+                ),
+                start,
+            );
+            state.apply_spawn_progress(spawn_progress(
+                "spawn-reveal",
+                &[(
+                    "child-reveal",
+                    "retiring worker",
+                    codex_app_server_protocol::CollabAgentStatus::Completed,
+                )],
+            ));
+
+            let mut committed = snapshot(
+                "1",
+                vec![
+                    node("1", None, Some("root"), SpineTreeNodeStatus::Live),
+                    node(
+                        "1.1",
+                        Some("1"),
+                        Some("imported worker"),
+                        SpineTreeNodeStatus::Closed,
+                    ),
+                ],
+            );
+            committed.nodes[1].spawn_outcome = Some(if animations_enabled {
+                SpineSpawnOutcome::Errored
+            } else {
+                SpineSpawnOutcome::Completed
+            });
+            committed.snapshot_seq = 2;
+            committed.settled_spawn_call_ids = vec!["spawn-reveal".to_string()];
+            state.apply_tree_update_at(committed, Instant::now());
+
+            assert!(state.pending_handoff.is_none());
+            assert!(!state.has_spawn_call("spawn-reveal"));
+            let rendered = render(
+                &state
+                    .render_cell()
+                    .expect("authoritative tree")
+                    .display_lines(80),
+            );
+            assert!(rendered.contains("imported worker"), "{rendered}");
+            assert!(!rendered.contains("retiring worker"), "{rendered}");
+        }
+    }
+
+    #[test]
+    fn missing_settled_overlay_reveals_authoritative_tree() {
+        let mut state = SpineTreeViewState::new(true);
+        state.apply_tree_update(snapshot(
+            "1",
+            vec![node("1", None, Some("root"), SpineTreeNodeStatus::Live)],
+        ));
+        state.apply_spawn_progress(spawn_progress(
+            "spawn-present",
+            &[(
+                "child-present",
+                "retiring worker",
+                codex_app_server_protocol::CollabAgentStatus::Completed,
+            )],
+        ));
+        let mut committed = snapshot(
+            "1",
+            vec![
+                node("1", None, Some("root"), SpineTreeNodeStatus::Live),
+                node(
+                    "1.1",
+                    Some("1"),
+                    Some("imported worker"),
+                    SpineTreeNodeStatus::Closed,
+                ),
+            ],
+        );
+        committed.nodes[1].spawn_outcome = Some(SpineSpawnOutcome::Completed);
+        committed.snapshot_seq = 2;
+        committed.settled_spawn_call_ids =
+            vec!["spawn-present".to_string(), "spawn-missing".to_string()];
+        state.apply_tree_update(committed);
+
+        assert!(state.pending_handoff.is_none());
+        assert!(!state.has_spawn_call("spawn-present"));
+    }
+
+    #[test]
+    fn settled_call_order_controls_handoff() {
+        for (settled_calls, expect_handoff) in [
+            (["spawn-completed", "spawn-errored"], true),
+            (["spawn-errored", "spawn-completed"], false),
+        ] {
+            let mut state = SpineTreeViewState::new(true);
+            state.apply_tree_update(snapshot(
+                "1",
+                vec![node("1", None, Some("root"), SpineTreeNodeStatus::Live)],
+            ));
+            state.apply_spawn_progress(spawn_progress(
+                "spawn-completed",
+                &[(
+                    "child-completed",
+                    "completed worker",
+                    codex_app_server_protocol::CollabAgentStatus::Completed,
+                )],
+            ));
+            state.apply_spawn_progress(spawn_progress(
+                "spawn-errored",
+                &[(
+                    "child-errored",
+                    "errored worker",
+                    codex_app_server_protocol::CollabAgentStatus::Errored,
+                )],
+            ));
+            let mut committed = snapshot(
+                "1",
+                vec![
+                    node("1", None, Some("root"), SpineTreeNodeStatus::Live),
+                    node(
+                        "1.1",
+                        Some("1"),
+                        Some("imported completion"),
+                        SpineTreeNodeStatus::Closed,
+                    ),
+                    node(
+                        "1.2",
+                        Some("1"),
+                        Some("imported error"),
+                        SpineTreeNodeStatus::Closed,
+                    ),
+                ],
+            );
+            committed.nodes[1].spawn_outcome = Some(SpineSpawnOutcome::Completed);
+            committed.nodes[2].spawn_outcome = Some(SpineSpawnOutcome::Errored);
+            committed.snapshot_seq = 2;
+            committed.settled_spawn_call_ids =
+                settled_calls.map(str::to_string).into_iter().collect();
+            state.apply_tree_update(committed);
+
+            assert_eq!(state.pending_handoff.is_some(), expect_handoff);
+            assert!(!state.has_spawn_call("spawn-completed"));
+            assert!(!state.has_spawn_call("spawn-errored"));
+        }
+    }
+
+    #[test]
+    fn changed_authoritative_outcome_finishes_an_active_handoff_fail_open() {
+        let start = Instant::now();
+        let mut state = SpineTreeViewState::new(true);
+        state.apply_tree_update_at(
+            snapshot(
+                "1",
+                vec![node("1", None, Some("root"), SpineTreeNodeStatus::Live)],
+            ),
+            start,
+        );
+        state.apply_spawn_progress(spawn_progress(
+            "spawn-generation",
+            &[(
+                "child-generation",
+                "retiring worker",
+                codex_app_server_protocol::CollabAgentStatus::Completed,
+            )],
+        ));
+        let mut committed = snapshot(
+            "1",
+            vec![
+                node("1", None, Some("root"), SpineTreeNodeStatus::Live),
+                node(
+                    "1.1",
+                    Some("1"),
+                    Some("imported worker"),
+                    SpineTreeNodeStatus::Closed,
+                ),
+            ],
+        );
+        committed.nodes[1].spawn_outcome = Some(SpineSpawnOutcome::Completed);
+        committed.snapshot_seq = 2;
+        committed.settled_spawn_call_ids = vec!["spawn-generation".to_string()];
+        state.apply_tree_update_at(committed.clone(), Instant::now());
+        assert!(state.pending_handoff.is_some());
+
+        committed.snapshot_seq = 3;
+        committed.nodes[1].spawn_outcome = Some(SpineSpawnOutcome::Errored);
+        state.apply_tree_update_at(committed, Instant::now());
+
+        assert!(state.pending_handoff.is_none());
+        assert!(!state.has_spawn_call("spawn-generation"));
+        let rendered = render(
+            &state
+                .render_cell()
+                .expect("new generation")
+                .display_lines(80),
+        );
+        assert!(rendered.contains("imported worker"), "{rendered}");
     }
 
     #[test]

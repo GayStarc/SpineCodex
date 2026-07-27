@@ -1755,7 +1755,7 @@ mod tests {
     }
 
     #[test]
-    fn spine_spawn_status_maps_native_lifecycle() {
+    fn spine_spawn_status_maps_only_running_evidence() {
         let active = ServerNotification::ThreadStatusChanged(
             codex_app_server_protocol::ThreadStatusChangedNotification {
                 thread_id: "child".to_string(),
@@ -1775,10 +1775,7 @@ mod tests {
                 status: ThreadStatus::SystemError,
             },
         );
-        assert_eq!(
-            spine_spawn_status(&system_error),
-            Some(CollabAgentStatus::Errored)
-        );
+        assert_eq!(spine_spawn_status(&system_error), None);
 
         let not_loaded = ServerNotification::ThreadStatusChanged(
             codex_app_server_protocol::ThreadStatusChangedNotification {

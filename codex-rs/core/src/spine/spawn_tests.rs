@@ -141,6 +141,33 @@ fn coordinator_helpers_keep_safe_names_and_truthful_terminal_results() {
 }
 
 #[test]
+fn initial_progress_normalizes_fast_terminal_statuses() {
+    let thread_id = codex_protocol::ThreadId::new();
+    assert_eq!(
+        normalized_progress_status(0, thread_id, AgentStatus::Running),
+        AgentStatus::Running
+    );
+    for status in [
+        AgentStatus::Completed(None),
+        AgentStatus::Completed(Some("  ".to_string())),
+    ] {
+        assert!(matches!(
+            normalized_progress_status(0, thread_id, status),
+            AgentStatus::Errored(message)
+                if message.contains("non-empty final memory")
+        ));
+    }
+    assert!(matches!(
+        normalized_progress_status(
+            0,
+            thread_id,
+            AgentStatus::Completed(Some("memory".to_string())),
+        ),
+        AgentStatus::Completed(None)
+    ));
+}
+
+#[test]
 fn terminal_status_matrix_produces_one_total_ordered_receipt() {
     let tasks = (0..4)
         .map(|ordinal| codex_spine_core::SpawnTask {
@@ -154,17 +181,20 @@ fn terminal_status_matrix_produces_one_total_ordered_receipt() {
         AgentStatus::Errored("provider failure".to_string()),
         AgentStatus::Shutdown,
     ];
-    let results = statuses
+    let normalized = statuses
         .into_iter()
         .enumerate()
         .map(|(ordinal, status)| {
-            Some(result_from_status(
-                ordinal,
-                codex_protocol::ThreadId::new(),
-                status,
-            ))
+            let result = result_from_status(ordinal, codex_protocol::ThreadId::new(), status);
+            let progress_status = result_status(&result);
+            (Some(result), progress_status)
         })
-        .collect();
+        .collect::<Vec<_>>();
+    let progress_statuses = normalized
+        .iter()
+        .map(|(_, status)| status.clone())
+        .collect::<Vec<_>>();
+    let results = normalized.into_iter().map(|(result, _)| result).collect();
 
     let receipt = finish_receipt(&tasks, results).expect("terminal matrix must be total");
     assert_eq!(
@@ -181,6 +211,16 @@ fn terminal_status_matrix_produces_one_total_ordered_receipt() {
         ]
     );
     assert_eq!(receipt.results[0].diagnostic, None);
+    assert!(matches!(
+        progress_statuses.as_slice(),
+        [
+            AgentStatus::Completed(None),
+            AgentStatus::Errored(missing),
+            AgentStatus::Errored(error),
+            AgentStatus::Shutdown,
+        ] if missing.contains("non-empty final memory")
+            && error.contains("provider failure")
+    ));
     assert!(receipt.results[1..].iter().all(|result| {
         !result.memory_body.trim().is_empty()
             && result

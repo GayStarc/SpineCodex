@@ -141,6 +141,13 @@ impl TranscriptAreaRenderable<'_> {
 
 impl Renderable for ChatWidget {
     fn render(&self, area: Rect, buf: &mut Buffer) {
+        if let Some(delay) = self
+            .live_spine_tree_cell
+            .as_ref()
+            .and_then(|cell| cell.next_frame_in(Instant::now()))
+        {
+            self.frame_requester.schedule_frame_in(delay);
+        }
         self.as_renderable().render(area, buf);
         self.last_rendered_width.set(Some(area.width as usize));
     }
