@@ -1,5 +1,6 @@
 use super::spine_spawn_progress::SpineSpawnOverlay;
 use super::*;
+use crate::product_brand::SPINE_BRAND_COLOR;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::SpineSpawnOutcome;
 use codex_app_server_protocol::SpineSpawnProgressUpdatedNotification;
@@ -348,7 +349,7 @@ fn pretty_raw_lines(snapshot: &SpineTreeUpdatedNotification) -> Vec<Line<'static
 }
 
 fn pretty_header(_snapshot: &SpineTreeUpdatedNotification) -> Line<'static> {
-    vec!["• ".dim(), "Spine Tree".green().bold()].into()
+    vec!["• ".dim(), "Spine Tree".fg(SPINE_BRAND_COLOR).bold()].into()
 }
 fn render_pretty_node(
     snapshot: &SpineTreeUpdatedNotification,
@@ -910,7 +911,7 @@ mod tests {
     }
 
     #[test]
-    fn renders_pretty_header_in_green_bold() {
+    fn renders_pretty_header_in_spine_brand_color() {
         let header = pretty_header(&snapshot(
             "1",
             vec![node(
@@ -923,7 +924,7 @@ mod tests {
         let title = &header.spans[1];
 
         assert_eq!(title.content.as_ref(), "Spine Tree");
-        assert_eq!(title.style.fg, Some(Color::Green));
+        assert_eq!(title.style.fg, Some(SPINE_BRAND_COLOR));
         assert!(title.style.add_modifier.contains(Modifier::BOLD));
     }
 

@@ -1,6 +1,7 @@
 use super::plain_lines;
 use super::spine_spawn_progress::SpineSpawnOverlay;
 use crate::motion::ORGANIC_ACTIVITY_WORDS;
+use crate::product_brand::SPINE_BRAND_COLOR;
 use codex_app_server_protocol::CollabAgentStatus;
 use codex_app_server_protocol::ItemCompletedNotification;
 use codex_app_server_protocol::ServerNotification;
@@ -9,7 +10,6 @@ use codex_app_server_protocol::SpineSpawnTaskProgress;
 use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::ThreadStatus;
 use codex_app_server_protocol::ThreadStatusChangedNotification;
-use ratatui::style::Color;
 use ratatui::style::Modifier;
 use ratatui::text::Line;
 use std::collections::HashSet;
@@ -78,10 +78,20 @@ fn renders_live_mixed_child_statuses() {
     }
     let running_activity_word = &lines[1].spans[1];
     assert_eq!(running_activity_word.content.as_ref(), running_word);
+    let completed_activity_word = lines[0]
+        .spans
+        .iter()
+        .find(|span| span.content == completed_word)
+        .expect("completed activity word");
+    assert_eq!(
+        completed_activity_word.style.fg,
+        Some(SPINE_BRAND_COLOR),
+        "completed activity word should use the Spine brand color: {lines:?}"
+    );
     assert_eq!(
         running_activity_word.style.fg,
-        Some(Color::Green),
-        "running activity word should use the Spine Tree green: {lines:?}"
+        Some(SPINE_BRAND_COLOR),
+        "running activity word should use the Spine brand color: {lines:?}"
     );
     for activity_line in &lines[2..6] {
         assert!(

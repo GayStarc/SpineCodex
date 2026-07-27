@@ -11,6 +11,7 @@ use crate::history_cell::HistoryCell;
 use crate::legacy_core::config::Config;
 use crate::legacy_core::config::ConfigBuilder;
 use crate::legacy_core::config::PermissionProfileSnapshot;
+use crate::product_brand::SPINE_BRAND_COLOR;
 use crate::status::StatusAccountDisplay;
 use crate::status::remote_connection::RemoteConnectionStatus;
 use crate::test_support::PathBufExt;
@@ -280,7 +281,7 @@ async fn status_brand_tracks_spine_jit() {
         .expect("enable spine_jit");
     let (spine_brand, spine_color) = render_brand(&config);
     assert_snapshot!(spine_brand, @"Spine Codex");
-    assert_eq!(spine_color, Some(Color::Green));
+    assert_eq!(spine_color, Some(SPINE_BRAND_COLOR));
 }
 
 fn permissions_text_for(config: &Config) -> Option<String> {

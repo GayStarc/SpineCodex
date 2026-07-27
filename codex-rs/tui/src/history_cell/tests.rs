@@ -6,6 +6,7 @@ use crate::exec_cell::ExecCall;
 use crate::exec_cell::ExecCell;
 use crate::legacy_core::config::Config;
 use crate::legacy_core::config::ConfigBuilder;
+use crate::product_brand::SPINE_BRAND_COLOR;
 use crate::session_state::ThreadSessionState;
 use crate::wrapping::word_wrap_lines;
 use codex_app_server_protocol::AskForApproval;
@@ -1587,7 +1588,7 @@ async fn session_header_uses_spine_brand_when_spine_jit_is_enabled() {
     │ directory: /tmp/project             │
     ╰─────────────────────────────────────╯
     ");
-    assert_eq!(lines[1].spans[2].style.fg, Some(Color::Green));
+    assert_eq!(lines[1].spans[2].style.fg, Some(SPINE_BRAND_COLOR));
     assert_eq!(render_lines(&cell.raw_lines())[0], "Spine Codex (vtest)");
 }
 

@@ -8,6 +8,7 @@ use ratatui::style::Style;
 use ratatui::text::Span;
 
 use crate::color::blend;
+use crate::product_brand::SPINE_BRAND_COLOR;
 use crate::terminal_palette::default_bg;
 use crate::terminal_palette::default_fg;
 
@@ -39,10 +40,8 @@ pub(crate) fn green_shimmer_spans(text: &str) -> Vec<Span<'static>> {
     )
 }
 
-pub(crate) fn spine_tree_green_shimmer_spans(text: &str) -> Vec<Span<'static>> {
-    shimmer_spans_with_style(text, |intensity| {
-        color_for_level(intensity).fg(Color::Green)
-    })
+pub(crate) fn spine_brand_shimmer_spans(text: &str) -> Vec<Span<'static>> {
+    shimmer_spans_with_style(text, spine_brand_style_for_intensity)
 }
 
 pub(crate) fn motion_green_style() -> Style {
@@ -143,5 +142,14 @@ fn color_for_level(intensity: f32) -> Style {
         Style::default()
     } else {
         Style::default().add_modifier(Modifier::BOLD)
+    }
+}
+
+fn spine_brand_style_for_intensity(intensity: f32) -> Style {
+    let style = Style::default().fg(SPINE_BRAND_COLOR);
+    if intensity < 0.6 {
+        style
+    } else {
+        style.add_modifier(Modifier::BOLD)
     }
 }

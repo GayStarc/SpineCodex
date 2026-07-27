@@ -17,6 +17,7 @@ use crate::onboarding::keys;
 use crate::onboarding::onboarding_screen::KeyboardHandler;
 use crate::onboarding::onboarding_screen::StepStateProvider;
 use crate::product_brand::ProductBrand;
+use crate::product_brand::SPINE_BRAND_COLOR;
 use crate::tui::FrameRequester;
 
 use super::onboarding_screen::StepState;
@@ -86,7 +87,7 @@ impl WelcomeWidget {
                 ", OpenAI's command-line coding agent".into(),
             ]),
             ProductBrand::Spine => {
-                spans.extend(["Spine".green().bold(), " Codex".bold()]);
+                spans.extend(["Spine".fg(SPINE_BRAND_COLOR).bold(), " Codex".bold()]);
             }
         }
         Line::from(spans)
@@ -138,7 +139,6 @@ mod tests {
     use pretty_assertions::assert_eq;
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
-    use ratatui::style::Color;
 
     static VARIANT_A: [&str; 1] = ["frame-a"];
     static VARIANT_B: [&str; 1] = ["frame-b"];
@@ -206,7 +206,7 @@ mod tests {
         .with_brand(ProductBrand::Spine);
         let spine_line = spine.welcome_line();
         assert_eq!(spine_line.to_string(), "  Welcome to Spine Codex");
-        assert_eq!(spine_line.spans[2].style.fg, Some(Color::Green));
+        assert_eq!(spine_line.spans[2].style.fg, Some(SPINE_BRAND_COLOR));
     }
 
     #[test]

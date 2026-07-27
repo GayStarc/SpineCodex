@@ -1,8 +1,9 @@
 use crate::motion::MotionMode;
 use crate::motion::ORGANIC_ACTIVITY_WORDS;
-use crate::motion::spine_tree_green_shimmer_text;
+use crate::motion::spine_brand_shimmer_text;
 use crate::multi_agents::AgentActivityPreview;
 use crate::multi_agents::AgentActivityTracker;
+use crate::product_brand::SPINE_BRAND_COLOR;
 use crate::render::line_utils::push_owned_lines;
 use crate::wrapping::RtOptions;
 use crate::wrapping::adaptive_wrap_line;
@@ -607,13 +608,13 @@ fn status_and_activity_word_spans(
 ) -> Vec<Span<'static>> {
     if *status == CollabAgentStatus::Running {
         let motion_mode = MotionMode::from_animations_enabled(animations_enabled);
-        return spine_tree_green_shimmer_text(activity_word, motion_mode);
+        return spine_brand_shimmer_text(activity_word, motion_mode);
     }
 
     vec![
         status_span(status),
         " ".into(),
-        Span::from(activity_word.to_string()).green(),
+        Span::from(activity_word.to_string()).fg(SPINE_BRAND_COLOR),
     ]
 }
 

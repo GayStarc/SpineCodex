@@ -1,7 +1,11 @@
 use crate::legacy_core::config::Config;
 use codex_features::Feature;
 use ratatui::prelude::Span;
+use ratatui::style::Color;
 use ratatui::style::Stylize;
+
+/// Shared foreground color for Spine product identity and Spine-owned activity.
+pub(crate) const SPINE_BRAND_COLOR: Color = Color::LightGreen;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) enum ProductBrand {
@@ -23,7 +27,7 @@ impl ProductBrand {
         match self {
             Self::Codex => vec![Span::from("OpenAI Codex").bold()],
             Self::Spine => vec![
-                Span::from("Spine").green().bold(),
+                Span::from("Spine").fg(SPINE_BRAND_COLOR).bold(),
                 Span::from(" Codex").bold(),
             ],
         }

@@ -13,10 +13,11 @@ use ratatui::style::Modifier;
 use ratatui::style::Stylize;
 use ratatui::text::Span;
 
+use crate::product_brand::SPINE_BRAND_COLOR;
 use crate::shimmer::green_shimmer_spans;
 use crate::shimmer::motion_green_style;
 use crate::shimmer::shimmer_spans;
-use crate::shimmer::spine_tree_green_shimmer_spans;
+use crate::shimmer::spine_brand_shimmer_spans;
 
 pub(crate) const ORGANIC_ACTIVITY_WORDS: &[&str] = &[
     "Germinating",
@@ -155,17 +156,14 @@ pub(crate) fn green_shimmer_text(text: &str, motion_mode: MotionMode) -> Vec<Spa
     }
 }
 
-pub(crate) fn spine_tree_green_shimmer_text(
-    text: &str,
-    motion_mode: MotionMode,
-) -> Vec<Span<'static>> {
+pub(crate) fn spine_brand_shimmer_text(text: &str, motion_mode: MotionMode) -> Vec<Span<'static>> {
     match motion_mode {
-        MotionMode::Animated => spine_tree_green_shimmer_spans(text),
+        MotionMode::Animated => spine_brand_shimmer_spans(text),
         MotionMode::Reduced => {
             if text.is_empty() {
                 Vec::new()
             } else {
-                vec![Span::from(text.to_string()).green()]
+                vec![Span::from(text.to_string()).fg(SPINE_BRAND_COLOR)]
             }
         }
     }
@@ -230,9 +228,9 @@ mod tests {
     }
 
     #[test]
-    fn spine_tree_green_shimmer_text_uses_tree_green() {
+    fn spine_brand_shimmer_text_uses_brand_color_without_dimming() {
         for motion_mode in [MotionMode::Animated, MotionMode::Reduced] {
-            let spans = spine_tree_green_shimmer_text("Growing", motion_mode);
+            let spans = spine_brand_shimmer_text("Growing", motion_mode);
             assert_eq!(
                 spans
                     .iter()
@@ -243,11 +241,16 @@ mod tests {
             assert!(
                 spans
                     .iter()
-                    .all(|span| span.style.fg == Some(ratatui::style::Color::Green))
+                    .all(|span| span.style.fg == Some(SPINE_BRAND_COLOR))
+            );
+            assert!(
+                spans
+                    .iter()
+                    .all(|span| !span.style.add_modifier.contains(Modifier::DIM))
             );
         }
-        assert!(spine_tree_green_shimmer_text("", MotionMode::Animated).is_empty());
-        assert!(spine_tree_green_shimmer_text("", MotionMode::Reduced).is_empty());
+        assert!(spine_brand_shimmer_text("", MotionMode::Animated).is_empty());
+        assert!(spine_brand_shimmer_text("", MotionMode::Reduced).is_empty());
     }
 
     #[test]
