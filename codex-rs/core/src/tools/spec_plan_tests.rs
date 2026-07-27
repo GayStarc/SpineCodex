@@ -351,6 +351,64 @@ async fn spine_spawn_is_independent_from_multi_agent_v2() {
 }
 
 #[tokio::test]
+async fn spine_spawn_schema_tracks_configured_child_capacity() {
+    fn spawn_task_bounds(plan: &ToolPlanProbe) -> (Option<usize>, Option<usize>) {
+        let ToolSpec::Namespace(namespace) = plan.visible_spec("spine") else {
+            panic!("expected Spine namespace");
+        };
+        let Some(ResponsesApiNamespaceTool::Function(spawn)) =
+            namespace.tools.iter().find(|tool| {
+                matches!(
+                    tool,
+                    ResponsesApiNamespaceTool::Function(tool) if tool.name == "spawn"
+                )
+            })
+        else {
+            panic!("expected spine.spawn");
+        };
+        let tasks = spawn
+            .parameters
+            .properties
+            .as_ref()
+            .and_then(|properties| properties.get("tasks"))
+            .expect("spawn tasks schema");
+        (tasks.min_items, tasks.max_items)
+    }
+
+    let defaults = probe(|turn| {
+        set_features(turn, &[Feature::SpineJit, Feature::SpineSpawn]);
+        set_feature(turn, Feature::MultiAgentV2, /*enabled*/ false);
+    })
+    .await;
+    assert_eq!(spawn_task_bounds(&defaults), (Some(2), Some(3)));
+
+    let configured = probe(|turn| {
+        set_features(turn, &[Feature::SpineJit, Feature::SpineSpawn]);
+        set_feature(turn, Feature::MultiAgentV2, /*enabled*/ false);
+        update_config(turn, |config| {
+            config.multi_agent_v2.max_concurrent_threads_per_session = 6;
+        });
+    })
+    .await;
+    assert_eq!(spawn_task_bounds(&configured), (Some(2), Some(5)));
+
+    let insufficient = probe(|turn| {
+        set_features(turn, &[Feature::SpineJit, Feature::SpineSpawn]);
+        set_feature(turn, Feature::MultiAgentV2, /*enabled*/ false);
+        update_config(turn, |config| {
+            config.multi_agent_v2.max_concurrent_threads_per_session = 2;
+        });
+    })
+    .await;
+    assert!(
+        !insufficient
+            .namespace_function_names("spine")
+            .contains(&"spawn".to_string())
+    );
+    insufficient.assert_registered_lacks(&[&ToolName::namespaced("spine", "spawn").to_string()]);
+}
+
+#[tokio::test]
 async fn multi_agent_surface_requires_matching_feature_for_resolved_runtime() {
     for runtime in [
         MultiAgentVersion::Disabled,

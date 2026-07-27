@@ -701,7 +701,13 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut
         && features.enabled(Feature::SpineSpawn)
         && turn_context.collaboration_mode.mode != codex_protocol::config_types::ModeKind::Plan
     {
-        planned_tools.add(SpineHandler::spawn());
+        let max_tasks = turn_context
+            .config
+            .effective_agent_max_threads(MultiAgentVersion::V2)
+            .unwrap_or_default();
+        if max_tasks >= 2 {
+            planned_tools.add(SpineHandler::spawn(max_tasks));
+        }
     }
     if features.enabled(Feature::SpineTrim) {
         planned_tools.add(SpineHandler::trim());

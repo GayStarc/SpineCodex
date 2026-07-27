@@ -90,49 +90,59 @@ pub(crate) fn create_spine_tool(name: &str) -> ToolSpec {
             ),
             output_schema: None,
         },
-        SPINE_SPAWN => {
-            let task = JsonSchema::object(
-                BTreeMap::from([
-                    (
-                        "summary".to_string(),
-                        JsonSchema::string(Some(
-                            "Concise branch label, distinct within this spawn call, and its independently owned outcome."
-                                .to_string(),
-                        )),
-                    ),
-                    (
-                        "prompt".to_string(),
-                        JsonSchema::string(Some(
-                            "Complete initial branch assignment. If coordination is required, identify relevant peer branch summaries and roles, the common coordination root (recommended basename: `coordination_{task_id}_{timestamp}/`), this branch's single-writer coordination path, the artifact format and update/read protocol, synchronization points, and a bounded fallback for unavailable peer coordination state.".to_string(),
-                        )),
-                    ),
-                ]),
-                Some(vec!["summary".to_string(), "prompt".to_string()]),
-                Some(false.into()),
-            );
-            ResponsesApiTool {
-                name: SPINE_SPAWN.to_string(),
-                description: SPAWN_DESCRIPTION.to_string(),
-                strict: false,
-                defer_loading: None,
-                parameters: JsonSchema::object(
-                    BTreeMap::from([(
-                        "tasks".to_string(),
-                        JsonSchema::array(
-                            task,
-                            Some("Ordered differentiated branch assignments.".to_string()),
-                        )
-                        .with_min_items(2),
-                    )]),
-                    Some(vec!["tasks".to_string()]),
-                    Some(false.into()),
-                ),
-                output_schema: None,
-            }
-        }
         _ => panic!("unknown Spine tool: {name}"),
     };
 
+    wrap_spine_tool(function)
+}
+
+pub(crate) fn create_spine_spawn_tool(max_items: usize) -> ToolSpec {
+    assert!(
+        max_items >= 2,
+        "spine.spawn schema requires capacity for at least two tasks"
+    );
+    let task = JsonSchema::object(
+        BTreeMap::from([
+            (
+                "summary".to_string(),
+                JsonSchema::string(Some(
+                    "Concise branch label, distinct within this spawn call, and its independently owned outcome."
+                        .to_string(),
+                )),
+            ),
+            (
+                "prompt".to_string(),
+                JsonSchema::string(Some(
+                    "Complete initial branch assignment. If coordination is required, identify relevant peer branch summaries and roles, the common coordination root (recommended basename: `coordination_{task_id}_{timestamp}/`), this branch's single-writer coordination path, the artifact format and update/read protocol, synchronization points, and a bounded fallback for unavailable peer coordination state.".to_string(),
+                )),
+            ),
+        ]),
+        Some(vec!["summary".to_string(), "prompt".to_string()]),
+        Some(false.into()),
+    );
+    wrap_spine_tool(ResponsesApiTool {
+        name: SPINE_SPAWN.to_string(),
+        description: SPAWN_DESCRIPTION.to_string(),
+        strict: false,
+        defer_loading: None,
+        parameters: JsonSchema::object(
+            BTreeMap::from([(
+                "tasks".to_string(),
+                JsonSchema::array(
+                    task,
+                    Some("Ordered differentiated branch assignments.".to_string()),
+                )
+                .with_min_items(2)
+                .with_max_items(max_items),
+            )]),
+            Some(vec!["tasks".to_string()]),
+            Some(false.into()),
+        ),
+        output_schema: None,
+    })
+}
+
+fn wrap_spine_tool(function: ResponsesApiTool) -> ToolSpec {
     ToolSpec::Namespace(ResponsesApiNamespace {
         name: SPINE_NAMESPACE.to_string(),
         description: "Use Spine to shape the work.".to_string(),
@@ -201,7 +211,7 @@ mod tests {
 
     #[test]
     fn v3_schema_exposes_only_control_tools() {
-        for name in [SPINE_OPEN, SPINE_CLOSE, SPINE_NEXT, SPINE_SPAWN] {
+        for name in [SPINE_OPEN, SPINE_CLOSE, SPINE_NEXT] {
             let ToolSpec::Namespace(namespace) = create_spine_tool(name) else {
                 panic!("expected namespace spec");
             };
@@ -210,6 +220,11 @@ mod tests {
             assert_eq!(function.name, name);
             assert!(!function.name.contains("tree"));
         }
+        let ToolSpec::Namespace(namespace) = create_spine_spawn_tool(3) else {
+            panic!("expected namespace spec");
+        };
+        let ResponsesApiNamespaceTool::Function(function) = &namespace.tools[0];
+        assert_eq!(function.name, SPINE_SPAWN);
     }
 
     #[test]
@@ -241,8 +256,8 @@ mod tests {
     }
 
     #[test]
-    fn spawn_schema_requires_two_exact_task_objects() {
-        let ToolSpec::Namespace(namespace) = create_spine_tool(SPINE_SPAWN) else {
+    fn spawn_schema_bounds_exact_task_objects_by_child_capacity() {
+        let ToolSpec::Namespace(namespace) = create_spine_spawn_tool(5) else {
             panic!("expected namespace spec");
         };
         let ResponsesApiNamespaceTool::Function(function) = &namespace.tools[0];
@@ -250,6 +265,7 @@ mod tests {
         assert_eq!(schema["required"], serde_json::json!(["tasks"]));
         assert_eq!(schema["additionalProperties"], serde_json::json!(false));
         assert_eq!(schema["properties"]["tasks"]["minItems"], 2);
+        assert_eq!(schema["properties"]["tasks"]["maxItems"], 5);
         assert_eq!(
             schema["properties"]["tasks"]["items"]["required"],
             serde_json::json!(["summary", "prompt"])
