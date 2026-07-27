@@ -10298,6 +10298,49 @@ smart_approvals = true
 }
 
 #[tokio::test]
+async fn spine_spawn_config_is_independent_and_matches_multi_agent_v2_default()
+-> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    std::fs::write(
+        codex_home.path().join(CONFIG_TOML_FILE),
+        r#"[features.spine_spawn]
+enabled = true
+max_concurrent_threads_per_session = 6
+
+[features.multi_agent_v2]
+enabled = false
+max_concurrent_threads_per_session = 2
+"#,
+    )?;
+
+    let config = ConfigBuilder::without_managed_config_for_tests()
+        .codex_home(codex_home.path().to_path_buf())
+        .fallback_cwd(Some(codex_home.path().to_path_buf()))
+        .build()
+        .await?;
+
+    assert!(config.features.enabled(Feature::SpineSpawn));
+    assert!(!config.features.enabled(Feature::MultiAgentV2));
+    assert_eq!(config.spine_spawn.max_concurrent_threads_per_session, 6);
+    assert_eq!(config.effective_spine_spawn_max_threads(), 5);
+    assert_eq!(config.multi_agent_v2.max_concurrent_threads_per_session, 2);
+
+    let default_codex_home = TempDir::new()?;
+    let defaults = ConfigBuilder::without_managed_config_for_tests()
+        .codex_home(default_codex_home.path().to_path_buf())
+        .build()
+        .await?;
+    assert_eq!(
+        defaults.spine_spawn.max_concurrent_threads_per_session,
+        defaults.multi_agent_v2.max_concurrent_threads_per_session
+    );
+    assert_eq!(defaults.spine_spawn.max_concurrent_threads_per_session, 4);
+    assert_eq!(defaults.effective_spine_spawn_max_threads(), 3);
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn multi_agent_v2_config_from_feature_table() -> std::io::Result<()> {
     let codex_home = TempDir::new()?;
     std::fs::write(

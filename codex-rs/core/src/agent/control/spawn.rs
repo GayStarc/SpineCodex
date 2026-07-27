@@ -292,19 +292,15 @@ impl AgentControl {
             .await;
 
         let count = requests.len();
-        let execution_reservations = self.reserve_execution_slots(count)?;
-        let residency_slots = self
-            .reserve_v2_residency_slots(&state, &config, count, parent_thread_id)
-            .await?;
+        let execution_reservations = self.reserve_spine_spawn_slots(count)?;
         let registry_reservations = self
             .state
             .reserve_spawn_slots(/*max_threads*/ None, count)?;
 
         let mut prepared = Vec::with_capacity(count);
-        for (((request, mut reservation), residency_slot), execution_reservation) in requests
+        for ((request, mut reservation), execution_reservation) in requests
             .into_iter()
             .zip(registry_reservations)
-            .zip(residency_slots)
             .zip(execution_reservations)
         {
             let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
@@ -345,7 +341,7 @@ impl AgentControl {
                 session_source: Some(session_source),
                 agent_metadata,
                 reservation,
-                residency_slot: Some(residency_slot),
+                residency_slot: None,
                 execution_reservation: Some(execution_reservation),
                 inheritance,
             });

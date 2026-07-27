@@ -27,6 +27,7 @@ pub use feature_configs::NetworkProxyModeToml;
 pub use feature_configs::NetworkProxyUnixSocketPermissionToml;
 use feature_configs::RemovedAppsMcpPathOverrideConfigToml;
 pub use feature_configs::RolloutBudgetConfigToml;
+pub use feature_configs::SpineSpawnConfigToml;
 pub use feature_configs::TokenBudgetConfigToml;
 use legacy::LegacyFeatureToggles;
 pub use legacy::legacy_feature_keys;
@@ -655,6 +656,8 @@ pub struct FeaturesToml {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub multi_agent_v2: Option<FeatureToml<MultiAgentV2ConfigToml>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spine_spawn: Option<FeatureToml<SpineSpawnConfigToml>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_budget: Option<FeatureToml<TokenBudgetConfigToml>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rollout_budget: Option<FeatureToml<RolloutBudgetConfigToml>>,
@@ -692,6 +695,9 @@ impl FeaturesToml {
         if let Some(enabled) = self.multi_agent_v2.as_ref().and_then(FeatureToml::enabled) {
             entries.insert(Feature::MultiAgentV2.key().to_string(), enabled);
         }
+        if let Some(enabled) = self.spine_spawn.as_ref().and_then(FeatureToml::enabled) {
+            entries.insert(Feature::SpineSpawn.key().to_string(), enabled);
+        }
         if let Some(enabled) = self.token_budget.as_ref().and_then(FeatureToml::enabled) {
             entries.insert(Feature::TokenBudget.key().to_string(), enabled);
         }
@@ -716,6 +722,7 @@ impl FeaturesToml {
         let Self {
             code_mode,
             multi_agent_v2,
+            spine_spawn,
             token_budget,
             rollout_budget,
             current_time_reminder,
@@ -732,6 +739,8 @@ impl FeaturesToml {
                 materialize_resolved_feature_enabled(code_mode, enabled);
             } else if spec.id == Feature::MultiAgentV2 {
                 materialize_resolved_feature_enabled(multi_agent_v2, enabled);
+            } else if spec.id == Feature::SpineSpawn {
+                materialize_resolved_feature_enabled(spine_spawn, enabled);
             } else if spec.id == Feature::TokenBudget {
                 materialize_resolved_feature_enabled(token_budget, enabled);
             } else if spec.id == Feature::RolloutBudget {

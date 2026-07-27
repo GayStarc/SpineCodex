@@ -125,6 +125,7 @@ pub(crate) struct AgentControl {
     state: Arc<AgentRegistry>,
     v2_residency: Arc<V2Residency>,
     agent_execution_limiter: Arc<AgentExecutionLimiter>,
+    spine_spawn_limiter: Arc<AgentExecutionLimiter>,
     /// Session-scoped state shared by the root thread and every cloned sub-agent control handle.
     rollout_budget: Arc<RolloutBudget>,
 }
@@ -145,9 +146,15 @@ impl AgentControl {
         control
     }
 
-    pub(crate) fn with_session_id(mut self, session_id: SessionId, max_threads: usize) -> Self {
+    pub(crate) fn with_session_id(
+        mut self,
+        session_id: SessionId,
+        max_threads: usize,
+        spine_spawn_max_threads: usize,
+    ) -> Self {
         self.session_id = session_id;
         self.agent_execution_limiter.initialize(max_threads);
+        self.spine_spawn_limiter.initialize(spine_spawn_max_threads);
         self
     }
 

@@ -561,7 +561,7 @@ fn capacity_rejection_receipts(
                      agents (existing agents also consume this capacity). Admission is \
                      all-or-nothing, so no child agents from this batch were created. Retry \
                      spine.spawn with fewer tasks after capacity is available, or increase \
-                     features.multi_agent_v2.max_concurrent_threads_per_session.",
+                     features.spine_spawn.max_concurrent_threads_per_session.",
                     task.summary
                 );
                 Some(error_result(

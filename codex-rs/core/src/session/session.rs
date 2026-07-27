@@ -612,6 +612,7 @@ impl Session {
             config
                 .effective_agent_max_threads(MultiAgentVersion::V2)
                 .unwrap_or(usize::MAX),
+            config.effective_spine_spawn_max_threads(),
         );
         let time_provider = crate::current_time::resolve_time_provider(
             config.current_time_reminder.as_ref(),

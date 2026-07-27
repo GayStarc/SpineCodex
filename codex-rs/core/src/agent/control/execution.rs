@@ -116,11 +116,19 @@ impl AgentControl {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn reserve_execution_slots(
         &self,
         count: usize,
     ) -> CodexResult<Vec<AgentExecutionReservation>> {
         Arc::clone(&self.agent_execution_limiter).reserve(count)
+    }
+
+    pub(crate) fn reserve_spine_spawn_slots(
+        &self,
+        count: usize,
+    ) -> CodexResult<Vec<AgentExecutionReservation>> {
+        Arc::clone(&self.spine_spawn_limiter).reserve(count)
     }
 
     pub(crate) fn execution_guard(
@@ -133,11 +141,17 @@ impl AgentControl {
         if limiter.claim(thread_id) {
             return Some(AgentExecutionGuard { limiter });
         }
+        let limiter = Arc::clone(&self.spine_spawn_limiter);
+        if limiter.claim(thread_id) {
+            return Some(AgentExecutionGuard { limiter });
+        }
+        let limiter = Arc::clone(&self.agent_execution_limiter);
         is_execution_limited(multi_agent_version, session_source).then(|| limiter.guard())
     }
 
     pub(crate) fn release_execution_reservation(&self, thread_id: ThreadId) {
         self.agent_execution_limiter.release_reserved(thread_id);
+        self.spine_spawn_limiter.release_reserved(thread_id);
     }
 }
 

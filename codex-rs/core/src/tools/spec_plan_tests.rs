@@ -386,7 +386,8 @@ async fn spine_spawn_schema_tracks_configured_child_capacity() {
         set_features(turn, &[Feature::SpineJit, Feature::SpineSpawn]);
         set_feature(turn, Feature::MultiAgentV2, /*enabled*/ false);
         update_config(turn, |config| {
-            config.multi_agent_v2.max_concurrent_threads_per_session = 6;
+            config.spine_spawn.max_concurrent_threads_per_session = 6;
+            config.multi_agent_v2.max_concurrent_threads_per_session = 17;
         });
     })
     .await;
@@ -396,7 +397,7 @@ async fn spine_spawn_schema_tracks_configured_child_capacity() {
         set_features(turn, &[Feature::SpineJit, Feature::SpineSpawn]);
         set_feature(turn, Feature::MultiAgentV2, /*enabled*/ false);
         update_config(turn, |config| {
-            config.multi_agent_v2.max_concurrent_threads_per_session = 2;
+            config.spine_spawn.max_concurrent_threads_per_session = 2;
         });
     })
     .await;

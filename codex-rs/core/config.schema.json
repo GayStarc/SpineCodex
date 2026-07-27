@@ -650,6 +650,21 @@
             "skill_mcp_dependency_install": {
               "type": "boolean"
             },
+            "spine_jit": {
+              "type": "boolean"
+            },
+            "spine_spawn": {
+              "$ref": "#/definitions/FeatureToml_for_SpineSpawnConfigToml"
+            },
+            "spine_status": {
+              "type": "boolean"
+            },
+            "spine_trim": {
+              "type": "boolean"
+            },
+            "spinetree_memory_projection": {
+              "type": "boolean"
+            },
             "sqlite": {
               "type": "boolean"
             },
@@ -990,6 +1005,16 @@
         },
         {
           "$ref": "#/definitions/RolloutBudgetConfigToml"
+        }
+      ]
+    },
+    "FeatureToml_for_SpineSpawnConfigToml": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "$ref": "#/definitions/SpineSpawnConfigToml"
         }
       ]
     },
@@ -2891,6 +2916,21 @@
         "include_instructions": {
           "description": "Whether turns receive the automatic skills instructions block.",
           "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "SpineSpawnConfigToml": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "max_concurrent_threads_per_session": {
+          "description": "Maximum concurrent threads in one SpineSpawn session, including the root thread.",
+          "format": "uint",
+          "minimum": 1.0,
+          "type": "integer"
         }
       },
       "type": "object"
@@ -5020,6 +5060,21 @@
           "type": "boolean"
         },
         "skill_mcp_dependency_install": {
+          "type": "boolean"
+        },
+        "spine_jit": {
+          "type": "boolean"
+        },
+        "spine_spawn": {
+          "$ref": "#/definitions/FeatureToml_for_SpineSpawnConfigToml"
+        },
+        "spine_status": {
+          "type": "boolean"
+        },
+        "spine_trim": {
+          "type": "boolean"
+        },
+        "spinetree_memory_projection": {
           "type": "boolean"
         },
         "sqlite": {

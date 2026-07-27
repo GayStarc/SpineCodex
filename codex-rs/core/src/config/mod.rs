@@ -68,6 +68,7 @@ use codex_features::Features;
 use codex_features::FeaturesToml;
 use codex_features::MultiAgentV2ConfigToml;
 use codex_features::NetworkProxyConfigToml;
+use codex_features::SpineSpawnConfigToml;
 use codex_features::TokenBudgetConfigToml;
 use codex_git_utils::resolve_root_git_project_for_trust;
 use codex_http_client::HttpClientFactory;
@@ -1037,6 +1038,8 @@ pub struct Config {
 
     /// Settings specific to the task-path-based multi-agent tool surface.
     pub multi_agent_v2: MultiAgentV2Config,
+    /// Session-scoped capacity for children created through `spine.spawn`.
+    pub spine_spawn: SpineSpawnConfig,
 
     /// Context-window token budget configuration, when enabled.
     pub token_budget: Option<TokenBudgetConfig>,
@@ -1185,6 +1188,20 @@ impl Default for MultiAgentV2Config {
         Self::defaults_for_max_concurrency(
             DEFAULT_MULTI_AGENT_V2_MAX_CONCURRENT_THREADS_PER_SESSION,
         )
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct SpineSpawnConfig {
+    pub max_concurrent_threads_per_session: usize,
+}
+
+impl Default for SpineSpawnConfig {
+    fn default() -> Self {
+        Self {
+            max_concurrent_threads_per_session:
+                DEFAULT_MULTI_AGENT_V2_MAX_CONCURRENT_THREADS_PER_SESSION,
+        }
     }
 }
 
@@ -1442,6 +1459,12 @@ impl Config {
                 self.agent_max_threads.or(DEFAULT_AGENT_MAX_THREADS)
             }
         }
+    }
+
+    pub(crate) fn effective_spine_spawn_max_threads(&self) -> usize {
+        self.spine_spawn
+            .max_concurrent_threads_per_session
+            .saturating_sub(1)
     }
 
     pub fn legacy_sandbox_policy(&self) -> SandboxPolicy {
@@ -2557,6 +2580,14 @@ fn resolve_multi_agent_v2_config(config_toml: &ConfigToml) -> MultiAgentV2Config
     }
 }
 
+fn resolve_spine_spawn_config(config_toml: &ConfigToml) -> SpineSpawnConfig {
+    SpineSpawnConfig {
+        max_concurrent_threads_per_session: spine_spawn_toml_config(config_toml.features.as_ref())
+            .and_then(|config| config.max_concurrent_threads_per_session)
+            .unwrap_or(DEFAULT_MULTI_AGENT_V2_MAX_CONCURRENT_THREADS_PER_SESSION),
+    }
+}
+
 fn resolve_token_budget_config(
     config_toml: &ConfigToml,
     features: &ManagedFeatures,
@@ -2746,6 +2777,13 @@ fn code_mode_toml_config(features: Option<&FeaturesToml>) -> Option<&CodeModeCon
 
 fn multi_agent_v2_toml_config(features: Option<&FeaturesToml>) -> Option<&MultiAgentV2ConfigToml> {
     match features?.multi_agent_v2.as_ref()? {
+        FeatureToml::Enabled(_) => None,
+        FeatureToml::Config(config) => Some(config),
+    }
+}
+
+fn spine_spawn_toml_config(features: Option<&FeaturesToml>) -> Option<&SpineSpawnConfigToml> {
+    match features?.spine_spawn.as_ref()? {
         FeatureToml::Enabled(_) => None,
         FeatureToml::Config(config) => Some(config),
     }
@@ -3413,6 +3451,7 @@ impl Config {
             resolve_experimental_request_user_input_enabled(&cfg);
         let code_mode = resolve_code_mode_config(&cfg);
         let multi_agent_v2 = resolve_multi_agent_v2_config(&cfg);
+        let spine_spawn = resolve_spine_spawn_config(&cfg);
         let token_budget = resolve_token_budget_config(&cfg, &features)?;
         let rollout_budget = resolve_rollout_budget_config(&cfg, &features)?;
         let current_time_reminder = resolve_current_time_reminder_config(&cfg, &features)?;
@@ -3947,6 +3986,7 @@ impl Config {
             background_terminal_max_timeout,
             ghost_snapshot,
             multi_agent_v2,
+            spine_spawn,
             token_budget,
             rollout_budget,
             current_time_reminder,
