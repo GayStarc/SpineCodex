@@ -239,19 +239,6 @@ impl SessionState {
         self.spine_runtime.as_ref()?.tree_update()
     }
 
-    pub(crate) fn spine_status_prompt_overlay(
-        &self,
-        auto_compact_token_limit: Option<i64>,
-    ) -> Option<ResponseItem> {
-        let context_left_tokens = auto_compact_token_limit.map(|limit| {
-            limit
-                .saturating_sub(self.get_total_token_usage(self.server_reasoning_included()))
-                .max(0)
-        });
-        let spine = self.spine_runtime.as_ref()?;
-        spine.status_prompt_overlay(context_left_tokens)
-    }
-
     pub(crate) fn validate_spine_control(&self, tool: spine_core::SpineTool) -> Result<(), String> {
         self.spine_runtime
             .as_ref()

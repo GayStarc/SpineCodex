@@ -58,7 +58,6 @@ use crate::stream_events_utils::raw_assistant_output_text_from_item;
 use crate::stream_events_utils::record_completed_response_item_with_finalized_facts;
 use crate::tasks::emit_compact_metric;
 use crate::tools::ToolRouter;
-use crate::tools::code_mode::spine_bridge::marked_body_has_parser_transition;
 use crate::tools::context::SharedTurnDiffTracker;
 use crate::tools::parallel::ToolCallRuntime;
 use crate::tools::registry::ToolArgumentDiffConsumer;
@@ -1161,18 +1160,13 @@ async fn run_sampling_request(
     let mut initial_input = Some(input);
     let mut original_input = None;
     loop {
-        let mut prompt_input = if let Some(input) = initial_input.take() {
+        let prompt_input = if let Some(input) = initial_input.take() {
             input
         } else {
             sess.clone_history()
                 .await
                 .for_prompt(&turn_context.model_info.input_modalities)
         };
-        if turn_context.item_ids_enabled() {
-            prompt_input =
-                Session::assign_missing_response_item_ids(std::borrow::Cow::Owned(prompt_input))
-                    .into_owned();
-        }
         let prompt = build_prompt(
             prompt_input,
             router.as_ref(),
@@ -1180,7 +1174,7 @@ async fn run_sampling_request(
             base_instructions.clone(),
         );
         let err = match try_run_sampling_request(
-            tool_runtime.for_sampling_attempt(),
+            tool_runtime.clone(),
             Arc::clone(&sess),
             Arc::clone(&turn_context),
             Arc::clone(&turn_store),
@@ -1948,8 +1942,6 @@ async fn drain_in_flight(
     in_flight: &mut FuturesOrdered<BoxFuture<'static, CodexResult<ResponseInputItem>>>,
     sess: Arc<Session>,
     turn_context: Arc<TurnContext>,
-    has_spine_control_call: bool,
-    current_provider_input_tokens: Option<i64>,
 ) -> CodexResult<()> {
     let track_projected_usage = turn_context.config.features.enabled(Feature::SpineJit)
         || turn_context.config.features.enabled(Feature::SpineTrim);
@@ -1958,25 +1950,9 @@ async fn drain_in_flight(
     } else {
         sess.state.lock().await.projected_history_snapshot()
     };
-    let mut all_outputs_recorded = true;
-    let mut has_spine_transition_call = has_spine_control_call;
     while let Some(res) = in_flight.next().await {
         match res {
             Ok(response_input) => {
-                if let ResponseInputItem::CustomToolCallOutput { name, output, .. } =
-                    &response_input
-                {
-                    has_spine_transition_call |= marked_body_has_parser_transition(
-                        name.as_deref(),
-                        &output.body,
-                    )
-                    .unwrap_or_else(|error| {
-                        error_or_panic(format!(
-                            "failed to inspect Code Mode Spine carrier during drain: {error}"
-                        ));
-                        false
-                    });
-                }
                 let response_item = response_input.into();
                 sess.record_conversation_items(&turn_context, std::slice::from_ref(&response_item))
                     .await;
@@ -1988,7 +1964,6 @@ async fn drain_in_flight(
                 .await;
             }
             Err(err) => {
-                all_outputs_recorded = false;
                 if let Some(projected_before) = projected_before.as_deref() {
                     sess.state
                         .lock()
@@ -2004,10 +1979,6 @@ async fn drain_in_flight(
             .lock()
             .await
             .reconcile_projected_history(Some(projected_before));
-    }
-    if has_spine_transition_call && all_outputs_recorded {
-        sess.record_spine_transition_status(&turn_context, current_provider_input_tokens)
-            .await;
     }
     Ok(())
 }
@@ -2083,7 +2054,6 @@ async fn try_run_sampling_request(
     let mut in_flight: FuturesOrdered<BoxFuture<'static, CodexResult<ResponseInputItem>>> =
         FuturesOrdered::new();
     let mut needs_follow_up = false;
-    let mut has_spine_control_call = false;
     let mut last_agent_message: Option<String> = None;
     let mut active_item: Option<TurnItem> = None;
     let mut active_tool_argument_diff_consumer: Option<(
@@ -2092,7 +2062,6 @@ async fn try_run_sampling_request(
     )> = None;
     let mut should_emit_turn_diff = false;
     let mut should_emit_token_count = false;
-    let mut completed_provider_input_tokens = None;
     let reasoning_effort = turn_context.effective_reasoning_effort_for_tracing();
     let plan_mode = turn_context.collaboration_mode.mode == ModeKind::Plan;
     let mut assistant_message_stream_parsers = AssistantMessageStreamParsers::new(plan_mode);
@@ -2233,7 +2202,6 @@ async fn try_run_sampling_request(
                     last_agent_message = Some(agent_message);
                 }
                 needs_follow_up |= output_result.needs_follow_up;
-                has_spine_control_call |= output_result.spine_control_call;
                 // todo: remove before stabilizing multi-agent v2
                 if preempt_for_mailbox_mail && sess.input_queue.has_pending_mailbox_items().await {
                     break Ok(SamplingRequestResult {
@@ -2389,9 +2357,6 @@ async fn try_run_sampling_request(
                     &mut assistant_message_stream_parsers,
                 )
                 .await;
-                completed_provider_input_tokens = token_usage
-                    .as_ref()
-                    .and_then(|usage| (usage.input_tokens > 0).then_some(usage.input_tokens));
                 let budget_result = sess
                     .record_sampling_token_usage_info(
                         &turn_context,
@@ -2577,14 +2542,7 @@ async fn try_run_sampling_request(
     } else {
         Some(turn_context.turn_timing_state.begin_tool_blocking())
     };
-    drain_in_flight(
-        &mut in_flight,
-        sess.clone(),
-        turn_context.clone(),
-        has_spine_control_call,
-        completed_provider_input_tokens,
-    )
-    .await?;
+    drain_in_flight(&mut in_flight, sess.clone(), turn_context.clone()).await?;
     drop(tool_blocking_timing_guard);
 
     if should_emit_token_count {

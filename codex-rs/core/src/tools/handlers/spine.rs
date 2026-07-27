@@ -32,7 +32,7 @@ pub(crate) struct SpineHandler {
 #[derive(Clone, Copy)]
 enum SpineHandlerKind {
     Control(SpineTool),
-    Spawn,
+    Spawn { max_tasks: usize },
     Trim,
 }
 
@@ -70,17 +70,22 @@ impl SpineHandler {
             if mode == ModeKind::Plan && definition.tool == SpineTool::Spawn {
                 continue;
             }
-            add(Self::from_definition(definition.clone()));
+            add(Self::from_definition(
+                definition.clone(),
+                catalog.spawn_task_limit(),
+            ));
         }
 >>>>>>> refactor(spine): let SDK own tool exposure
     }
 
-    fn from_definition(definition: ToolDefinition) -> Self {
+    fn from_definition(definition: ToolDefinition, spawn_task_limit: usize) -> Self {
         let kind = match definition.tool {
             SpineTool::Open | SpineTool::Close | SpineTool::Next => {
                 SpineHandlerKind::Control(definition.tool)
             }
-            SpineTool::Spawn => SpineHandlerKind::Spawn,
+            SpineTool::Spawn => SpineHandlerKind::Spawn {
+                max_tasks: spawn_task_limit,
+            },
             SpineTool::Trim => SpineHandlerKind::Trim,
         };
         Self { kind, definition }
@@ -90,7 +95,7 @@ impl SpineHandler {
     fn name(&self) -> &'static str {
         match self.kind {
             SpineHandlerKind::Control(tool) => tool.name(),
-            SpineHandlerKind::Spawn => SPINE_SPAWN,
+            SpineHandlerKind::Spawn { .. } => SPINE_SPAWN,
             SpineHandlerKind::Trim => SPINE_TRIM,
         }
     }
@@ -182,6 +187,7 @@ impl SpineHandler {
                     .map_err(FunctionCallError::RespondToModel)?;
                 SpineToolResponse::from_control(tool)
             }
+<<<<<<< HEAD
             SpineHandlerKind::Spawn => {
 <<<<<<< HEAD
                 let tasks = crate::spine::spawn::parse_tasks(&arguments)
@@ -215,6 +221,15 @@ impl SpineHandler {
                         .await
                         .map_err(FunctionCallError::RespondToModel)?;
 =======
+=======
+            SpineHandlerKind::Spawn { max_tasks } => {
+                let catalog = ToolCatalog::new(&turn.config.spine_config)
+                    .map_err(|error| FunctionCallError::RespondToModel(error.to_string()))?
+                    .with_spawn_task_limit(max_tasks);
+                catalog
+                    .validate(SpineTool::Spawn, &arguments)
+                    .map_err(|error| FunctionCallError::RespondToModel(error.to_string()))?;
+>>>>>>> fix(spine): preserve sdk context guidance on main
                 let receipt = crate::spine::spawn::execute(
                     session,
                     turn,
@@ -305,7 +320,7 @@ fn complete_nested(
 
 impl CoreToolRuntime for SpineHandler {
     fn waits_for_runtime_cancellation(&self) -> bool {
-        matches!(self.kind, SpineHandlerKind::Spawn)
+        matches!(self.kind, SpineHandlerKind::Spawn { .. })
     }
 }
 

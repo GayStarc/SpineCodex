@@ -1317,14 +1317,6 @@ impl Session {
         state.token_info()
     }
 
-    pub(crate) async fn spine_status_prompt_overlay(
-        &self,
-        turn_context: &TurnContext,
-    ) -> Option<ResponseItem> {
-        let state = self.state.lock().await;
-        state.spine_status_prompt_overlay(turn_context.model_info.auto_compact_token_limit())
-    }
-
     pub(crate) async fn get_estimated_token_count(
         &self,
         turn_context: &TurnContext,

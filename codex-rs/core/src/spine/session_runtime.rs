@@ -19,6 +19,7 @@ pub(crate) struct SessionSpineRuntime {
     next_boundary: u64,
     pending_calls: HashMap<String, ToolUse>,
     trim_enabled: bool,
+    #[cfg(test)]
     jit_enabled: bool,
 }
 
@@ -37,6 +38,7 @@ impl SessionSpineRuntime {
                 next_boundary: 0,
                 pending_calls: HashMap::new(),
                 trim_enabled: configuration.spine_trim_enabled(),
+                #[cfg(test)]
                 jit_enabled: configuration.spine_jit_enabled(),
             }
         })
@@ -220,19 +222,6 @@ impl SessionSpineRuntime {
     pub(crate) fn tree_update(&self) -> Option<codex_protocol::protocol::SpineTreeUpdateEvent> {
         self.jit_enabled
             .then(|| super::observer::context_tree_update(self.runtime.projection()))
-    }
-
-    pub(crate) fn status_prompt_overlay(
-        &self,
-        context_left_tokens: Option<i64>,
-    ) -> Option<ResponseItem> {
-        self.jit_enabled.then(|| {
-            super::status::prompt_overlay(
-                self.runtime.projection().spine(),
-                self.runtime.projection().usage_samples(),
-                context_left_tokens,
-            )
-        })?
     }
 
     pub(crate) fn validate_control(&self, tool: spine_core::SpineTool) -> Result<(), String> {

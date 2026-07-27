@@ -4818,6 +4818,7 @@ dependencies = [
  "serde_json",
  "shlex",
  "similar",
+ "spine-core",
  "tempfile",
  "tokio",
  "tokio-tungstenite",

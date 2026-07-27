@@ -75,7 +75,6 @@ pub(crate) use spine_context::SpineMemoryFragment;
 pub(crate) use spine_context::SpineMultiAgentModeInstructions;
 pub(crate) use spine_context::SpineNodeFragment;
 pub(crate) use spine_context::SpineSpawnEvidenceFragment;
-pub(crate) use spine_context::SpineStatusFragment;
 pub(crate) use spine_context::SpineUserAnchor;
 pub(crate) use subagent_notification::SubagentNotification;
 pub(crate) use token_budget_context::ContextWindowGuidance;

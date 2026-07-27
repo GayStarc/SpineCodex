@@ -130,7 +130,7 @@ async fn spine_tree_delivery_precedes_corresponding_protocol_events() -> Result<
 }
 
 #[tokio::test]
-async fn spine_adapter_profile_projects_anchored_input_and_status() -> Result<()> {
+async fn spine_adapter_profile_projects_anchored_input_without_status_tail() -> Result<()> {
     let server = start_mock_server().await;
     let response_mock = mount_sse_once(
         &server,
@@ -152,9 +152,12 @@ async fn spine_adapter_profile_projects_anchored_input_and_status() -> Result<()
     let input = response_mock.single_request().input();
     let user_text = message_text(&input, "user").context("missing projected user input")?;
     assert_anchored_user_text(user_text, "adapter profile probe")?;
-    let status_text = message_text(&input, "developer").context("missing Spine status overlay")?;
-    assert!(status_text.starts_with("<spine_status "));
-    assert!(status_text.ends_with("/>") || status_text.ends_with(" />"));
+    assert!(
+        input
+            .iter()
+            .all(|item| !item.to_string().contains("<spine_status ")),
+        "request must not contain a Spine status developer tail"
+    );
 
     Ok(())
 }
@@ -260,7 +263,7 @@ description = "next"
 }
 
 #[tokio::test]
-async fn spine_adapter_publishes_real_sse_pressure_samples() -> Result<()> {
+async fn spine_adapter_usage_samples_do_not_append_status_tail() -> Result<()> {
     let server = start_mock_server().await;
     let response_mock = mount_sse_sequence(
         &server,
@@ -295,16 +298,18 @@ async fn spine_adapter_publishes_real_sse_pressure_samples() -> Result<()> {
     let requests = response_mock.requests();
     assert_eq!(requests.len(), 3);
     let final_input = requests[2].input();
-    let status = message_text(&final_input, "developer")
-        .context("missing Spine status overlay after real usage samples")?;
-    assert!(status.contains(r#"cursor="1.1""#), "{status}");
-    assert!(status.contains(r#"cursor_context="80""#), "{status}");
+    assert!(
+        final_input
+            .iter()
+            .all(|item| !item.to_string().contains("<spine_status ")),
+        "usage samples must not append a Spine status developer tail"
+    );
 
     Ok(())
 }
 
 #[tokio::test]
-async fn spine_status_receives_item_id_at_prompt_boundary() -> Result<()> {
+async fn spine_projected_items_receive_ids_at_prompt_boundary() -> Result<()> {
     let server = start_mock_server().await;
     let response_mock = mount_sse_once(
         &server,
@@ -327,18 +332,11 @@ async fn spine_status_receives_item_id_at_prompt_boundary() -> Result<()> {
     test.submit_turn("item identity probe").await?;
 
     let input = response_mock.single_request().input();
-    let status = input
-        .iter()
-        .find(|item| {
-            item.get("role").and_then(Value::as_str) == Some("developer")
-                && item.to_string().contains("<spine_status ")
-        })
-        .context("missing prompt-only Spine status")?;
     assert!(
-        status
-            .get("id")
-            .and_then(Value::as_str)
-            .is_some_and(|id| id.starts_with("msg_"))
+        input
+            .iter()
+            .all(|item| !item.to_string().contains("<spine_status ")),
+        "item ID assignment must not append a Spine status developer tail"
     );
     for item in input {
         assert!(

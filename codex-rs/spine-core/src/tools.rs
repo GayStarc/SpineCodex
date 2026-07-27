@@ -59,9 +59,10 @@ pub struct ToolDefinition {
     pub parameters: Value,
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ToolCatalog {
     definitions: Vec<ToolDefinition>,
+    spawn_task_limit: usize,
 }
 
 impl ToolCatalog {
@@ -79,7 +80,38 @@ impl ToolCatalog {
                 parameters: parameters_for(tool),
             })
             .collect();
-        Ok(Self { definitions })
+        Ok(Self {
+            definitions,
+            spawn_task_limit: MAX_SPAWN_TASKS,
+        })
+    }
+
+    pub fn with_spawn_task_limit(mut self, max_tasks: usize) -> Self {
+        self.spawn_task_limit = max_tasks.min(MAX_SPAWN_TASKS);
+        if self.spawn_task_limit < 2 {
+            self.definitions
+                .retain(|definition| definition.tool != SpineTool::Spawn);
+        } else if let Some(definition) = self
+            .definitions
+            .iter_mut()
+            .find(|definition| definition.tool == SpineTool::Spawn)
+        {
+            definition.parameters["properties"]["tasks"]["maxItems"] =
+                serde_json::json!(self.spawn_task_limit);
+        }
+        self
+    }
+
+    pub fn spawn_task_limit(&self) -> usize {
+        self.spawn_task_limit
+    }
+
+    pub fn validate(
+        &self,
+        tool: SpineTool,
+        arguments: &str,
+    ) -> Result<ToolValidation, ToolValidationError> {
+        validate_tool(tool, arguments)
     }
 
     pub fn definitions(&self) -> &[ToolDefinition] {
@@ -154,6 +186,14 @@ pub fn validate_tool(
     tool: SpineTool,
     arguments: &str,
 ) -> Result<ToolValidation, ToolValidationError> {
+    validate_tool_with_spawn_limit(tool, arguments, MAX_SPAWN_TASKS)
+}
+
+fn validate_tool_with_spawn_limit(
+    tool: SpineTool,
+    arguments: &str,
+    spawn_task_limit: usize,
+) -> Result<ToolValidation, ToolValidationError> {
     match tool {
         SpineTool::Open => {
             let args: OpenArgs = parse_control(arguments)?;
@@ -185,9 +225,9 @@ pub fn validate_tool(
                     "spine.spawn requires at least two tasks".to_string(),
                 ));
             }
-            if args.tasks.len() > MAX_SPAWN_TASKS {
+            if args.tasks.len() > spawn_task_limit {
                 return Err(ToolValidationError::InvalidSpawn(format!(
-                    "spine.spawn accepts at most {MAX_SPAWN_TASKS} tasks"
+                    "spine.spawn accepts at most {spawn_task_limit} tasks"
                 )));
             }
             let aggregate_bytes = args.tasks.iter().fold(0usize, |total, task| {
@@ -344,6 +384,44 @@ mod tests {
     fn feature_off_catalog_is_empty() {
         let catalog = ToolCatalog::new(&SpineConfig::v1()).unwrap();
         assert!(catalog.definitions().is_empty());
+    }
+
+    #[test]
+    fn spawn_limit_specializes_schema_without_changing_sdk_validation() {
+        let config = SpineConfig::v1()
+            .with_features([Feature::Jit, Feature::Spawn])
+            .unwrap();
+        let catalog = ToolCatalog::new(&config)
+            .unwrap()
+            .with_spawn_task_limit(3);
+        let definition = catalog.definition(SpineTool::Spawn).unwrap();
+        assert_eq!(
+            definition.parameters["properties"]["tasks"]["maxItems"],
+            serde_json::json!(3)
+        );
+
+        let arguments = serde_json::json!({
+            "tasks": (0..4)
+                .map(|index| SpawnTask {
+                    summary: format!("task-{index}"),
+                    prompt: format!("prompt-{index}"),
+                })
+                .collect::<Vec<_>>()
+        });
+        assert!(catalog
+            .validate(SpineTool::Spawn, &arguments.to_string())
+            .is_ok());
+    }
+
+    #[test]
+    fn spawn_is_hidden_when_capacity_cannot_form_a_batch() {
+        let config = SpineConfig::v1()
+            .with_features([Feature::Jit, Feature::Spawn])
+            .unwrap();
+        let catalog = ToolCatalog::new(&config)
+            .unwrap()
+            .with_spawn_task_limit(1);
+        assert!(catalog.definition(SpineTool::Spawn).is_none());
     }
 
     #[test]

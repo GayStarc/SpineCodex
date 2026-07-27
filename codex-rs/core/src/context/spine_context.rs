@@ -2,14 +2,12 @@ use super::ContextualUserFragment;
 use super::MultiAgentModeInstructions;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
-use codex_protocol::num_format::format_si_suffix;
 use codex_protocol::protocol::MULTI_AGENT_MODE_CLOSE_TAG;
 use codex_protocol::protocol::MULTI_AGENT_MODE_OPEN_TAG;
 use spine_core::NodeId;
 use spine_core::NodeStatus;
 use spine_core::SpawnOutcome;
 use spine_core::SpawnTask;
-use spine_core::StatusSignal;
 
 pub(crate) const MAX_SPINE_FRAGMENT_BYTES: usize = 40 * 1024;
 
@@ -150,40 +148,6 @@ impl_fragment!(
     "</spine_spawn_evidence>"
 );
 
-pub(crate) struct SpineStatusFragment {
-    body: String,
-}
-
-impl SpineStatusFragment {
-    pub(crate) fn new(signal: &StatusSignal) -> Result<Self, String> {
-        let cursor_context = signal
-            .cursor_node_context_tokens
-            .map(format_si_suffix)
-            .unwrap_or_else(|| "unavailable".to_string());
-        let context_left = signal
-            .context_left_tokens
-            .map(format_si_suffix)
-            .unwrap_or_else(|| "unavailable".to_string());
-        let body = format!(
-            " cursor=\"{}\" summary=\"{}\" parent=\"{}\" parent_summary=\"{}\" cursor_context=\"{}\" context_left=\"{}\" ",
-            signal.cursor,
-            optional_summary(signal.node_summary.as_deref()),
-            signal
-                .parent
-                .as_ref()
-                .map(ToString::to_string)
-                .as_deref()
-                .unwrap_or("none"),
-            optional_summary(signal.parent_summary.as_deref()),
-            cursor_context,
-            context_left,
-        );
-        checked_fragment("status", "<spine_status", body, "/>").map(|body| Self { body })
-    }
-}
-
-impl_fragment!(SpineStatusFragment, "developer", "<spine_status", "/>");
-
 pub(crate) struct SpineUserAnchor(u64);
 
 impl SpineUserAnchor {
@@ -226,13 +190,6 @@ fn checked_fragment(
         ));
     }
     Ok(body)
-}
-
-fn optional_summary(summary: Option<&str>) -> String {
-    match summary.map(str::trim).filter(|summary| !summary.is_empty()) {
-        Some(summary) => escape_xml_attribute(summary),
-        None => "none".to_string(),
-    }
 }
 
 fn status_name(status: NodeStatus) -> &'static str {

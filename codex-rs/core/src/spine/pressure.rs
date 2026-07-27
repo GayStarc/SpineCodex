@@ -61,11 +61,6 @@ pub(super) fn project_from_effective(
         .collect()
 }
 
-pub(crate) fn token_usage_samples(rollout: &[RolloutItem]) -> Vec<TokenUsageSample> {
-    let effective = effective_rollout(rollout);
-    token_usage_samples_from_effective(&effective)
-}
-
 fn token_usage_samples_from_effective(
     effective_rollout: &[(usize, &RolloutItem)],
 ) -> Vec<TokenUsageSample> {

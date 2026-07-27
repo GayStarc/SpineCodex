@@ -977,40 +977,10 @@ async fn historical_code_mode_carrier_is_projected_with_spine_features_off() {
 async fn spine_jit_is_enabled_in_default_session_state() {
     let session_configuration = make_session_configuration_for_tests().await;
     assert!(session_configuration.spine_jit_enabled());
-    assert!(session_configuration.spine_status_enabled());
     assert!(
         SessionState::new(session_configuration)
             .spine_tree_update()
             .is_some()
-    );
-}
-
-#[tokio::test]
-async fn spine_status_requires_both_spine_jit_and_spine_status() {
-    let enabled = make_session_configuration_for_tests().await;
-    assert!(enabled.spine_status_enabled());
-    assert!(
-        SessionState::new(enabled)
-            .spine_status_prompt_overlay(None)
-            .is_some()
-    );
-
-    let mut status_disabled = make_session_configuration_for_tests().await;
-    status_disabled.disable_spine_status_for_test();
-    assert!(!status_disabled.spine_status_enabled());
-    assert!(
-        SessionState::new(status_disabled)
-            .spine_status_prompt_overlay(None)
-            .is_none()
-    );
-
-    let mut jit_disabled = make_session_configuration_for_tests().await;
-    jit_disabled.disable_spine_jit_for_test();
-    assert!(!jit_disabled.spine_status_enabled());
-    assert!(
-        SessionState::new(jit_disabled)
-            .spine_status_prompt_overlay(None)
-            .is_none()
     );
 }
 
@@ -1387,14 +1357,6 @@ async fn spawn_context_install_is_atomic_and_independently_feature_gated() {
             .nodes
             .len(),
         1
-    );
-    assert!(
-        response_text(
-            &disabled_state
-                .spine_status_prompt_overlay(None)
-                .expect("status overlay enabled")
-        )
-        .contains("cursor=\"1\"")
     );
 }
 

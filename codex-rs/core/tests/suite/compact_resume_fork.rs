@@ -126,35 +126,23 @@ fn contextual_user_count_containing(request: &Value, marker: &str) -> usize {
 }
 
 fn spine_status_count(request: &Value) -> usize {
-    spine_status_texts(request).len()
-}
-
-fn spine_status_texts(request: &Value) -> Vec<String> {
-    json_message_input_texts(request, "developer")
-        .into_iter()
-        .filter(|text| text.starts_with("<spine_tran_status "))
-        .collect()
-}
-
-fn input_without_spine_status(request: &Value) -> Vec<Value> {
     request
         .get("input")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
         .filter(|item| {
-            item.get("type").and_then(Value::as_str) != Some("message")
-                || item.get("role").and_then(Value::as_str) != Some("developer")
-                || !item
+            item.get("type").and_then(Value::as_str) == Some("message")
+                && item.get("role").and_then(Value::as_str) == Some("developer")
+                && item
                     .get("content")
                     .and_then(Value::as_array)
                     .and_then(|content| content.first())
                     .and_then(|entry| entry.get("text"))
                     .and_then(Value::as_str)
-                    .is_some_and(|text| text.starts_with("<spine_tran_status "))
+                    .is_some_and(|text| text.starts_with("<spine_status "))
         })
-        .cloned()
-        .collect()
+        .count()
 }
 
 fn normalize_compact_prompts(requests: &mut [Value]) {
@@ -233,9 +221,9 @@ async fn compact_resume_and_fork_preserve_model_history_view() {
     assert_eq!(spine_status_count(compact_request), 0);
     assert_eq!(spine_status_count(resume_request), 0);
     assert_eq!(spine_status_count(fork_request), 0);
-    let input_after_compact = Value::Array(input_without_spine_status(compact_request));
-    let input_after_resume = Value::Array(input_without_spine_status(resume_request));
-    let input_after_fork = Value::Array(input_without_spine_status(fork_request));
+    let input_after_compact = compact_request["input"].clone();
+    let input_after_resume = resume_request["input"].clone();
+    let input_after_fork = fork_request["input"].clone();
 
     let compact_arr = input_after_compact
         .as_array()
@@ -398,98 +386,6 @@ async fn spine_snapshot_replays_after_compact_resume_and_fork() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn transition_status_follows_native_fork_and_rollback_history() -> Result<()> {
-    if network_disabled() {
-        println!("Skipping test because network is disabled in this sandbox");
-        return Ok(());
-    }
-
-    const TRANSITION_USER: &str = "OPEN_IN_SECOND_TURN";
-    const AFTER_STATUS_FORK: &str = "AFTER_STATUS_FORK";
-    const AFTER_STATUS_ROLLBACK: &str = "AFTER_STATUS_ROLLBACK";
-
-    let server = MockServer::start().await;
-    let request_log = mount_sse_sequence(
-        &server,
-        vec![
-            sse(vec![
-                ev_assistant_message("status-first-reply", FIRST_REPLY),
-                ev_completed("status-first-response"),
-            ]),
-            sse(vec![
-                ev_response_created("status-open-response"),
-                ev_function_call_with_namespace(
-                    "status-open-call",
-                    "spine",
-                    "open",
-                    r#"{"summary":"forked transition"}"#,
-                ),
-                ev_completed("status-open-response"),
-            ]),
-            sse(vec![ev_completed("status-open-followup")]),
-            sse(vec![ev_completed("status-fork-followup")]),
-            sse(vec![ev_completed("status-rollback-followup")]),
-        ],
-    )
-    .await;
-    let (_home, config, manager, base) = start_test_conversation(&server, /*model*/ None).await;
-
-    user_turn(&base, "FIRST_STATUS_TURN").await;
-    user_turn(&base, TRANSITION_USER).await;
-    base.flush_rollout().await?;
-    let base_path = fetch_conversation_path(&base);
-
-    let forked = fork_thread(&manager, &config, base_path, /*nth_user_message*/ 2).await;
-    user_turn(&forked, AFTER_STATUS_FORK).await;
-
-    base.submit(Op::ThreadRollback { num_turns: 1 }).await?;
-    let rollback_event = wait_for_event(&base, |event| {
-        matches!(event, EventMsg::ThreadRolledBack(_))
-    })
-    .await;
-    let EventMsg::ThreadRolledBack(rollback_event) = rollback_event else {
-        panic!("expected thread rolled back event");
-    };
-    assert_eq!(rollback_event.num_turns, 1);
-    user_turn(&base, AFTER_STATUS_ROLLBACK).await;
-
-    let requests = gather_request_bodies(&request_log);
-    assert_eq!(requests.len(), 5);
-    assert_eq!(spine_status_count(&requests[0]), 0);
-    assert_eq!(spine_status_count(&requests[1]), 0);
-
-    let transition_statuses = spine_status_texts(&requests[2]);
-    let [transition_status] = transition_statuses.as_slice() else {
-        panic!("expected one transition status after open, got {transition_statuses:#?}");
-    };
-    assert!(transition_status.contains(r#"cursor="1.1""#));
-    assert_eq!(
-        spine_status_texts(&requests[3]),
-        [transition_status.clone()],
-        "forking after the control turn must preserve its transition status"
-    );
-    assert_eq!(
-        spine_status_count(&requests[4]),
-        0,
-        "rolling back the control turn must remove its transition status"
-    );
-    assert_eq!(
-        json_user_evidence_bodies(&requests[3])
-            .last()
-            .map(String::as_str),
-        Some(AFTER_STATUS_FORK)
-    );
-    assert_eq!(
-        json_user_evidence_bodies(&requests[4])
-            .last()
-            .map(String::as_str),
-        Some(AFTER_STATUS_ROLLBACK)
-    );
-
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 /// Scenario: after the forked branch is compacted, resuming again should reuse
 /// the compacted history and only append the new user message.
 async fn compact_resume_after_second_compaction_preserves_history() -> Result<()> {
@@ -550,8 +446,8 @@ async fn compact_resume_after_second_compaction_preserves_history() -> Result<()
     let resume_request = &requests[requests.len() - 1];
     assert_eq!(spine_status_count(compact_request), 0);
     assert_eq!(spine_status_count(resume_request), 0);
-    let input_after_compact = Value::Array(input_without_spine_status(compact_request));
-    let input_after_resume = Value::Array(input_without_spine_status(resume_request));
+    let input_after_compact = compact_request["input"].clone();
+    let input_after_resume = resume_request["input"].clone();
 
     // test input after compact before resume is the same as input after resume
     let compact_input_array = input_after_compact
