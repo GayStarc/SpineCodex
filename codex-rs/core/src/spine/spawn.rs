@@ -475,7 +475,7 @@ async fn teardown_transaction_children(
             session
                 .services
                 .agent_control
-                .shutdown_live_agent(thread_id)
+                .shutdown_agent_tree(thread_id)
                 .await,
         )
     });
