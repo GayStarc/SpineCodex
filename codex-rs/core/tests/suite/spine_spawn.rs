@@ -517,6 +517,11 @@ async fn spawn_starts_batch_concurrently_and_orders_reverse_completion_impl() ->
         .zip(child_input)
         .take_while(|(parent, child)| parent == child)
         .count();
+    assert_eq!(
+        exact_lcp,
+        parent_input.len(),
+        "child must preserve the complete parent request input as an exact prefix"
+    );
     let parent_cache_key = parent_first_body["prompt_cache_key"]
         .as_str()
         .expect("parent request must expose prompt_cache_key")
@@ -525,9 +530,9 @@ async fn spawn_starts_batch_concurrently_and_orders_reverse_completion_impl() ->
         .as_str()
         .expect("child request must expose prompt_cache_key")
         .to_string();
-    assert_ne!(
+    assert_eq!(
         parent_cache_key, child_cache_key,
-        "each child must keep an independent prompt cache key"
+        "Spine spawn child must share the parent's prompt cache affinity"
     );
     eprintln!(
         "SPINE_SPAWN_CONTEXT_DIAGNOSTIC {}",
@@ -538,9 +543,10 @@ async fn spawn_starts_batch_concurrently_and_orders_reverse_completion_impl() ->
             "exact_lcp_items": exact_lcp,
             "parent_prompt_cache_key": parent_cache_key,
             "child_prompt_cache_key": child_cache_key,
-            "cache_key_equal": parent_cache_key == child_cache_key,
+            "cache_affinity_shared": parent_cache_key == child_cache_key,
+            "parent_request_prefix_exact": exact_lcp == parent_input.len(),
             "inherited_in_flight_spawn_call": false,
-            "cache_hit_claim": false,
+            "provider_cache_hit_claim": false,
         })
     );
     Ok(())
