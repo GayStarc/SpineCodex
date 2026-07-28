@@ -429,7 +429,7 @@ impl SpineReducer {
                 context.push(ContextItem::SyntheticNode {
                     node_id: node.id.clone(),
                     summary: node.summary.clone().unwrap_or_default(),
-                    status: node.status,
+                    status: NodeStatus::Opened,
                 });
                 self.render_entries(&node.entries, context);
             }

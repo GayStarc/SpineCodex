@@ -575,6 +575,33 @@ fn nested_open_creates_hierarchical_id() {
 }
 
 #[test]
+fn nested_open_appends_without_rewriting_visible_parent_marker() {
+    let parent = apply(&[open(1, "parent")]);
+    assert!(matches!(
+        parent.visible_context.first(),
+        Some(ContextItem::SyntheticNode {
+            status: NodeStatus::Opened,
+            ..
+        })
+    ));
+
+    let nested = apply(&[open(1, "parent"), open(3, "child")]);
+    assert!(
+        nested.visible_context.starts_with(&parent.visible_context),
+        "opening a child must not rewrite the visible parent prefix"
+    );
+
+    let child_closed = apply(&[open(1, "parent"), open(3, "child"), close(5, "child done")]);
+    assert!(matches!(
+        child_closed.visible_context.first(),
+        Some(ContextItem::SyntheticNode {
+            status: NodeStatus::Opened,
+            ..
+        })
+    ));
+}
+
+#[test]
 fn close_at_root_is_ordinary() {
     let projection = apply(&[close(1, "invalid root memory")]);
     assert_eq!(projection.cursor.to_string(), "1");

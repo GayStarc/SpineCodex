@@ -877,6 +877,30 @@ fn spine_transition_status_allows_missing_baseline_for_new_node() {
 }
 
 #[test]
+fn nested_open_keeps_the_materialized_parent_marker_prefix_stable() {
+    let mut rollout = vec![
+        message("user", "request"),
+        call("open-parent", "spine.open", r#"{"summary":"parent"}"#),
+        output("open-parent", Some(true), "Spine open accepted."),
+    ];
+    let parent = derive_from_rollout(&rollout);
+    assert_eq!(
+        text(&parent.context[1]),
+        r#"<spine_node id="1.1" summary="parent" status="opened" />"#
+    );
+
+    rollout.extend([
+        call("open-child", "spine.open", r#"{"summary":"child"}"#),
+        output("open-child", Some(true), "Spine open accepted."),
+    ]);
+    let nested = derive_from_rollout(&rollout);
+    assert!(
+        nested.context.starts_with(&parent.context),
+        "opening a child must only append to the materialized parent prefix"
+    );
+}
+
+#[test]
 fn spine_transition_statuses_follow_normal_rollout_projection() {
     let mut rollout = vec![
         message("user", "request"),
