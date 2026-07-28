@@ -1465,10 +1465,11 @@ fn successful_close_carrier_at_root_does_not_transition() {
 }
 
 #[test]
-fn trim_tags_only_large_completed_outputs_and_expires_after_next_toolcall() {
+fn trim_tag_bytes_persist_after_eligibility_expires() {
     let mut rollout = long_tool_rollout();
     let tagged = derive_from_rollout_with_features(&rollout, true, true, true);
-    assert!(output_text(&tagged.context[1]).starts_with("[TRIM_ID: trim_1]"));
+    let tagged_output = output_text(&tagged.context[1]).to_string();
+    assert!(tagged_output.starts_with("[TRIM_ID: trim_1]"));
 
     rollout.extend([
         call("trim", "spine.trim", r#"{"TRIM_ID":"trim_1","op":"snip"}"#),
@@ -1486,7 +1487,8 @@ fn trim_tags_only_large_completed_outputs_and_expires_after_next_toolcall() {
         output("next-tool", Some(true), "short"),
     ]);
     let expired = derive_from_rollout_with_features(&expired, true, true, true);
-    assert!(!output_text(&expired.context[1]).contains("TRIM_ID"));
+    assert_eq!(output_text(&expired.context[1]), tagged_output);
+    assert_eq!(&expired.context[..tagged.context.len()], tagged.context);
 }
 
 #[test]
@@ -1564,7 +1566,7 @@ fn trim_indexes_function_and_custom_responses_in_one_completed_group() {
         output("trim", Some(true), "Spine trim accepted."),
     ]);
     let projected = derive_from_rollout_with_features(&rollout, true, true, true);
-    assert!(!output_text(&projected.context[2]).contains("TRIM_ID"));
+    assert!(output_text(&projected.context[2]).starts_with("[TRIM_ID: trim_2]"));
     assert_eq!(
         output_text(&projected.context[3]),
         TOOL_RESULT_CLEARED_MESSAGE
@@ -1655,7 +1657,7 @@ fn failed_and_incomplete_trim_requests_do_not_rewrite_output() {
         rollout.extend(suffix);
         let projection = derive_from_rollout_with_features(&rollout, false, true, true);
         let body = output_text(&projection.context[1]);
-        assert!(!body.contains("TRIM_ID"));
+        assert!(body.starts_with("[TRIM_ID: trim_1]"));
         assert_ne!(body, TOOL_RESULT_CLEARED_MESSAGE);
     }
 }

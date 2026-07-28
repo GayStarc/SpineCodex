@@ -616,6 +616,7 @@ pub(crate) fn derive_trim_projection(events: &[RolloutEvent]) -> TrimProjection 
                     TrimEdit::Tagged {
                         trim_id,
                         body: body.to_string(),
+                        eligible: true,
                     },
                 ),
             );
@@ -627,12 +628,8 @@ pub(crate) fn derive_trim_projection(events: &[RolloutEvent]) -> TrimProjection 
 
 fn expire_trim_candidates(projection: &mut TrimProjection, active: &mut Vec<RawBoundary>) {
     for boundary in active.drain(..) {
-        if projection
-            .edits
-            .get(&boundary)
-            .is_some_and(|(_, edit)| matches!(edit, TrimEdit::Tagged { .. }))
-        {
-            projection.edits.remove(&boundary);
+        if let Some((_, TrimEdit::Tagged { eligible, .. })) = projection.edits.get_mut(&boundary) {
+            *eligible = false;
         }
     }
 }

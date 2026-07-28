@@ -82,7 +82,7 @@ fn ordinary_group(value: u64) -> RolloutEvent {
 }
 
 #[test]
-fn trim_projection_has_deterministic_ids_and_expiry() {
+fn trim_projection_keeps_expired_tags_but_rejects_old_ids() {
     let projection = TrimProjection::derive(&[
         trim_candidate(1, &trim_candidate_body("0123456789")),
         trim_request(
@@ -100,7 +100,12 @@ fn trim_projection_has_deterministic_ids_and_expiry() {
         trim_candidate(1, &trim_candidate_body("0123456789")),
         ordinary_group(3),
     ]);
-    assert!(expired.edit(boundary(2), "shell-call").is_none());
+    assert!(matches!(
+        expired.edit(boundary(2), "shell-call"),
+        Some(TrimEdit::Tagged { trim_id, .. }) if trim_id == "trim_2"
+    ));
+    let stale = TrimRequest::parse(r#"{"TRIM_ID":"trim_2","op":"snip"}"#).unwrap();
+    assert!(expired.validate(&stale).is_err());
 }
 
 #[test]
@@ -200,7 +205,13 @@ fn failed_invalid_and_trim_tool_outputs_never_rewrite_candidates() {
             ToolOutcome::Failed,
         ),
     ]);
-    assert!(failed.edit(boundary(2), "shell-call").is_none());
+    assert!(matches!(
+        failed.edit(boundary(2), "shell-call"),
+        Some(TrimEdit::Tagged {
+            eligible: false,
+            ..
+        })
+    ));
 
     let invalid = TrimProjection::derive(&[
         trim_candidate(1, &trim_candidate_body("x")),
@@ -210,7 +221,13 @@ fn failed_invalid_and_trim_tool_outputs_never_rewrite_candidates() {
             ToolOutcome::Succeeded,
         ),
     ]);
-    assert!(invalid.edit(boundary(2), "shell-call").is_none());
+    assert!(matches!(
+        invalid.edit(boundary(2), "shell-call"),
+        Some(TrimEdit::Tagged {
+            eligible: false,
+            ..
+        })
+    ));
 
     let trim_output = trim_request(
         1,

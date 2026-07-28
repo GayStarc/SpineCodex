@@ -1274,7 +1274,7 @@ fn project_trim_item(
         return item;
     };
     let visible_body = match edit {
-        TrimEdit::Tagged { trim_id, body } => format!("[TRIM_ID: {trim_id}]\n{body}"),
+        TrimEdit::Tagged { trim_id, body, .. } => format!("[TRIM_ID: {trim_id}]\n{body}"),
         TrimEdit::Snipped => TOOL_RESULT_CLEARED_MESSAGE.to_string(),
         TrimEdit::Sliced(value) => value.clone(),
     };

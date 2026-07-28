@@ -339,9 +339,18 @@ impl TrimRequest {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TrimEdit {
-    Tagged { trim_id: String, body: String },
+    Tagged {
+        trim_id: String,
+        body: String,
+        #[serde(default = "trim_candidate_is_eligible")]
+        eligible: bool,
+    },
     Snipped,
     Sliced(String),
+}
+
+const fn trim_candidate_is_eligible() -> bool {
+    true
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -359,7 +368,14 @@ impl TrimProjection {
 
     pub fn validate(&self, request: &TrimRequest) -> Result<(), String> {
         let Some((_, edit)) = self.edits.values().find(|(_, edit)| {
-            matches!(edit, TrimEdit::Tagged { trim_id, .. } if trim_id == &request.trim_id)
+            matches!(
+                edit,
+                TrimEdit::Tagged {
+                    trim_id,
+                    eligible: true,
+                    ..
+                } if trim_id == &request.trim_id
+            )
         }) else {
             return Err(format!(
                 "spine.trim failed: previous completed toolcall does not contain TRIM_ID {}; do not retry",
