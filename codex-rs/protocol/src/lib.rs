@@ -39,6 +39,6 @@ mod spinecodex_compatibility {
     include!(concat!(env!("OUT_DIR"), "/spinecodex_compatibility.rs"));
 }
 
-pub use spinecodex_compatibility::{
-    CODEX_COMPAT_VERSION, CODEX_UPSTREAM_COMMIT, CODEX_UPSTREAM_TAG,
-};
+pub use spinecodex_compatibility::CODEX_COMPAT_VERSION;
+pub use spinecodex_compatibility::CODEX_UPSTREAM_COMMIT;
+pub use spinecodex_compatibility::CODEX_UPSTREAM_TAG;

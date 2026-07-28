@@ -1,6 +1,7 @@
 use std::env;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::path::PathBuf;
 
 fn required_string<'a>(metadata: &'a toml::Table, key: &str) -> &'a str {
     metadata
