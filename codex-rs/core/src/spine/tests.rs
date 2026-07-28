@@ -1516,6 +1516,24 @@ fn trim_tag_bytes_persist_after_eligibility_expires() {
 }
 
 #[test]
+fn trim_validation_rejects_a_visible_but_expired_id() {
+    let mut rollout = long_tool_rollout();
+    rollout.extend([
+        call("next-tool", "shell", r#"{"cmd":"next"}"#),
+        output("next-tool", Some(true), "short"),
+        call("trim", "spine.trim", r#"{"TRIM_ID":"trim_1","op":"snip"}"#),
+    ]);
+    let request =
+        codex_spine_core::TrimRequest::parse(r#"{"TRIM_ID":"trim_1","op":"snip"}"#).unwrap();
+
+    let error = validate_trim_request(&rollout, "trim", &request).unwrap_err();
+
+    assert!(error.contains("previous completed toolcall does not contain TRIM_ID trim_1"));
+    let projection = derive_from_rollout_with_features(&rollout, true, true, true);
+    assert!(output_text(&projection.context[1]).starts_with("[TRIM_ID: trim_1]"));
+}
+
+#[test]
 fn trim_custom_output_uses_the_same_tag_validate_and_edit_path() {
     let original = trim_candidate_text("0123456789\n");
     let base = vec![

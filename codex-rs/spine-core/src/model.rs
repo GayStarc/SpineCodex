@@ -339,18 +339,9 @@ impl TrimRequest {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TrimEdit {
-    Tagged {
-        trim_id: String,
-        body: String,
-        #[serde(default = "trim_candidate_is_eligible")]
-        eligible: bool,
-    },
+    Tagged { trim_id: String, body: String },
     Snipped,
     Sliced(String),
-}
-
-const fn trim_candidate_is_eligible() -> bool {
-    true
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -370,11 +361,7 @@ impl TrimProjection {
         let Some((_, edit)) = self.edits.values().find(|(_, edit)| {
             matches!(
                 edit,
-                TrimEdit::Tagged {
-                    trim_id,
-                    eligible: true,
-                    ..
-                } if trim_id == &request.trim_id
+                TrimEdit::Tagged { trim_id, .. } if trim_id == &request.trim_id
             )
         }) else {
             return Err(format!(

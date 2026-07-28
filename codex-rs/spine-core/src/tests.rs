@@ -82,7 +82,7 @@ fn ordinary_group(value: u64) -> RolloutEvent {
 }
 
 #[test]
-fn trim_projection_keeps_expired_tags_but_rejects_old_ids() {
+fn trim_projection_keeps_expired_tags() {
     let projection = TrimProjection::derive(&[
         trim_candidate(1, &trim_candidate_body("0123456789")),
         trim_request(
@@ -104,8 +104,6 @@ fn trim_projection_keeps_expired_tags_but_rejects_old_ids() {
         expired.edit(boundary(2), "shell-call"),
         Some(TrimEdit::Tagged { trim_id, .. }) if trim_id == "trim_2"
     ));
-    let stale = TrimRequest::parse(r#"{"TRIM_ID":"trim_2","op":"snip"}"#).unwrap();
-    assert!(expired.validate(&stale).is_err());
 }
 
 #[test]
@@ -207,10 +205,7 @@ fn failed_invalid_and_trim_tool_outputs_never_rewrite_candidates() {
     ]);
     assert!(matches!(
         failed.edit(boundary(2), "shell-call"),
-        Some(TrimEdit::Tagged {
-            eligible: false,
-            ..
-        })
+        Some(TrimEdit::Tagged { .. })
     ));
 
     let invalid = TrimProjection::derive(&[
@@ -223,10 +218,7 @@ fn failed_invalid_and_trim_tool_outputs_never_rewrite_candidates() {
     ]);
     assert!(matches!(
         invalid.edit(boundary(2), "shell-call"),
-        Some(TrimEdit::Tagged {
-            eligible: false,
-            ..
-        })
+        Some(TrimEdit::Tagged { .. })
     ));
 
     let trim_output = trim_request(
