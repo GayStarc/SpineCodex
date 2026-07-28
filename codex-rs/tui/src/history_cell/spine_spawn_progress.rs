@@ -505,7 +505,7 @@ fn append_activity_body(
     lines.resize(ACTIVITY_PREVIEW_LINES, Line::default());
     for line in &mut lines {
         line.spans
-            .insert(0, Span::styled(activity_prefix.clone(), muted_text_style()));
+            .insert(0, Span::from(activity_prefix.clone()).dim());
     }
     lines.push(activity_separator(task_prefix, task_is_last));
     if let Some(alphas) = alphas {

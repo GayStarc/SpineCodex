@@ -102,12 +102,74 @@ fn renders_live_mixed_child_statuses() {
         "running activity word should use the Spine brand color: {lines:?}"
     );
     for activity_line in &lines[2..6] {
-        assert_eq!(
-            activity_line.spans[0].style,
-            muted_text_style(),
-            "activity branch should use the muted preview style: {activity_line:?}"
+        assert!(
+            activity_line.spans[0]
+                .style
+                .add_modifier
+                .contains(Modifier::DIM),
+            "activity branch should use the tree prefix style: {activity_line:?}"
         );
+        assert_eq!(activity_line.spans[0].style.fg, None);
     }
+}
+
+#[test]
+fn non_last_activity_connector_matches_the_tree_separator() {
+    let mut cell = SpineSpawnOverlay::new(SpineSpawnProgressUpdatedNotification {
+        thread_id: "parent".to_string(),
+        turn_id: "turn-1".to_string(),
+        call_id: "spawn-1".to_string(),
+        tasks: vec![
+            SpineSpawnTaskProgress {
+                ordinal: 0,
+                summary: "inspect events".to_string(),
+                thread_id: "child-0".to_string(),
+                agent_path: Some("/root/inspector".to_string()),
+                status: CollabAgentStatus::Running,
+            },
+            SpineSpawnTaskProgress {
+                ordinal: 1,
+                summary: "review findings".to_string(),
+                thread_id: "child-1".to_string(),
+                agent_path: Some("/root/reviewer".to_string()),
+                status: CollabAgentStatus::Running,
+            },
+        ],
+    });
+    assert!(
+        cell.seed_activity(
+            "child-0",
+            [ServerNotification::ItemCompleted(
+                ItemCompletedNotification {
+                    item: ThreadItem::AgentMessage {
+                        id: "message-1".to_string(),
+                        text: "first task activity".to_string(),
+                        phase: None,
+                        memory_citation: None,
+                    },
+                    thread_id: "child-0".to_string(),
+                    turn_id: "turn-1".to_string(),
+                    completed_at_ms: 1,
+                },
+            )]
+            .into_iter(),
+        )
+    );
+
+    let lines = cell.display_lines("  │  ", true, 80, false);
+    for activity_line in &lines[1..5] {
+        let connector = &activity_line.spans[0];
+        assert_eq!(connector.content.as_ref(), "  │  │    ");
+        assert!(connector.style.add_modifier.contains(Modifier::DIM));
+        assert_eq!(connector.style.fg, None);
+    }
+    assert_eq!(lines[1].spans[1].style, muted_text_style());
+
+    let separator = &lines[5].spans[0];
+    assert_eq!(separator.content.as_ref(), "  │  │");
+    assert!(separator.style.add_modifier.contains(Modifier::DIM));
+    assert_eq!(separator.style.fg, None);
+    assert_eq!(separator.style, lines[1].spans[0].style);
 }
 
 #[test]
@@ -193,7 +255,13 @@ fn activity_preview_is_identical_with_or_without_animations() {
     let animated_lines = plain_lines(animated_render);
 
     assert_eq!(animated_lines, static_lines);
-    assert_eq!(static_render[1].spans[0].style, muted_text_style());
+    assert!(
+        static_render[1].spans[0]
+            .style
+            .add_modifier
+            .contains(Modifier::DIM)
+    );
+    assert_eq!(static_render[1].spans[0].style.fg, None);
     assert_eq!(static_render[1].spans[1].style, muted_text_style());
 }
 
