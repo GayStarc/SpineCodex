@@ -76,7 +76,9 @@ use codex_core::config::edit::ConfigEditsBuilder;
 use codex_core::config::find_codex_home;
 use codex_core::config::resolve_profile_v2_config_path;
 use codex_features::FEATURES;
+use codex_features::Feature;
 use codex_features::Stage;
+use codex_features::feature_for_key;
 use codex_features::is_known_feature_key;
 use codex_home::CodexHomeUserInstructionsProvider;
 use codex_login::AuthManager;
@@ -903,13 +905,21 @@ impl FeatureToggles {
         let mut v = Vec::new();
         for feature in &self.enable {
             Self::validate_feature(feature)?;
-            v.push(format!("features.{feature}=true"));
+            v.push(Self::override_for(feature, true));
         }
         for feature in &self.disable {
             Self::validate_feature(feature)?;
-            v.push(format!("features.{feature}=false"));
+            v.push(Self::override_for(feature, false));
         }
         Ok(v)
+    }
+
+    fn override_for(feature: &str, enabled: bool) -> String {
+        if feature_for_key(feature) == Some(Feature::SpineSpawn) {
+            format!("features.{feature}.enabled={enabled}")
+        } else {
+            format!("features.{feature}={enabled}")
+        }
     }
 
     fn validate_feature(feature: &str) -> anyhow::Result<()> {
@@ -4025,6 +4035,22 @@ mod tests {
             vec![
                 "features.web_search_request=true".to_string(),
                 "features.unified_exec=false".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn spine_spawn_toggle_preserves_configured_capacity() {
+        let toggles = FeatureToggles {
+            enable: vec!["spine_spawn".to_string()],
+            disable: vec!["spine_spawn".to_string()],
+        };
+        let overrides = toggles.to_overrides().expect("valid features");
+        assert_eq!(
+            overrides,
+            vec![
+                "features.spine_spawn.enabled=true".to_string(),
+                "features.spine_spawn.enabled=false".to_string(),
             ]
         );
     }
