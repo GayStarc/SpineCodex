@@ -20,6 +20,19 @@ use crate::history_cell::HistoryCell;
 use crate::pager_overlay::Overlay;
 use crate::tui;
 
+fn trailing_automatic_spine_tree_start(cells: &[Arc<dyn HistoryCell>]) -> usize {
+    let mut start = cells.len();
+    while start > 0
+        && cells[start - 1]
+            .as_any()
+            .downcast_ref::<history_cell::SpineTreeUpdateCell>()
+            .is_some_and(history_cell::SpineTreeUpdateCell::is_automatic_history)
+    {
+        start -= 1;
+    }
+    start
+}
+
 impl App {
     pub(super) fn handle_consolidate_agent_message(
         &mut self,
@@ -43,26 +56,33 @@ impl App {
         // Walk backward to find the contiguous run of streaming AgentMessageCells that
         // belong to the just-finalized stream.
         let end = self.transcript_cells.len();
+        let message_end = trailing_automatic_spine_tree_start(&self.transcript_cells);
         tracing::debug!(
             "ConsolidateAgentMessage: transcript_cells.len()={end}, source_len={}",
             source.len()
         );
-        let start = trailing_run_start::<history_cell::AgentMessageCell>(&self.transcript_cells);
-        if start < end {
+        let start = trailing_run_start::<history_cell::AgentMessageCell>(
+            &self.transcript_cells[..message_end],
+        );
+        if start < message_end {
             tracing::debug!(
-                "ConsolidateAgentMessage: replacing cells [{start}..{end}] with AgentMarkdownCell"
+                "ConsolidateAgentMessage: replacing cells [{start}..{message_end}] with AgentMarkdownCell"
             );
             let consolidated: Arc<dyn HistoryCell> =
                 Arc::new(history_cell::AgentMarkdownCell::new(source, &cwd));
             self.transcript_cells
-                .splice(start..end, std::iter::once(consolidated.clone()));
+                .splice(start..message_end, std::iter::once(consolidated.clone()));
 
             if let Some(Overlay::Transcript(t)) = &mut self.overlay {
-                t.consolidate_cells(start..end, consolidated.clone());
+                t.consolidate_cells(start..message_end, consolidated.clone());
                 tui.frame_requester().schedule_frame();
             }
 
-            self.finish_agent_message_consolidation(tui, scrollback_reflow)?;
+            if message_end < end {
+                self.finish_required_stream_reflow(tui)?;
+            } else {
+                self.finish_agent_message_consolidation(tui, scrollback_reflow)?;
+            }
         } else {
             tracing::debug!(
                 "ConsolidateAgentMessage: no cells to consolidate(start={start}, end={end})",

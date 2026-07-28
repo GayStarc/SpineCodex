@@ -11,6 +11,7 @@ use super::*;
 use crate::app_backtrack::BacktrackSelection;
 use crate::app_backtrack::BacktrackState;
 use crate::app_backtrack::user_count;
+use crate::app_event::ConsolidationScrollbackReflow;
 
 use crate::chatwidget::ChatWidgetInit;
 use crate::chatwidget::create_initial_user_message;
@@ -635,8 +636,58 @@ async fn inactive_thread_replay_restores_spawn_progress_projection() -> Result<(
     Ok(())
 }
 
+fn app_spine_snapshot(
+    thread_id: ThreadId,
+    turn_id: &str,
+    snapshot_seq: u64,
+    task_summary: Option<&str>,
+) -> SpineTreeUpdatedNotification {
+    let mut nodes = vec![SpineTreeNode {
+        node_id: "1".to_string(),
+        parent_id: None,
+        kind: SpineTreeNodeKind::Task,
+        status: if task_summary.is_some() {
+            SpineTreeNodeStatus::Opened
+        } else {
+            SpineTreeNodeStatus::Live
+        },
+        summary: Some("root".to_string()),
+        memory_summary: None,
+        start: 0,
+        end: None,
+        context_pressure: None,
+        spawn_outcome: None,
+    }];
+    if let Some(summary) = task_summary {
+        nodes.push(SpineTreeNode {
+            node_id: "1.1".to_string(),
+            parent_id: Some("1".to_string()),
+            kind: SpineTreeNodeKind::Task,
+            status: SpineTreeNodeStatus::Live,
+            summary: Some(summary.to_string()),
+            memory_summary: None,
+            start: 1,
+            end: None,
+            context_pressure: None,
+            spawn_outcome: None,
+        });
+    }
+    SpineTreeUpdatedNotification {
+        thread_id: thread_id.to_string(),
+        turn_id: turn_id.to_string(),
+        snapshot_seq,
+        active_node_id: if task_summary.is_some() {
+            "1.1".to_string()
+        } else {
+            "1".to_string()
+        },
+        settled_spawn_call_ids: Vec::new(),
+        nodes,
+    }
+}
+
 #[tokio::test]
-async fn committed_spine_tree_change_installs_a_source_independent_live_tail() -> Result<()> {
+async fn committed_spine_tree_change_inserts_history_without_a_live_tail() -> Result<()> {
     let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
     let thread_id = ThreadId::new();
     let cwd = tempdir()?;
@@ -706,17 +757,370 @@ async fn committed_spine_tree_change_installs_a_source_independent_live_tail() -
     )
     .await?;
 
+    assert_eq!(
+        app.chat_widget.active_cell_transcript_lines(80),
+        None,
+        "an ordinary tree edge must not occupy the bottom live tail"
+    );
     let rendered = app
-        .chat_widget
-        .active_cell_transcript_lines(80)
-        .expect("committed tree change should install a live tail")
+        .transcript_cells
+        .iter()
+        .find(|cell| {
+            cell.display_lines(80)
+                .iter()
+                .any(|line| line.to_string().contains("nested transition"))
+        })
+        .expect("committed tree change should insert an ordered history cell")
+        .display_lines(80)
         .into_iter()
         .map(|line| line.to_string())
         .collect::<Vec<_>>()
         .join("\n");
     assert!(rendered.contains("nested transition"), "{rendered}");
+    assert_eq!(app.transcript_cells.len(), 1);
+
+    let mut projection_only = app
+        .spine_tree_views
+        .get(&thread_id)
+        .and_then(SpineTreeViewState::snapshot)
+        .cloned()
+        .expect("accepted tree snapshot");
+    projection_only.snapshot_seq = 3;
+    projection_only.nodes[1].context_pressure =
+        Some(codex_app_server_protocol::SpineNodeContextPressure {
+            open_input_tokens: Some(10),
+            current_input_tokens: Some(20),
+            context_tokens: Some(30),
+            problem: None,
+        });
+    app.handle_event(
+        &mut tui,
+        &mut app_server,
+        AppEvent::UpsertSpineTreeCell {
+            snapshot: projection_only,
+        },
+    )
+    .await?;
+    assert_eq!(
+        app.transcript_cells.len(),
+        1,
+        "projection-only updates must not duplicate automatic history"
+    );
 
     app_server.shutdown().await.expect("app server shutdown");
+    Ok(())
+}
+
+#[tokio::test]
+async fn automatic_spine_history_replaces_only_a_trailing_same_turn_cell() -> Result<()> {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let thread_id = ThreadId::new();
+    app.chat_widget
+        .handle_thread_session_quiet(test_thread_session(
+            thread_id,
+            test_path_buf("/tmp/spine-upsert"),
+        ));
+    while app_event_rx.try_recv().is_ok() {}
+
+    let mut tui = crate::tui::test_support::make_test_tui().expect("test tui");
+    let mut app_server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
+        .await
+        .expect("embedded app server");
+    for snapshot in [
+        app_spine_snapshot(thread_id, "turn-a", 1, None),
+        app_spine_snapshot(thread_id, "turn-a", 2, Some("first automatic")),
+        app_spine_snapshot(thread_id, "turn-a", 3, Some("same-turn replacement")),
+    ] {
+        app.handle_event(
+            &mut tui,
+            &mut app_server,
+            AppEvent::UpsertSpineTreeCell { snapshot },
+        )
+        .await?;
+    }
+    assert_eq!(app.transcript_cells.len(), 1);
+    assert!(
+        app.transcript_cells[0]
+            .display_lines(80)
+            .iter()
+            .any(|line| line.to_string().contains("same-turn replacement"))
+    );
+
+    app.handle_event(
+        &mut tui,
+        &mut app_server,
+        AppEvent::UpsertSpineTreeCell {
+            snapshot: app_spine_snapshot(thread_id, "turn-b", 4, Some("different-turn append")),
+        },
+    )
+    .await?;
+    assert_eq!(app.transcript_cells.len(), 2);
+
+    app.insert_history_cell(
+        &mut tui,
+        Box::new(PlainHistoryCell::new(vec![Line::from(
+            "intervening history",
+        )])),
+    );
+    app.handle_event(
+        &mut tui,
+        &mut app_server,
+        AppEvent::UpsertSpineTreeCell {
+            snapshot: app_spine_snapshot(thread_id, "turn-b", 5, Some("after intervening history")),
+        },
+    )
+    .await?;
+    assert_eq!(app.transcript_cells.len(), 4);
+
+    app.handle_event(
+        &mut tui,
+        &mut app_server,
+        AppEvent::ShowSpineTreeSnapshot { debug: false },
+    )
+    .await?;
+    let explicit_index = app.transcript_cells.len() - 1;
+    let explicit = app.transcript_cells[explicit_index]
+        .as_any()
+        .downcast_ref::<crate::history_cell::SpineTreeUpdateCell>()
+        .expect("explicit tree cell");
+    assert!(!explicit.is_automatic_history());
+
+    app.handle_event(
+        &mut tui,
+        &mut app_server,
+        AppEvent::UpsertSpineTreeCell {
+            snapshot: app_spine_snapshot(thread_id, "turn-b", 6, Some("after explicit snapshot")),
+        },
+    )
+    .await?;
+    assert_eq!(app.transcript_cells.len(), explicit_index + 2);
+    let automatic = app
+        .transcript_cells
+        .last()
+        .and_then(|cell| {
+            cell.as_any()
+                .downcast_ref::<crate::history_cell::SpineTreeUpdateCell>()
+        })
+        .expect("automatic tree cell");
+    assert!(automatic.is_automatic_history());
+
+    app_server.shutdown().await.expect("app server shutdown");
+    Ok(())
+}
+
+#[tokio::test]
+async fn inactive_spine_history_coalesces_and_is_consumed_once_on_view_refresh() -> Result<()> {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let active_thread_id = ThreadId::new();
+    let inactive_thread_id = ThreadId::new();
+    app.chat_widget
+        .handle_thread_session_quiet(test_thread_session(
+            active_thread_id,
+            test_path_buf("/tmp/active-spine"),
+        ));
+    while app_event_rx.try_recv().is_ok() {}
+
+    let mut tui = crate::tui::test_support::make_test_tui().expect("test tui");
+    let mut app_server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
+        .await
+        .expect("embedded app server");
+    for snapshot in [
+        app_spine_snapshot(inactive_thread_id, "turn-a", 1, None),
+        app_spine_snapshot(inactive_thread_id, "turn-a", 2, Some("first inactive edge")),
+        app_spine_snapshot(
+            inactive_thread_id,
+            "turn-a",
+            3,
+            Some("latest inactive edge"),
+        ),
+    ] {
+        app.handle_event(
+            &mut tui,
+            &mut app_server,
+            AppEvent::UpsertSpineTreeCell { snapshot },
+        )
+        .await?;
+    }
+    assert!(app.transcript_cells.is_empty());
+    assert!(
+        app.spine_tree_views
+            .get(&inactive_thread_id)
+            .is_some_and(SpineTreeViewState::has_pending_history)
+    );
+
+    app.chat_widget
+        .handle_thread_session_quiet(test_thread_session(
+            inactive_thread_id,
+            test_path_buf("/tmp/inactive-spine"),
+        ));
+    for _ in 0..2 {
+        app.handle_event(
+            &mut tui,
+            &mut app_server,
+            AppEvent::SpineTreeViewChanged {
+                parent_thread_id: inactive_thread_id,
+            },
+        )
+        .await?;
+    }
+    assert_eq!(app.transcript_cells.len(), 1);
+    let rendered = lines_to_single_string(&app.transcript_cells[0].display_lines(80));
+    assert!(!rendered.contains("first inactive edge"), "{rendered}");
+    assert!(rendered.contains("latest inactive edge"), "{rendered}");
+    assert!(
+        !app.spine_tree_views
+            .get(&inactive_thread_id)
+            .is_some_and(SpineTreeViewState::has_pending_history)
+    );
+
+    app_server.shutdown().await.expect("app server shutdown");
+    Ok(())
+}
+
+#[tokio::test]
+async fn due_spine_handoff_promotes_after_intervening_history_and_clears_live_tail() -> Result<()> {
+    let mut app = make_test_app().await;
+    let thread_id = ThreadId::new();
+    app.chat_widget
+        .handle_thread_session_quiet(test_thread_session(
+            thread_id,
+            test_path_buf("/tmp/spine-handoff"),
+        ));
+
+    let mut state = SpineTreeViewState::new(/*animations_enabled*/ true);
+    state.apply_tree_update(app_spine_snapshot(thread_id, "turn-a", 1, None));
+    state.apply_spawn_progress(SpineSpawnProgressUpdatedNotification {
+        thread_id: thread_id.to_string(),
+        turn_id: "turn-a".to_string(),
+        call_id: "spawn-a".to_string(),
+        tasks: vec![SpineSpawnTaskProgress {
+            ordinal: 0,
+            summary: "retiring worker".to_string(),
+            thread_id: ThreadId::new().to_string(),
+            agent_path: Some("/root/retiring-worker".to_string()),
+            status: CollabAgentStatus::Completed,
+        }],
+    });
+    let mut settled = app_spine_snapshot(thread_id, "turn-a", 2, Some("imported final worker"));
+    settled.active_node_id = "1".to_string();
+    settled.nodes[0].status = SpineTreeNodeStatus::Live;
+    settled.nodes[1].status = SpineTreeNodeStatus::Closed;
+    settled.nodes[1].spawn_outcome = Some(codex_app_server_protocol::SpineSpawnOutcome::Completed);
+    settled.settled_spawn_call_ids = vec!["spawn-a".to_string()];
+    state.apply_tree_update(settled);
+    assert!(state.render_cell().is_some(), "handoff should own live");
+    assert!(
+        !state.has_pending_history(),
+        "final history must stay hidden before reveal"
+    );
+    state.make_pending_handoff_due();
+
+    app.chat_widget
+        .set_spine_tree_view(state.snapshot().cloned(), state.render_cell());
+    app.spine_tree_views.insert(thread_id, state);
+    let mut tui = crate::tui::test_support::make_test_tui().expect("test tui");
+    app.insert_history_cell(
+        &mut tui,
+        Box::new(PlainHistoryCell::new(vec![Line::from(
+            "intervening history",
+        )])),
+    );
+    app.overlay = Some(Overlay::new_transcript(
+        app.transcript_cells.clone(),
+        app.keymap.pager.clone(),
+    ));
+
+    app.handle_draw_pre_render(&mut tui)?;
+    app.handle_draw_pre_render(&mut tui)?;
+
+    assert_eq!(app.transcript_cells.len(), 2);
+    assert!(
+        app.transcript_cells[0]
+            .display_lines(80)
+            .iter()
+            .any(|line| line.to_string().contains("intervening history"))
+    );
+    assert!(
+        app.transcript_cells[1]
+            .display_lines(80)
+            .iter()
+            .any(|line| line.to_string().contains("imported final worker"))
+    );
+    assert!(
+        app.transcript_cells[1]
+            .as_any()
+            .downcast_ref::<crate::history_cell::SpineTreeUpdateCell>()
+            .is_some_and(crate::history_cell::SpineTreeUpdateCell::is_automatic_history)
+    );
+    assert_eq!(app.chat_widget.active_cell_transcript_lines(80), None);
+    assert!(
+        app.spine_tree_views
+            .get(&thread_id)
+            .is_some_and(|state| state.render_cell().is_none())
+    );
+    let overlay_cell_count = match app.overlay.as_ref() {
+        Some(Overlay::Transcript(transcript)) => transcript.committed_cell_count(),
+        _ => panic!("expected transcript overlay"),
+    };
+    assert_eq!(overlay_cell_count, app.transcript_cells.len());
+    Ok(())
+}
+
+#[tokio::test]
+async fn automatic_spine_history_does_not_block_agent_message_consolidation() -> Result<()> {
+    let mut app = make_test_app().await;
+    let thread_id = ThreadId::new();
+    app.chat_widget
+        .handle_thread_session_quiet(test_thread_session(
+            thread_id,
+            test_path_buf("/tmp/spine-consolidation"),
+        ));
+    app.transcript_cells = vec![
+        Arc::new(AgentMessageCell::new(
+            vec![Line::from("stream first")],
+            /*is_first_line*/ true,
+        )) as Arc<dyn HistoryCell>,
+        Arc::new(AgentMessageCell::new(
+            vec![Line::from("stream continuation")],
+            /*is_first_line*/ false,
+        )) as Arc<dyn HistoryCell>,
+    ];
+
+    let mut state = SpineTreeViewState::default();
+    state.apply_tree_update(app_spine_snapshot(thread_id, "turn-a", 1, None));
+    state.apply_tree_update(app_spine_snapshot(
+        thread_id,
+        "turn-a",
+        2,
+        Some("tree after stream"),
+    ));
+    let tree = state
+        .take_pending_history_cell()
+        .expect("semantic edge should produce history");
+    let mut tui = crate::tui::test_support::make_test_tui().expect("test tui");
+    app.upsert_spine_tree_history(&mut tui, tree)?;
+    app.handle_consolidate_agent_message(
+        &mut tui,
+        "final source".to_string(),
+        test_path_buf("/tmp/spine-consolidation"),
+        ConsolidationScrollbackReflow::Required,
+        None,
+    )?;
+
+    assert_eq!(app.transcript_cells.len(), 2);
+    assert!(app.transcript_cells[0].as_any().is::<AgentMarkdownCell>());
+    assert!(
+        app.transcript_cells[1]
+            .as_any()
+            .downcast_ref::<crate::history_cell::SpineTreeUpdateCell>()
+            .is_some_and(crate::history_cell::SpineTreeUpdateCell::is_automatic_history)
+    );
+    assert!(
+        app.transcript_cells[1]
+            .display_lines(80)
+            .iter()
+            .any(|line| line.to_string().contains("tree after stream"))
+    );
     Ok(())
 }
 

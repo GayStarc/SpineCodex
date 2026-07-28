@@ -447,6 +447,15 @@ impl App {
 
         self.reset_for_thread_switch(tui)?;
         self.replay_thread_snapshot(snapshot, !is_replay_only);
+        if self
+            .spine_tree_views
+            .get(&thread_id)
+            .is_some_and(crate::history_cell::SpineTreeViewState::has_pending_history)
+        {
+            self.app_event_tx.send(AppEvent::SpineTreeViewChanged {
+                parent_thread_id: thread_id,
+            });
+        }
         if is_replay_only {
             let message = if attached_replay_only {
                 format!(

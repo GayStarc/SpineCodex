@@ -30,6 +30,7 @@ pub(crate) fn new_spine_tree_snapshot(
         spawn_overlays: Vec::new(),
         pending_handoff: None,
         animations_enabled: false,
+        automatic_history: false,
     }
 }
 
@@ -42,6 +43,7 @@ pub(crate) fn new_debug_spine_tree_snapshot(
         spawn_overlays: Vec::new(),
         pending_handoff: None,
         animations_enabled: false,
+        automatic_history: false,
     }
 }
 
@@ -55,13 +57,14 @@ pub(crate) fn new_debug_spine_node_snapshot(
         spawn_overlays: Vec::new(),
         pending_handoff: None,
         animations_enabled: false,
+        automatic_history: false,
     }
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct SpineTreeViewState {
     snapshot: Option<SpineTreeUpdatedNotification>,
-    tree_change_observed: bool,
+    pending_history: Option<SpineTreeUpdatedNotification>,
     overlays: Vec<SpineSpawnOverlay>,
     settled_spawn_call_ids: HashSet<String>,
     pending_handoff: Option<PendingTreeHandoff>,
@@ -85,7 +88,7 @@ impl SpineTreeViewState {
     pub(crate) fn new(animations_enabled: bool) -> Self {
         Self {
             snapshot: None,
-            tree_change_observed: false,
+            pending_history: None,
             overlays: Vec::new(),
             settled_spawn_call_ids: HashSet::new(),
             pending_handoff: None,
@@ -102,8 +105,6 @@ impl SpineTreeViewState {
     }
 
     fn apply_tree_update_at(&mut self, snapshot: SpineTreeUpdatedNotification, now: Instant) {
-        self.pending_handoff
-            .take_if(|pending| now >= pending.reveal_at);
         if self
             .snapshot
             .as_ref()
@@ -121,14 +122,16 @@ impl SpineTreeViewState {
             .snapshot
             .as_ref()
             .is_some_and(|current| display_tree_changed(current, &snapshot));
-        if self.pending_handoff.is_some() && (!newly_settled.is_empty() || display_changed) {
+        let handoff_superseded =
+            self.pending_handoff.is_some() && (!newly_settled.is_empty() || display_changed);
+        if handoff_superseded {
             self.pending_handoff = None;
         }
-        self.tree_change_observed |= display_changed;
         let prior = self.snapshot.replace(snapshot);
         self.settled_spawn_call_ids
             .extend(newly_settled.iter().cloned());
 
+        let mut started_handoff = false;
         if !newly_settled.is_empty()
             && let (true, Some(prior), Some(settled_tasks), Some(latest)) = (
                 self.animations_enabled,
@@ -152,9 +155,18 @@ impl SpineTreeViewState {
                     .cloned()
                     .collect(),
             });
+            started_handoff = true;
         }
         self.overlays
             .retain(|overlay| !self.settled_spawn_call_ids.contains(overlay.call_id()));
+
+        let refresh_pending_history = !started_handoff
+            && (display_changed
+                || handoff_superseded
+                || (self.pending_handoff.is_none() && self.pending_history.is_some()));
+        if refresh_pending_history {
+            self.pending_history = self.snapshot.clone();
+        }
     }
 
     fn settled_visuals_for(&self, call_ids: &[String]) -> Option<Vec<SettledTaskVisual>> {
@@ -188,6 +200,9 @@ impl SpineTreeViewState {
         let before = self.overlays.len();
         self.overlays
             .retain(|overlay| turn_id.is_some_and(|turn_id| overlay.turn_id() != turn_id));
+        if pending_cleared {
+            self.pending_history = self.snapshot.clone();
+        }
         pending_cleared || self.overlays.len() != before
     }
 
@@ -275,7 +290,7 @@ impl SpineTreeViewState {
     }
 
     pub(crate) fn render_cell(&self) -> Option<SpineTreeUpdateCell> {
-        if !self.tree_change_observed && self.overlays.is_empty() {
+        if self.overlays.is_empty() && self.pending_handoff.is_none() {
             return None;
         }
         let snapshot = self.snapshot.clone()?;
@@ -285,6 +300,7 @@ impl SpineTreeViewState {
             spawn_overlays: self.overlays.clone(),
             pending_handoff: self.pending_handoff.clone(),
             animations_enabled: self.animations_enabled,
+            automatic_history: false,
         })
     }
 
@@ -296,7 +312,40 @@ impl SpineTreeViewState {
             spawn_overlays: Vec::new(),
             pending_handoff: None,
             animations_enabled: false,
+            automatic_history: false,
         })
+    }
+
+    pub(crate) fn take_pending_history_cell(&mut self) -> Option<SpineTreeUpdateCell> {
+        self.pending_history
+            .take()
+            .map(SpineTreeUpdateCell::automatic_history)
+    }
+
+    pub(crate) fn has_pending_history(&self) -> bool {
+        self.pending_history.is_some()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn make_pending_handoff_due(&mut self) {
+        if let Some(handoff) = self.pending_handoff.as_mut() {
+            handoff.reveal_at = Instant::now();
+        }
+    }
+
+    pub(crate) fn take_due_handoff_history(&mut self, now: Instant) -> Option<SpineTreeUpdateCell> {
+        if self.pending_history.is_some()
+            || self
+                .pending_handoff
+                .as_ref()
+                .is_none_or(|pending| now < pending.reveal_at)
+        {
+            return None;
+        }
+        self.pending_handoff = None;
+        self.snapshot
+            .clone()
+            .map(SpineTreeUpdateCell::automatic_history)
     }
 
     #[cfg(test)]
@@ -337,6 +386,7 @@ pub(crate) struct SpineTreeUpdateCell {
     spawn_overlays: Vec<SpineSpawnOverlay>,
     pending_handoff: Option<PendingTreeHandoff>,
     animations_enabled: bool,
+    automatic_history: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -380,6 +430,29 @@ impl HistoryCell for SpineTreeUpdateCell {
 }
 
 impl SpineTreeUpdateCell {
+    fn automatic_history(snapshot: SpineTreeUpdatedNotification) -> Self {
+        Self {
+            snapshot,
+            display_mode: SpineTreeDisplayMode::Pretty,
+            spawn_overlays: Vec::new(),
+            pending_handoff: None,
+            animations_enabled: false,
+            automatic_history: true,
+        }
+    }
+
+    pub(crate) fn turn_id(&self) -> &str {
+        &self.snapshot.turn_id
+    }
+
+    pub(crate) fn snapshot_seq(&self) -> u64 {
+        self.snapshot.snapshot_seq
+    }
+
+    pub(crate) fn is_automatic_history(&self) -> bool {
+        self.automatic_history
+    }
+
     pub(crate) fn next_frame_in(&self, now: Instant) -> Option<Duration> {
         if !self.animations_enabled || !matches!(self.display_mode, SpineTreeDisplayMode::Pretty) {
             return None;
@@ -1604,10 +1677,11 @@ mod tests {
 
         assert!(state.render_cell().is_none());
         assert!(state.snapshot_cell().is_some());
+        assert!(state.take_pending_history_cell().is_none());
     }
 
     #[test]
-    fn display_tree_change_creates_a_live_tail_without_an_overlay() {
+    fn display_tree_change_does_not_create_a_live_tail_without_an_overlay() {
         let mut state = SpineTreeViewState::default();
         state.apply_tree_update(snapshot(
             "1",
@@ -1629,13 +1703,59 @@ mod tests {
         changed.snapshot_seq = 2;
         state.apply_tree_update(changed);
 
-        let rendered = render(
-            &state
-                .render_cell()
-                .expect("tree change should create a live tail")
-                .display_lines(80),
+        assert!(
+            state.render_cell().is_none(),
+            "an ordinary tree edge belongs in history, not the bottom live tail"
         );
-        assert!(rendered.contains("nested task"), "{rendered}");
+        let history = state
+            .take_pending_history_cell()
+            .expect("the ordinary edge should emit one history effect");
+        assert!(history.is_automatic_history());
+        assert!(
+            render(&history.display_lines(80)).contains("nested task"),
+            "history must capture the accepted semantic edge"
+        );
+        assert!(
+            state.take_pending_history_cell().is_none(),
+            "the edge effect must be consumed exactly once"
+        );
+    }
+
+    #[test]
+    fn automatic_history_uses_the_same_renderer_as_an_explicit_snapshot() {
+        let mut state = SpineTreeViewState::default();
+        state.apply_tree_update(snapshot(
+            "1",
+            vec![node("1", None, Some("root"), SpineTreeNodeStatus::Live)],
+        ));
+        let mut changed = snapshot(
+            "1.1",
+            vec![
+                node("1", None, Some("root"), SpineTreeNodeStatus::Opened),
+                node(
+                    "1.1",
+                    Some("1"),
+                    Some("renderer equivalence"),
+                    SpineTreeNodeStatus::Live,
+                ),
+            ],
+        );
+        changed.snapshot_seq = 2;
+        state.apply_tree_update(changed);
+
+        let automatic = state
+            .take_pending_history_cell()
+            .expect("automatic history");
+        let explicit = state.snapshot_cell().expect("explicit snapshot");
+        for width in [20, 80] {
+            assert_eq!(
+                automatic.display_lines(width),
+                explicit.display_lines(width)
+            );
+        }
+        assert_eq!(automatic.raw_lines(), explicit.raw_lines());
+        assert!(automatic.is_automatic_history());
+        assert!(!explicit.is_automatic_history());
     }
 
     #[test]
@@ -1661,10 +1781,11 @@ mod tests {
         state.apply_tree_update(projection_only);
 
         assert!(state.render_cell().is_none());
+        assert!(state.take_pending_history_cell().is_none());
     }
 
     #[test]
-    fn projection_only_updates_do_not_hide_an_observed_tree_change() {
+    fn projection_only_updates_do_not_restore_a_consumed_tree_edge() {
         let mut state = SpineTreeViewState::default();
         state.apply_tree_update(snapshot(
             "1",
@@ -1697,7 +1818,16 @@ mod tests {
             });
         state.apply_tree_update(changed);
 
-        assert!(state.render_cell().is_some());
+        assert!(
+            state.render_cell().is_none(),
+            "a projection-only update must not restore bottom live ownership"
+        );
+        let history = state
+            .take_pending_history_cell()
+            .expect("the prior semantic edge should remain pending once");
+        assert_eq!(history.snapshot_seq(), 3);
+        assert!(render(&history.display_lines(80)).contains("nested task"));
+        assert!(state.take_pending_history_cell().is_none());
     }
 
     #[test]
@@ -1731,10 +1861,11 @@ mod tests {
                 .map(|snapshot| snapshot.active_node_id.as_str()),
             Some("1")
         );
+        assert!(state.take_pending_history_cell().is_none());
     }
 
     #[test]
-    fn spawn_outcome_change_creates_a_live_tail() {
+    fn spawn_outcome_change_creates_history_without_a_live_tail() {
         let mut state = SpineTreeViewState::default();
         state.apply_tree_update(snapshot(
             "1",
@@ -1759,11 +1890,12 @@ mod tests {
         changed.nodes[0].spawn_outcome = Some(SpineSpawnOutcome::Completed);
         state.apply_tree_update(changed);
 
-        assert!(state.render_cell().is_some());
+        assert!(state.render_cell().is_none());
+        assert!(state.take_pending_history_cell().is_some());
     }
 
     #[test]
-    fn settled_spawn_overlay_is_replaced_by_the_committed_tree() {
+    fn settled_spawn_without_animation_commits_history() {
         let mut state = SpineTreeViewState::default();
         state.apply_tree_update(snapshot(
             "1",
@@ -1799,10 +1931,11 @@ mod tests {
         state.apply_tree_update(committed);
 
         assert!(!state.has_spawn_call("spawn-1"));
+        assert!(state.render_cell().is_none());
         let rendered = render(
             &state
-                .render_cell()
-                .expect("committed spawn tree should remain visible")
+                .take_pending_history_cell()
+                .expect("settlement should commit visible history")
                 .display_lines(80),
         );
         assert!(rendered.contains("worker"), "{rendered}");
@@ -1899,9 +2032,14 @@ mod tests {
         assert_eq!(cell.next_frame_in(pending.reveal_at), None);
         assert!(!revealed.contains("retiring worker"), "{revealed}");
         assert!(revealed.contains("imported worker"), "{revealed}");
-        state.apply_tree_update_at(committed, pending.reveal_at);
+        let promoted = state
+            .take_due_handoff_history(pending.reveal_at)
+            .expect("due handoff should promote the final tree once");
         assert!(!state.has_spawn_call("spawn-animated"));
         assert!(state.pending_handoff.is_none());
+        assert!(state.render_cell().is_none());
+        assert!(render(&promoted.display_lines(80)).contains("imported worker"));
+        assert!(state.take_due_handoff_history(pending.reveal_at).is_none());
     }
 
     #[test]
@@ -1943,10 +2081,11 @@ mod tests {
 
         assert!(state.clear_incomplete_spawn_overlays(Some("turn")));
         assert!(state.pending_handoff.is_none());
+        assert!(state.render_cell().is_none());
         let rendered = render(
             &state
-                .render_cell()
-                .expect("authoritative tree")
+                .take_pending_history_cell()
+                .expect("clearing a handoff should retain the authoritative tree")
                 .display_lines_at(80, start),
         );
         assert!(rendered.contains("imported worker"), "{rendered}");
@@ -1997,10 +2136,11 @@ mod tests {
 
             assert!(state.pending_handoff.is_none());
             assert!(!state.has_spawn_call("spawn-reveal"));
+            assert!(state.render_cell().is_none());
             let rendered = render(
                 &state
-                    .render_cell()
-                    .expect("authoritative tree")
+                    .take_pending_history_cell()
+                    .expect("non-animated settlement should commit history")
                     .display_lines(80),
             );
             assert!(rendered.contains("imported worker"), "{rendered}");
@@ -2009,7 +2149,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_settled_overlay_reveals_authoritative_tree() {
+    fn missing_settled_overlay_supersedes_handoff_into_history() {
         let mut state = SpineTreeViewState::new(true);
         state.apply_tree_update(snapshot(
             "1",
@@ -2037,12 +2177,20 @@ mod tests {
         );
         committed.nodes[1].spawn_outcome = Some(SpineSpawnOutcome::Completed);
         committed.snapshot_seq = 2;
-        committed.settled_spawn_call_ids =
-            vec!["spawn-present".to_string(), "spawn-missing".to_string()];
+        committed.settled_spawn_call_ids = vec!["spawn-present".to_string()];
+        state.apply_tree_update(committed.clone());
+        assert!(state.pending_handoff.is_some());
+
+        committed.snapshot_seq = 3;
+        committed
+            .settled_spawn_call_ids
+            .push("spawn-missing".to_string());
         state.apply_tree_update(committed);
 
         assert!(state.pending_handoff.is_none());
         assert!(!state.has_spawn_call("spawn-present"));
+        assert!(state.render_cell().is_none());
+        assert!(state.take_pending_history_cell().is_some());
     }
 
     #[test]
@@ -2146,13 +2294,62 @@ mod tests {
 
         assert!(state.pending_handoff.is_none());
         assert!(!state.has_spawn_call("spawn-generation"));
+        assert!(state.render_cell().is_none());
         let rendered = render(
             &state
-                .render_cell()
-                .expect("new generation")
+                .take_pending_history_cell()
+                .expect("superseding authority should commit history")
                 .display_lines(80),
         );
         assert!(rendered.contains("imported worker"), "{rendered}");
+    }
+
+    #[test]
+    fn inactive_tree_edges_coalesce_to_the_latest_history_effect() {
+        let mut state = SpineTreeViewState::default();
+        state.apply_tree_update(snapshot(
+            "1",
+            vec![node("1", None, Some("root"), SpineTreeNodeStatus::Live)],
+        ));
+
+        let mut first = snapshot(
+            "1.1",
+            vec![
+                node("1", None, Some("root"), SpineTreeNodeStatus::Opened),
+                node(
+                    "1.1",
+                    Some("1"),
+                    Some("first inactive edge"),
+                    SpineTreeNodeStatus::Live,
+                ),
+            ],
+        );
+        first.snapshot_seq = 2;
+        state.apply_tree_update(first);
+
+        let mut latest = snapshot(
+            "1.2",
+            vec![
+                node("1", None, Some("root"), SpineTreeNodeStatus::Opened),
+                node(
+                    "1.2",
+                    Some("1"),
+                    Some("latest inactive edge"),
+                    SpineTreeNodeStatus::Live,
+                ),
+            ],
+        );
+        latest.snapshot_seq = 3;
+        state.apply_tree_update(latest);
+
+        let history = state
+            .take_pending_history_cell()
+            .expect("inactive edges should retain one pending presentation");
+        let rendered = render(&history.display_lines(80));
+        assert!(!rendered.contains("first inactive edge"), "{rendered}");
+        assert!(rendered.contains("latest inactive edge"), "{rendered}");
+        assert_eq!(history.snapshot_seq(), 3);
+        assert!(state.take_pending_history_cell().is_none());
     }
 
     #[test]

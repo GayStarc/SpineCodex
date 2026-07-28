@@ -346,6 +346,7 @@ impl App {
             tui.clear_pending_history_lines();
         }
         self.maybe_run_resize_reflow(tui)?;
+        self.promote_due_spine_tree_handoff(tui)?;
         Ok(())
     }
 

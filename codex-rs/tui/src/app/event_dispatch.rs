@@ -237,8 +237,9 @@ impl App {
                 let Some(parent_thread_id) = ThreadId::from_string(&snapshot.thread_id).ok() else {
                     return Ok(AppRunControl::Continue);
                 };
+                let is_active = self.chat_widget.thread_id() == Some(parent_thread_id);
                 let animations_enabled = self.config.animations;
-                let live = {
+                let (history, live) = {
                     let state = self
                         .spine_tree_views
                         .entry(parent_thread_id)
@@ -246,9 +247,15 @@ impl App {
                             crate::history_cell::SpineTreeViewState::new(animations_enabled)
                         });
                     state.apply_tree_update(snapshot);
-                    (state.snapshot().cloned(), state.render_cell())
+                    let history = is_active
+                        .then(|| state.take_pending_history_cell())
+                        .flatten();
+                    (history, (state.snapshot().cloned(), state.render_cell()))
                 };
-                if self.chat_widget.thread_id() == Some(parent_thread_id) {
+                if is_active {
+                    if let Some(cell) = history {
+                        self.upsert_spine_tree_history(tui, cell)?;
+                    }
                     self.chat_widget.set_spine_tree_view(live.0, live.1);
                     tui.frame_requester().schedule_frame();
                 }
@@ -304,11 +311,24 @@ impl App {
                 }
             }
             AppEvent::SpineTreeViewChanged { parent_thread_id } => {
-                if self.chat_widget.thread_id() == Some(parent_thread_id)
-                    && let Some(state) = self.spine_tree_views.get(&parent_thread_id)
-                {
-                    self.chat_widget
-                        .set_spine_tree_view(state.snapshot().cloned(), state.render_cell());
+                if self.chat_widget.thread_id() == Some(parent_thread_id) {
+                    let view = self
+                        .spine_tree_views
+                        .get_mut(&parent_thread_id)
+                        .map(|state| {
+                            (
+                                state.take_pending_history_cell(),
+                                state.snapshot().cloned(),
+                                state.render_cell(),
+                            )
+                        });
+                    let Some((history, snapshot, live_cell)) = view else {
+                        return Ok(AppRunControl::Continue);
+                    };
+                    if let Some(cell) = history {
+                        self.upsert_spine_tree_history(tui, cell)?;
+                    }
+                    self.chat_widget.set_spine_tree_view(snapshot, live_cell);
                     tui.frame_requester().schedule_frame();
                 }
             }
@@ -316,17 +336,27 @@ impl App {
                 parent_thread_id,
                 turn_id,
             } => {
-                let live = self
+                let is_active = self.chat_widget.thread_id() == Some(parent_thread_id);
+                let update = self
                     .spine_tree_views
                     .get_mut(&parent_thread_id)
                     .and_then(|state| {
                         state
                             .clear_incomplete_spawn_overlays(turn_id.as_deref())
-                            .then(|| (state.snapshot().cloned(), state.render_cell()))
+                            .then(|| {
+                                (
+                                    is_active
+                                        .then(|| state.take_pending_history_cell())
+                                        .flatten(),
+                                    state.snapshot().cloned(),
+                                    state.render_cell(),
+                                )
+                            })
                     });
-                if self.chat_widget.thread_id() == Some(parent_thread_id)
-                    && let Some((snapshot, live_cell)) = live
-                {
+                if is_active && let Some((history, snapshot, live_cell)) = update {
+                    if let Some(cell) = history {
+                        self.upsert_spine_tree_history(tui, cell)?;
+                    }
                     self.chat_widget.set_spine_tree_view(snapshot, live_cell);
                     tui.frame_requester().schedule_frame();
                 }
