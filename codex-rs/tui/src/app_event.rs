@@ -657,12 +657,12 @@ pub(crate) enum AppEvent {
         result: Result<SkillsListResponse, String>,
     },
 
-    /// Begin buffering initial resume replay rows before they are written to scrollback.
-    BeginInitialHistoryReplayBuffer,
-
-    /// Begin buffering thread-switch replay cells so the final scrollback write can reuse the
-    /// resize-reflow tail renderer.
-    BeginThreadSwitchHistoryReplayBuffer,
+    /// Begin one identified history replay envelope. The identity lets the consumer discard a
+    /// startup or thread-switch replay superseded before all of its queued cells are handled.
+    BeginHistoryReplayBuffer {
+        thread_id: ThreadId,
+        replay_epoch: u64,
+    },
 
     InsertHistoryCell(Box<dyn HistoryCell>),
 

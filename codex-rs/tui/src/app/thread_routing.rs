@@ -1264,13 +1264,18 @@ impl App {
             .set_initial_user_message_submit_suppressed(/*suppressed*/ true);
         self.chat_widget.handle_thread_session(session);
         let should_buffer_initial_replay = !turns.is_empty();
-        if should_buffer_initial_replay {
-            self.app_event_tx
-                .send(AppEvent::BeginInitialHistoryReplayBuffer);
+        let initial_replay_epoch = should_buffer_initial_replay
+            .then(|| self.prepare_initial_history_replay_buffer(thread_id))
+            .flatten();
+        if let Some(replay_epoch) = initial_replay_epoch {
+            self.app_event_tx.send(AppEvent::BeginHistoryReplayBuffer {
+                thread_id,
+                replay_epoch,
+            });
         }
         self.chat_widget
             .replay_thread_turns(turns, ReplayKind::ResumeInitialMessages);
-        if should_buffer_initial_replay {
+        if initial_replay_epoch.is_some() {
             self.app_event_tx
                 .send(AppEvent::EndInitialHistoryReplayBuffer);
         }
@@ -1454,9 +1459,14 @@ impl App {
     ) {
         self.refresh_mcp_startup_expected_servers_from_config();
         let should_buffer_replay = !snapshot.turns.is_empty() || !snapshot.events.is_empty();
-        if should_buffer_replay {
-            self.app_event_tx
-                .send(AppEvent::BeginThreadSwitchHistoryReplayBuffer);
+        let replay_thread_id = self.chat_widget.thread_id();
+        let buffer_replay = should_buffer_replay && replay_thread_id.is_some();
+        if let Some(thread_id) = replay_thread_id.filter(|_| buffer_replay) {
+            let replay_epoch = self.prepare_thread_switch_history_replay_buffer(thread_id);
+            self.app_event_tx.send(AppEvent::BeginHistoryReplayBuffer {
+                thread_id,
+                replay_epoch,
+            });
         }
         let suppress_replay_notices =
             replay_filter::snapshot_has_pending_interactive_request(&snapshot);
@@ -1487,7 +1497,7 @@ impl App {
             }
             self.handle_thread_event_replay(event);
         }
-        if should_buffer_replay {
+        if buffer_replay {
             self.app_event_tx
                 .send(AppEvent::EndInitialHistoryReplayBuffer);
         }
@@ -1499,7 +1509,10 @@ impl App {
         if resume_restored_queue {
             self.chat_widget.maybe_send_next_queued_input();
         }
-        self.refresh_spine_tree_view_for_chat_widget();
+        if !buffer_replay && let Some(parent_thread_id) = self.chat_widget.thread_id() {
+            self.app_event_tx
+                .send(AppEvent::SpineTreeViewChanged { parent_thread_id });
+        }
         self.refresh_status_line();
     }
 
@@ -1565,6 +1578,14 @@ impl App {
         response: &ThreadRollbackResponse,
         origin: ThreadRollbackOrigin,
     ) {
+        *self
+            .spine_projection_rollback_fences
+            .entry(thread_id)
+            .or_default() += 1;
+        self.spine_tree_views.remove(&thread_id);
+        if self.chat_widget.thread_id() == Some(thread_id) {
+            self.chat_widget.set_spine_tree_view(None, None);
+        }
         if let Some(channel) = self.thread_event_channels.get(&thread_id) {
             let mut store = channel.store.lock().await;
             store.apply_thread_rollback(response);

@@ -566,6 +566,7 @@ impl TranscriptOverlay {
     /// transcript overlay immediately reflects the same committed cells as the main transcript.
     pub(crate) fn replace_cells(&mut self, cells: Vec<Arc<dyn HistoryCell>>) {
         let follow_bottom = self.view.is_scrolled_to_bottom();
+        let tail_renderable = self.take_live_tail_renderable();
         self.cells = cells;
         if self
             .highlight_cell
@@ -573,7 +574,10 @@ impl TranscriptOverlay {
         {
             self.highlight_cell = None;
         }
-        self.rebuild_renderables();
+        self.view.renderables = Self::render_cells(&self.cells, self.highlight_cell);
+        if let Some(tail) = tail_renderable {
+            self.view.renderables.push(tail);
+        }
         if follow_bottom {
             self.view.scroll_offset = usize::MAX;
         }
@@ -592,6 +596,7 @@ impl TranscriptOverlay {
         consolidated: Arc<dyn HistoryCell>,
     ) {
         let follow_bottom = self.view.is_scrolled_to_bottom();
+        let tail_renderable = self.take_live_tail_renderable();
         // Clamp the range to the overlay's cell count to avoid panic if the overlay has fewer
         // cells than the main transcript (e.g. cells were inserted after the overlay has opened).
         let clamped_end = range.end.min(self.cells.len());
@@ -615,7 +620,10 @@ impl TranscriptOverlay {
             {
                 self.highlight_cell = None;
             }
-            self.rebuild_renderables();
+            self.view.renderables = Self::render_cells(&self.cells, self.highlight_cell);
+        }
+        if let Some(tail) = tail_renderable {
+            self.view.renderables.push(tail);
         }
         if follow_bottom {
             self.view.scroll_offset = usize::MAX;
@@ -1179,6 +1187,77 @@ mod tests {
         assert_eq!(calls.get(), 2);
     }
 
+    #[test]
+    fn transcript_overlay_replace_does_not_reclassify_committed_suffix_as_live_tail() {
+        let mut overlay = transcript_overlay(vec![
+            Arc::new(TestCell {
+                lines: vec![Line::from("old-a")],
+            }),
+            Arc::new(TestCell {
+                lines: vec![Line::from("old-b")],
+            }),
+            Arc::new(TestCell {
+                lines: vec![Line::from("old-suffix")],
+            }),
+        ]);
+
+        overlay.replace_cells(vec![
+            Arc::new(TestCell {
+                lines: vec![Line::from("new-a")],
+            }),
+            Arc::new(TestCell {
+                lines: vec![Line::from("new-b")],
+            }),
+        ]);
+
+        assert_eq!(overlay.cells.len(), 2);
+        assert_eq!(
+            overlay.view.renderables.len(),
+            2,
+            "shrinking committed cells must not preserve an old committed suffix as a live tail"
+        );
+    }
+
+    #[test]
+    fn transcript_overlay_replace_preserves_an_actual_live_tail_when_shrinking() {
+        let mut overlay = transcript_overlay(vec![
+            Arc::new(TestCell {
+                lines: vec![Line::from("old-a")],
+            }),
+            Arc::new(TestCell {
+                lines: vec![Line::from("old-b")],
+            }),
+            Arc::new(TestCell {
+                lines: vec![Line::from("old-c")],
+            }),
+        ]);
+        overlay.sync_live_tail(
+            /*width*/ 40,
+            Some(ActiveCellTranscriptKey {
+                revision: 1,
+                is_stream_continuation: false,
+                animation_ticks: [None; 3],
+            }),
+            |_| Some(vec![HyperlinkLine::from("live-tail")]),
+        );
+
+        overlay.replace_cells(vec![
+            Arc::new(TestCell {
+                lines: vec![Line::from("new-a")],
+            }),
+            Arc::new(TestCell {
+                lines: vec![Line::from("new-b")],
+            }),
+        ]);
+
+        assert_eq!(overlay.cells.len(), 2);
+        assert_eq!(
+            overlay.view.renderables.len(),
+            3,
+            "the actual live tail must remain after committed cells are replaced"
+        );
+    }
+
     fn buffer_to_text(buf: &Buffer, area: Rect) -> String {
         let mut out = String::new();
         for y in area.y..area.bottom() {
@@ -1340,6 +1419,11 @@ mod tests {
             Some(2),
             "highlight inside consolidated range should point to replacement cell",
         );
+        assert_eq!(
+            overlay.view.renderables.len(),
+            overlay.cells.len(),
+            "committed suffixes must not be reclassified as a live tail",
+        );
     }
 
     #[test]
@@ -1366,6 +1450,11 @@ mod tests {
             overlay.highlight_cell,
             Some(4),
             "highlight after consolidated range should shift left by removed cells",
+        );
+        assert_eq!(
+            overlay.view.renderables.len(),
+            overlay.cells.len(),
+            "committed suffixes must not be reclassified as a live tail",
         );
     }
 

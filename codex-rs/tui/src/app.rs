@@ -498,6 +498,9 @@ struct SessionSummary {
 struct InitialHistoryReplayBuffer {
     retained_lines: VecDeque<crate::terminal_hyperlinks::HyperlinkLine>,
     render_from_transcript_tail: bool,
+    replay_target: Option<(ThreadId, u64)>,
+    active_replay: Option<(ThreadId, u64)>,
+    latest_replay_epoch: u64,
 }
 
 pub(crate) struct App {
@@ -520,6 +523,7 @@ pub(crate) struct App {
 
     pub(crate) transcript_cells: Vec<Arc<dyn HistoryCell>>,
     pub(crate) spine_tree_views: HashMap<ThreadId, crate::history_cell::SpineTreeViewState>,
+    pub(crate) spine_projection_rollback_fences: HashMap<ThreadId, usize>,
 
     // Pager overlay state (Transcript or Static like Diff)
     pub(crate) overlay: Option<Overlay>,
@@ -1042,6 +1046,7 @@ See the Codex keymap documentation for supported actions and examples."
             keymap: runtime_keymap,
             transcript_cells: Vec::new(),
             spine_tree_views: HashMap::new(),
+            spine_projection_rollback_fences: HashMap::new(),
             overlay: None,
             deferred_history_lines: Vec::new(),
             has_emitted_history_lines: false,

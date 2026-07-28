@@ -319,8 +319,22 @@ impl SpineTreeViewState {
             .map(SpineTreeUpdateCell::automatic_history)
     }
 
+    #[cfg(test)]
     pub(crate) fn has_pending_history(&self) -> bool {
         self.pending_history.is_some()
+    }
+
+    pub(crate) fn promote_due_handoff_to_pending(&mut self, now: Instant) -> bool {
+        if self
+            .pending_handoff
+            .as_ref()
+            .is_none_or(|pending| now < pending.reveal_at)
+        {
+            return false;
+        }
+        self.pending_handoff = None;
+        self.pending_history = self.snapshot.clone();
+        true
     }
 
     #[cfg(test)]
@@ -331,18 +345,10 @@ impl SpineTreeViewState {
     }
 
     pub(crate) fn take_due_handoff_history(&mut self, now: Instant) -> Option<SpineTreeUpdateCell> {
-        if self.pending_history.is_some()
-            || self
-                .pending_handoff
-                .as_ref()
-                .is_none_or(|pending| now < pending.reveal_at)
-        {
+        if !self.promote_due_handoff_to_pending(now) {
             return None;
         }
-        self.pending_handoff = None;
-        self.snapshot
-            .clone()
-            .map(SpineTreeUpdateCell::automatic_history)
+        self.take_pending_history_cell()
     }
 
     #[cfg(test)]

@@ -447,15 +447,6 @@ impl App {
 
         self.reset_for_thread_switch(tui)?;
         self.replay_thread_snapshot(snapshot, !is_replay_only);
-        if self
-            .spine_tree_views
-            .get(&thread_id)
-            .is_some_and(crate::history_cell::SpineTreeViewState::has_pending_history)
-        {
-            self.app_event_tx.send(AppEvent::SpineTreeViewChanged {
-                parent_thread_id: thread_id,
-            });
-        }
         if is_replay_only {
             let message = if attached_replay_only {
                 format!(
@@ -482,6 +473,7 @@ impl App {
 
     pub(super) fn reset_for_thread_switch(&mut self, tui: &mut tui::Tui) -> Result<()> {
         self.reset_transcript_state_after_clear();
+        self.supersede_history_replay();
         tui.clear_pending_history_lines();
         Self::clear_terminal_for_thread_switch(&mut tui.terminal)?;
         Ok(())
@@ -506,6 +498,7 @@ impl App {
         self.abort_all_thread_event_listeners();
         self.thread_event_channels.clear();
         self.spine_tree_views.clear();
+        self.spine_projection_rollback_fences.clear();
         self.agent_navigation.clear();
         self.side_threads.clear();
         self.active_thread_id = None;

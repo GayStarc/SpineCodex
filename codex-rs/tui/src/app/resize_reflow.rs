@@ -18,6 +18,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Instant;
 
+use codex_protocol::ThreadId;
 use color_eyre::eyre::Result;
 use ratatui::text::Line;
 
@@ -80,6 +81,48 @@ pub(super) fn trailing_automatic_spine_tree_start(
     start
 }
 
+pub(super) fn is_automatic_spine_tree_history(cell: &Arc<dyn HistoryCell>) -> bool {
+    cell.as_any()
+        .downcast_ref::<history_cell::SpineTreeUpdateCell>()
+        .is_some_and(history_cell::SpineTreeUpdateCell::is_automatic_history)
+}
+
+/// Find the first cell of the finalized stream at the transcript tail.
+///
+/// Automatic Spine history may be interleaved after a stream starts while its
+/// consolidation event waits in the AppEvent queue. It may be crossed only
+/// after a cell identifies the stream's first fragment; otherwise that history
+/// belongs before a newer stream and remains outside the consolidation span.
+pub(super) fn trailing_stream_start_across_spine_history<T: 'static>(
+    transcript_cells: &[Arc<dyn HistoryCell>],
+) -> Option<usize> {
+    let mut start = transcript_cells.len();
+    let mut saw_stream_fragment = false;
+
+    while start > 0 {
+        let cell = &transcript_cells[start - 1];
+        if is_automatic_spine_tree_history(cell) {
+            start -= 1;
+            continue;
+        }
+        if !cell.as_any().is::<T>() {
+            break;
+        }
+
+        saw_stream_fragment = true;
+        start -= 1;
+        if !cell.is_stream_continuation() {
+            return Some(start);
+        }
+    }
+
+    debug_assert!(
+        !saw_stream_fragment,
+        "a finalized stream tail must include its first cell"
+    );
+    None
+}
+
 impl App {
     pub(super) fn reset_history_emission_state(&mut self) {
         self.has_emitted_history_lines = false;
@@ -129,24 +172,98 @@ impl App {
     /// Buffering here lets the same row cap used by resize rebuilds apply to the startup write.
     /// Starting this buffer while an overlay owns rendering would split transcript ownership, so
     /// overlay replay continues through the normal deferred-history path.
-    pub(super) fn begin_initial_history_replay_buffer(&mut self) {
-        if self.overlay.is_none() {
-            self.initial_history_replay_buffer = Some(Default::default());
-        }
+    pub(super) fn prepare_initial_history_replay_buffer(
+        &mut self,
+        thread_id: ThreadId,
+    ) -> Option<u64> {
+        self.overlay
+            .is_none()
+            .then(|| self.prepare_history_replay_buffer(thread_id, /*render_from_tail*/ false))
     }
 
     /// Start retaining a thread-switch transcript replay without rendering each historical cell.
     ///
     /// Thread switches already rebuild `transcript_cells` from source. When a row cap exists, we can
     /// defer terminal writes until the replay is complete and reuse the resize-reflow tail renderer
-    /// so only the rows the terminal would retain are formatted and inserted.
-    pub(super) fn begin_thread_switch_history_replay_buffer(&mut self) {
-        if self.resize_reflow_max_rows().is_some() && self.overlay.is_none() {
-            self.initial_history_replay_buffer = Some(InitialHistoryReplayBuffer {
-                retained_lines: VecDeque::new(),
-                render_from_transcript_tail: true,
-            });
+    /// so only the rows the terminal would retain are formatted and inserted. The buffer also acts
+    /// as the synchronous barrier that prevents a Draw from publishing due Spine handoff history
+    /// ahead of replay AppEvents.
+    pub(super) fn prepare_thread_switch_history_replay_buffer(
+        &mut self,
+        thread_id: ThreadId,
+    ) -> u64 {
+        debug_assert!(
+            self.overlay.is_none(),
+            "thread switch must release the old transcript overlay before replay"
+        );
+        self.prepare_history_replay_buffer(
+            thread_id,
+            /*render_from_tail*/ self.resize_reflow_max_rows().is_some(),
+        )
+    }
+
+    fn prepare_history_replay_buffer(
+        &mut self,
+        thread_id: ThreadId,
+        render_from_transcript_tail: bool,
+    ) -> u64 {
+        let replay_epoch = self
+            .initial_history_replay_buffer
+            .as_ref()
+            .map_or(1, |buffer| buffer.latest_replay_epoch + 1);
+        let active_replay = self
+            .initial_history_replay_buffer
+            .as_ref()
+            .and_then(|buffer| buffer.active_replay);
+        self.initial_history_replay_buffer = Some(InitialHistoryReplayBuffer {
+            retained_lines: VecDeque::new(),
+            render_from_transcript_tail,
+            replay_target: Some((thread_id, replay_epoch)),
+            active_replay,
+            latest_replay_epoch: replay_epoch,
+        });
+        replay_epoch
+    }
+
+    /// Supersede the selected replay while preserving any older envelope still in the AppEvent FIFO.
+    pub(super) fn supersede_history_replay(&mut self) {
+        let Some(buffer) = self.initial_history_replay_buffer.as_mut() else {
+            return;
+        };
+        buffer.retained_lines.clear();
+        buffer.render_from_transcript_tail = false;
+        buffer.replay_target = None;
+    }
+
+    /// Mark the replay envelope whose queued cells are currently being consumed.
+    pub(super) fn begin_history_replay(&mut self, thread_id: ThreadId, replay_epoch: u64) {
+        let buffer = self
+            .initial_history_replay_buffer
+            .get_or_insert_with(Default::default);
+        buffer.active_replay = Some((thread_id, replay_epoch));
+    }
+
+    pub(super) fn is_discarding_stale_history_replay(&self) -> bool {
+        self.initial_history_replay_buffer
+            .as_ref()
+            .is_some_and(|buffer| {
+                buffer.active_replay.is_some() && buffer.active_replay != buffer.replay_target
+            })
+    }
+
+    /// Finish one stale queued replay without releasing a newer replay's Draw barrier.
+    pub(super) fn finish_stale_history_replay(&mut self) -> bool {
+        let Some(buffer) = self.initial_history_replay_buffer.as_mut() else {
+            return false;
+        };
+        if buffer.active_replay.is_none() || buffer.active_replay == buffer.replay_target {
+            return false;
         }
+        buffer.active_replay = None;
+        if buffer.replay_target.is_none() {
+            self.initial_history_replay_buffer = None;
+        }
+        true
     }
 
     /// Flush retained initial resume replay rows into terminal scrollback.
@@ -361,7 +478,9 @@ impl App {
             tui.clear_pending_history_lines();
         }
         self.maybe_run_resize_reflow(tui)?;
-        self.promote_due_spine_tree_handoff(tui)?;
+        if self.initial_history_replay_buffer.is_none() {
+            self.promote_due_spine_tree_handoff(tui)?;
+        }
         Ok(())
     }
 

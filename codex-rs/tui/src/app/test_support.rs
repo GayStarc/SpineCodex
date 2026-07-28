@@ -33,6 +33,7 @@ pub(super) async fn make_test_app() -> App {
         file_search,
         transcript_cells: Vec::new(),
         spine_tree_views: HashMap::new(),
+        spine_projection_rollback_fences: HashMap::new(),
         overlay: None,
         deferred_history_lines: Vec::new(),
         has_emitted_history_lines: false,

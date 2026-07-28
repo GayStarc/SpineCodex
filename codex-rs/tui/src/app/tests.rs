@@ -25,6 +25,7 @@ use crate::history_cell::AgentMarkdownCell;
 use crate::history_cell::AgentMessageCell;
 use crate::history_cell::HistoryCell;
 use crate::history_cell::PlainHistoryCell;
+use crate::history_cell::SpineTreeUpdateCell;
 use crate::history_cell::SpineTreeViewState;
 use crate::history_cell::UserHistoryCell;
 use crate::history_cell::new_session_info;
@@ -1096,6 +1097,145 @@ async fn due_spine_handoff_promotes_after_intervening_history_and_clears_live_ta
 }
 
 #[tokio::test]
+async fn due_inactive_handoff_waits_for_thread_history_replay() -> Result<()> {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let thread_id = ThreadId::new();
+    app.chat_widget
+        .handle_thread_session_quiet(test_thread_session(
+            thread_id,
+            test_path_buf("/tmp/spine-handoff-replay"),
+        ));
+    while app_event_rx.try_recv().is_ok() {}
+
+    let mut state = SpineTreeViewState::new(/*animations_enabled*/ true);
+    state.apply_tree_update(app_spine_snapshot(thread_id, "turn-a", 1, None));
+    state.apply_spawn_progress(SpineSpawnProgressUpdatedNotification {
+        thread_id: thread_id.to_string(),
+        turn_id: "turn-a".to_string(),
+        call_id: "spawn-a".to_string(),
+        tasks: vec![SpineSpawnTaskProgress {
+            ordinal: 0,
+            summary: "retiring worker".to_string(),
+            thread_id: ThreadId::new().to_string(),
+            agent_path: Some("/root/retiring-worker".to_string()),
+            status: CollabAgentStatus::Completed,
+        }],
+    });
+    let mut settled = app_spine_snapshot(thread_id, "turn-a", 2, Some("replayed final worker"));
+    settled.active_node_id = "1".to_string();
+    settled.nodes[0].status = SpineTreeNodeStatus::Live;
+    settled.nodes[1].status = SpineTreeNodeStatus::Closed;
+    settled.nodes[1].spawn_outcome = Some(codex_app_server_protocol::SpineSpawnOutcome::Completed);
+    settled.settled_spawn_call_ids = vec!["spawn-a".to_string()];
+    state.apply_tree_update(settled);
+    state.make_pending_handoff_due();
+    app.spine_tree_views.insert(thread_id, state);
+    app.app_event_tx.send(AppEvent::SpineTreeViewChanged {
+        parent_thread_id: thread_id,
+    });
+
+    app.replay_thread_snapshot(
+        ThreadEventSnapshot {
+            session: Some(test_thread_session(
+                thread_id,
+                test_path_buf("/tmp/spine-handoff-replay"),
+            )),
+            turns: vec![Turn {
+                id: "turn-history".to_string(),
+                items_view: codex_app_server_protocol::TurnItemsView::Full,
+                items: vec![ThreadItem::UserMessage {
+                    id: "user-history".to_string(),
+                    client_id: None,
+                    content: vec![AppServerUserInput::Text {
+                        text: "replayed prompt".to_string(),
+                        text_elements: Vec::new(),
+                    }],
+                }],
+                status: TurnStatus::Completed,
+                error: None,
+                started_at: None,
+                completed_at: None,
+                duration_ms: None,
+            }],
+            events: Vec::new(),
+            input_state: None,
+        },
+        /*resume_restored_queue*/ false,
+    );
+
+    let mut tui = crate::tui::test_support::make_test_tui().expect("test tui");
+    app.handle_draw_pre_render(&mut tui)?;
+    assert!(
+        app.transcript_cells.is_empty(),
+        "Draw must not promote a due handoff ahead of queued replay history"
+    );
+    let events = std::iter::from_fn(|| app_event_rx.try_recv().ok()).collect::<Vec<_>>();
+    let begin = events
+        .iter()
+        .position(|event| {
+            matches!(
+                event,
+                AppEvent::BeginHistoryReplayBuffer {
+                    thread_id: replayed,
+                    ..
+                }
+                    if *replayed == thread_id
+            )
+        })
+        .expect("thread replay begin");
+    let end = events
+        .iter()
+        .position(|event| matches!(event, AppEvent::EndInitialHistoryReplayBuffer))
+        .expect("thread replay end");
+    let queued_view_changed = events
+        .iter()
+        .position(|event| matches!(event, AppEvent::SpineTreeViewChanged { .. }))
+        .expect("queued Spine view publication");
+    assert!(queued_view_changed < begin && begin < end, "{events:#?}");
+    let mut app_server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
+        .await
+        .expect("embedded app server");
+    for (index, event) in events.into_iter().enumerate() {
+        app.handle_event(&mut tui, &mut app_server, event).await?;
+        if index == queued_view_changed {
+            assert!(
+                app.transcript_cells.is_empty(),
+                "a queued Spine publication must wait for replay completion"
+            );
+        }
+    }
+    let post_replay_events =
+        std::iter::from_fn(|| app_event_rx.try_recv().ok()).collect::<Vec<_>>();
+    assert_eq!(post_replay_events.len(), 1, "{post_replay_events:#?}");
+    assert!(matches!(
+        post_replay_events[0],
+        AppEvent::SpineTreeViewChanged {
+            parent_thread_id
+        } if parent_thread_id == thread_id
+    ));
+    for event in post_replay_events {
+        app.handle_event(&mut tui, &mut app_server, event).await?;
+    }
+    let rendered = app
+        .transcript_cells
+        .iter()
+        .map(|cell| lines_to_single_string(&cell.display_lines(80)))
+        .collect::<Vec<_>>();
+    let replayed_prompt = rendered
+        .iter()
+        .position(|text| text.contains("replayed prompt"))
+        .expect("replayed prompt history");
+    let final_tree = rendered
+        .iter()
+        .position(|text| text.contains("replayed final worker"))
+        .expect("promoted final Tree history");
+    assert!(replayed_prompt < final_tree, "{rendered:#?}");
+    assert_eq!(app.chat_widget.active_cell_transcript_lines(80), None);
+    app_server.shutdown().await.expect("app server shutdown");
+    Ok(())
+}
+
+#[tokio::test]
 async fn automatic_spine_history_does_not_block_agent_message_consolidation() -> Result<()> {
     let mut app = make_test_app().await;
     let thread_id = ThreadId::new();
@@ -1219,6 +1359,53 @@ async fn automatic_spine_history_preserves_deferred_agent_stream_consolidation()
         _ => panic!("expected transcript overlay"),
     };
     assert_eq!(overlay_cell_count, app.transcript_cells.len());
+    Ok(())
+}
+
+#[tokio::test]
+async fn new_deferred_agent_stream_stays_after_prior_automatic_spine_history() -> Result<()> {
+    let mut app = make_test_app().await;
+    let thread_id = ThreadId::new();
+    app.chat_widget
+        .handle_thread_session_quiet(test_thread_session(
+            thread_id,
+            test_path_buf("/tmp/spine-new-deferred-stream"),
+        ));
+
+    let mut state = SpineTreeViewState::default();
+    state.apply_tree_update(app_spine_snapshot(thread_id, "turn-a", 1, None));
+    state.apply_tree_update(app_spine_snapshot(
+        thread_id,
+        "turn-a",
+        2,
+        Some("tree before new stream"),
+    ));
+    let tree = state
+        .take_pending_history_cell()
+        .expect("semantic edge should produce history");
+    let mut tui = crate::tui::test_support::make_test_tui().expect("test tui");
+    app.upsert_spine_tree_history(&mut tui, tree)?;
+
+    app.handle_consolidate_agent_message(
+        &mut tui,
+        "| column |\n| --- |\n| value |".to_string(),
+        test_path_buf("/tmp/spine-new-deferred-stream"),
+        ConsolidationScrollbackReflow::Required,
+        Some(Box::new(AgentMessageCell::new(
+            vec![Line::from("| column |"), Line::from("| value |")],
+            /*is_first_line*/ true,
+        ))),
+    )?;
+
+    assert_eq!(app.transcript_cells.len(), 2);
+    assert!(
+        app.transcript_cells[0]
+            .as_any()
+            .downcast_ref::<SpineTreeUpdateCell>()
+            .is_some_and(SpineTreeUpdateCell::is_automatic_history),
+        "a new stream must not move across history that was committed before it started"
+    );
+    assert!(app.transcript_cells[1].as_any().is::<AgentMarkdownCell>());
     Ok(())
 }
 
@@ -5302,6 +5489,7 @@ async fn make_test_app() -> App {
         file_search,
         transcript_cells: Vec::new(),
         spine_tree_views: HashMap::new(),
+        spine_projection_rollback_fences: HashMap::new(),
         overlay: None,
         deferred_history_lines: Vec::new(),
         has_emitted_history_lines: false,
@@ -5368,6 +5556,7 @@ async fn make_test_app_with_channels() -> (
             file_search,
             transcript_cells: Vec::new(),
             spine_tree_views: HashMap::new(),
+            spine_projection_rollback_fences: HashMap::new(),
             overlay: None,
             deferred_history_lines: Vec::new(),
             has_emitted_history_lines: false,
@@ -5764,7 +5953,8 @@ async fn initial_replay_buffer_keeps_recent_rows_when_row_cap_present() {
     let (mut app, _rx, _op_rx) = make_test_app_with_channels().await;
     app.config.terminal_resize_reflow.max_rows = TerminalResizeReflowMaxRows::Limit(3);
 
-    app.begin_initial_history_replay_buffer();
+    app.prepare_initial_history_replay_buffer(ThreadId::new())
+        .expect("initial replay buffer");
     for index in 0..5 {
         App::buffer_initial_history_replay_display_lines(
             app.initial_history_replay_buffer
@@ -5797,8 +5987,9 @@ async fn initial_replay_buffer_keeps_recent_rows_when_row_cap_present() {
 async fn thread_switch_replay_buffer_uses_transcript_tail_mode_when_row_cap_present() {
     let (mut app, _rx, _op_rx) = make_test_app_with_channels().await;
     app.config.terminal_resize_reflow.max_rows = TerminalResizeReflowMaxRows::Limit(3);
+    let thread_id = ThreadId::new();
 
-    app.begin_thread_switch_history_replay_buffer();
+    app.prepare_thread_switch_history_replay_buffer(thread_id);
 
     let buffer = app
         .initial_history_replay_buffer
@@ -5809,13 +6000,205 @@ async fn thread_switch_replay_buffer_uses_transcript_tail_mode_when_row_cap_pres
 }
 
 #[tokio::test]
-async fn thread_switch_replay_buffer_is_disabled_without_row_cap() {
+async fn thread_switch_replay_buffer_gates_publication_without_row_cap() {
     let (mut app, _rx, _op_rx) = make_test_app_with_channels().await;
     app.config.terminal_resize_reflow.max_rows = TerminalResizeReflowMaxRows::Disabled;
+    let thread_id = ThreadId::new();
 
-    app.begin_thread_switch_history_replay_buffer();
+    app.prepare_thread_switch_history_replay_buffer(thread_id);
 
+    let buffer = app
+        .initial_history_replay_buffer
+        .as_ref()
+        .expect("thread switch replay must remain a publication barrier");
+    assert!(!buffer.render_from_transcript_tail);
+    assert!(buffer.retained_lines.is_empty());
+}
+
+#[tokio::test]
+async fn superseded_thread_switch_replay_epochs_do_not_mix_history() -> Result<()> {
+    let (mut app, _rx, _op_rx) = make_test_app_with_channels().await;
+    let first_thread_id = ThreadId::new();
+    let second_thread_id = ThreadId::new();
+    let mut tui = crate::tui::test_support::make_test_tui().expect("test tui");
+    app.chat_widget
+        .handle_thread_session_quiet(test_thread_session(
+            first_thread_id,
+            test_path_buf("/tmp/replay-first"),
+        ));
+    let first_epoch = app.prepare_thread_switch_history_replay_buffer(first_thread_id);
+
+    app.reset_for_thread_switch(&mut tui)?;
+    app.chat_widget
+        .handle_thread_session_quiet(test_thread_session(
+            second_thread_id,
+            test_path_buf("/tmp/replay-second"),
+        ));
+    let second_epoch = app.prepare_thread_switch_history_replay_buffer(second_thread_id);
+
+    let mut app_server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
+        .await
+        .expect("embedded app server");
+    app.handle_event(
+        &mut tui,
+        &mut app_server,
+        AppEvent::BeginHistoryReplayBuffer {
+            thread_id: first_thread_id,
+            replay_epoch: first_epoch,
+        },
+    )
+    .await?;
+
+    // Bounce back to the first thread after its old Begin was consumed but before its old End.
+    // Thread identity alone cannot distinguish the two first-thread replays.
+    app.reset_for_thread_switch(&mut tui)?;
+    app.chat_widget
+        .handle_thread_session_quiet(test_thread_session(
+            first_thread_id,
+            test_path_buf("/tmp/replay-first"),
+        ));
+    let latest_first_epoch = app.prepare_thread_switch_history_replay_buffer(first_thread_id);
+    assert!(latest_first_epoch > second_epoch);
+
+    for event in [
+        AppEvent::InsertHistoryCell(Box::new(PlainHistoryCell::new(vec![Line::from(
+            "stale first-thread history",
+        )]))),
+        AppEvent::EndInitialHistoryReplayBuffer,
+        AppEvent::BeginHistoryReplayBuffer {
+            thread_id: second_thread_id,
+            replay_epoch: second_epoch,
+        },
+        AppEvent::InsertHistoryCell(Box::new(PlainHistoryCell::new(vec![Line::from(
+            "stale second-thread history",
+        )]))),
+        AppEvent::EndInitialHistoryReplayBuffer,
+        AppEvent::BeginHistoryReplayBuffer {
+            thread_id: first_thread_id,
+            replay_epoch: latest_first_epoch,
+        },
+        AppEvent::InsertHistoryCell(Box::new(PlainHistoryCell::new(vec![Line::from(
+            "latest first-thread history",
+        )]))),
+        AppEvent::EndInitialHistoryReplayBuffer,
+    ] {
+        app.handle_event(&mut tui, &mut app_server, event).await?;
+    }
+
+    let rendered = app
+        .transcript_cells
+        .iter()
+        .map(|cell| lines_to_single_string(&cell.display_lines(80)))
+        .collect::<Vec<_>>();
+    assert_eq!(rendered, vec!["latest first-thread history"]);
     assert!(app.initial_history_replay_buffer.is_none());
+    app_server.shutdown().await.expect("app server shutdown");
+    Ok(())
+}
+
+#[tokio::test]
+async fn startup_history_replay_does_not_overtake_a_thread_switch() -> Result<()> {
+    let (mut app, _rx, _op_rx) = make_test_app_with_channels().await;
+    let primary_thread_id = ThreadId::new();
+    let selected_thread_id = ThreadId::new();
+    let mut tui = crate::tui::test_support::make_test_tui().expect("test tui");
+    app.chat_widget
+        .handle_thread_session_quiet(test_thread_session(
+            primary_thread_id,
+            test_path_buf("/tmp/replay-primary"),
+        ));
+    let primary_epoch = app
+        .prepare_initial_history_replay_buffer(primary_thread_id)
+        .expect("startup replay buffer");
+
+    app.reset_for_thread_switch(&mut tui)?;
+    app.chat_widget
+        .handle_thread_session_quiet(test_thread_session(
+            selected_thread_id,
+            test_path_buf("/tmp/replay-selected"),
+        ));
+    let selected_epoch = app.prepare_thread_switch_history_replay_buffer(selected_thread_id);
+
+    let mut app_server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
+        .await
+        .expect("embedded app server");
+    for event in [
+        AppEvent::BeginHistoryReplayBuffer {
+            thread_id: primary_thread_id,
+            replay_epoch: primary_epoch,
+        },
+        AppEvent::InsertHistoryCell(Box::new(PlainHistoryCell::new(vec![Line::from(
+            "stale primary startup history",
+        )]))),
+        AppEvent::EndInitialHistoryReplayBuffer,
+        AppEvent::BeginHistoryReplayBuffer {
+            thread_id: selected_thread_id,
+            replay_epoch: selected_epoch,
+        },
+        AppEvent::InsertHistoryCell(Box::new(PlainHistoryCell::new(vec![Line::from(
+            "selected thread history",
+        )]))),
+        AppEvent::EndInitialHistoryReplayBuffer,
+    ] {
+        app.handle_event(&mut tui, &mut app_server, event).await?;
+    }
+
+    let rendered = app
+        .transcript_cells
+        .iter()
+        .map(|cell| lines_to_single_string(&cell.display_lines(80)))
+        .collect::<Vec<_>>();
+    assert_eq!(rendered, vec!["selected thread history"]);
+    assert!(app.initial_history_replay_buffer.is_none());
+    app_server.shutdown().await.expect("app server shutdown");
+    Ok(())
+}
+
+#[tokio::test]
+async fn clear_ui_discards_the_active_history_replay_envelope() -> Result<()> {
+    let (mut app, _rx, _op_rx) = make_test_app_with_channels().await;
+    let thread_id = ThreadId::new();
+    app.chat_widget
+        .handle_thread_session_quiet(test_thread_session(
+            thread_id,
+            test_path_buf("/tmp/replay-clear"),
+        ));
+    let replay_epoch = app.prepare_thread_switch_history_replay_buffer(thread_id);
+    let mut tui = crate::tui::test_support::make_test_tui().expect("test tui");
+    let mut app_server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
+        .await
+        .expect("embedded app server");
+    app.handle_event(
+        &mut tui,
+        &mut app_server,
+        AppEvent::BeginHistoryReplayBuffer {
+            thread_id,
+            replay_epoch,
+        },
+    )
+    .await?;
+
+    app.reset_app_ui_state_after_clear();
+    let replay = app
+        .initial_history_replay_buffer
+        .as_ref()
+        .expect("active replay identity must survive clear until its End");
+    assert!(replay.replay_target.is_none());
+    assert_eq!(replay.active_replay, Some((thread_id, replay_epoch)));
+
+    for event in [
+        AppEvent::InsertHistoryCell(Box::new(PlainHistoryCell::new(vec![Line::from(
+            "history queued before clear",
+        )]))),
+        AppEvent::EndInitialHistoryReplayBuffer,
+    ] {
+        app.handle_event(&mut tui, &mut app_server, event).await?;
+    }
+
+    assert!(app.transcript_cells.is_empty());
+    assert!(app.initial_history_replay_buffer.is_none());
+    app_server.shutdown().await.expect("app server shutdown");
+    Ok(())
 }
 
 #[tokio::test]
@@ -6928,46 +7311,49 @@ async fn thread_rollback_response_discards_queued_events_and_invalidates_spine_p
     .await
     .expect("event should queue");
 
-    app.handle_thread_rollback_response(
-        thread_id,
-        /*num_turns*/ 1,
-        &ThreadRollbackResponse {
-            thread: Thread {
-                id: thread_id.to_string(),
-                extra: None,
-                session_id: thread_id.to_string(),
-                forked_from_id: None,
-                parent_thread_id: None,
-                preview: String::new(),
-                ephemeral: false,
-                history_mode: Default::default(),
-                model_provider: "openai".to_string(),
-                created_at: 0,
-                updated_at: 0,
-                recency_at: Some(0),
-                status: codex_app_server_protocol::ThreadStatus::Idle,
-                path: None,
-                cwd: test_path_buf("/tmp/project").abs(),
-                cli_version: "0.0.0".to_string(),
-                source: SessionSource::Cli,
-                thread_source: None,
-                agent_nickname: None,
-                agent_role: None,
-                git_info: None,
-                name: None,
-                turns: Vec::new(),
-            },
+    let rollback_response = ThreadRollbackResponse {
+        thread: Thread {
+            id: thread_id.to_string(),
+            extra: None,
+            session_id: thread_id.to_string(),
+            forked_from_id: None,
+            parent_thread_id: None,
+            preview: String::new(),
+            ephemeral: false,
+            history_mode: Default::default(),
+            model_provider: "openai".to_string(),
+            created_at: 0,
+            updated_at: 0,
+            recency_at: Some(0),
+            status: codex_app_server_protocol::ThreadStatus::Idle,
+            path: None,
+            cwd: test_path_buf("/tmp/project").abs(),
+            cli_version: "0.0.0".to_string(),
+            source: SessionSource::Cli,
+            thread_source: None,
+            agent_nickname: None,
+            agent_role: None,
+            git_info: None,
+            name: None,
+            turns: Vec::new(),
         },
-    )
-    .await;
+    };
+    for _ in 0..2 {
+        app.handle_thread_rollback_response(thread_id, /*num_turns*/ 1, &rollback_response)
+            .await;
+    }
+    assert_eq!(
+        app.spine_projection_rollback_fences.get(&thread_id),
+        Some(&2)
+    );
 
     let rx = app
         .active_thread_rx
         .as_mut()
         .expect("active receiver should remain attached");
     assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
-    assert!(app.spine_tree_views.contains_key(&thread_id));
-    assert!(app.chat_widget.active_cell_transcript_key().is_some());
+    assert!(!app.spine_tree_views.contains_key(&thread_id));
+    assert!(app.chat_widget.active_cell_transcript_key().is_none());
     while app_event_rx.try_recv().is_ok() {}
 
     app.enqueue_thread_notification(
@@ -6987,7 +7373,25 @@ async fn thread_rollback_response_discards_queued_events_and_invalidates_spine_p
         }),
     )
     .await
-    .expect("rollback barrier should route");
+    .expect("first rollback barrier should route");
+    app.enqueue_thread_notification(
+        thread_id,
+        ServerNotification::SpineTreeUpdated(snapshot(
+            thread_id,
+            12,
+            "queued between rollback barriers",
+        )),
+    )
+    .await
+    .expect("second old tree update should route");
+    app.enqueue_thread_notification(
+        thread_id,
+        ServerNotification::ThreadRolledBack(ThreadRolledBackNotification {
+            thread_id: thread_id.to_string(),
+        }),
+    )
+    .await
+    .expect("second rollback barrier should route");
     app.enqueue_thread_notification(
         thread_id,
         ServerNotification::SpineTreeUpdated(snapshot(thread_id, 4, "after rollback")),
@@ -6999,7 +7403,13 @@ async fn thread_rollback_response_discards_queued_events_and_invalidates_spine_p
         app_event_rx.try_recv().expect("queued old tree update"),
         app_event_rx
             .try_recv()
-            .expect("rollback invalidation barrier"),
+            .expect("first rollback invalidation barrier"),
+        app_event_rx
+            .try_recv()
+            .expect("queued event between rollback barriers"),
+        app_event_rx
+            .try_recv()
+            .expect("second rollback invalidation barrier"),
         app_event_rx.try_recv().expect("rollback replacement tree"),
     ];
     assert!(matches!(events[0], AppEvent::UpsertSpineTreeCell { .. }));
@@ -7010,15 +7420,46 @@ async fn thread_rollback_response_discards_queued_events_and_invalidates_spine_p
         } if invalidated == thread_id
     ));
     assert!(matches!(events[2], AppEvent::UpsertSpineTreeCell { .. }));
+    assert!(matches!(
+        events[3],
+        AppEvent::InvalidateSpineTreeView {
+            thread_id: invalidated
+        } if invalidated == thread_id
+    ));
+    assert!(matches!(events[4], AppEvent::UpsertSpineTreeCell { .. }));
 
     let mut tui = crate::tui::test_support::make_test_tui().expect("test tui");
     let mut app_server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
         .await
         .expect("embedded app server");
-    for event in events {
+    for (index, event) in events.into_iter().enumerate() {
         app.handle_event(&mut tui, &mut app_server, event)
             .await
             .expect("ordered projection event should apply");
+        if index == 0 || index == 2 {
+            assert!(
+                app.transcript_cells.iter().all(|cell| {
+                    cell.as_any()
+                        .downcast_ref::<SpineTreeUpdateCell>()
+                        .is_none_or(|cell| !matches!(cell.snapshot_seq(), 11 | 12))
+                }),
+                "a pre-rollback Spine projection must not commit history after rollback succeeds"
+            );
+        }
+        if index == 1 {
+            assert_eq!(
+                app.spine_projection_rollback_fences.get(&thread_id),
+                Some(&1),
+                "the first barrier must not release the second rollback fence"
+            );
+        }
+        if index == 3 {
+            assert!(
+                !app.spine_projection_rollback_fences
+                    .contains_key(&thread_id),
+                "the matching second barrier must release the final fence"
+            );
+        }
     }
     assert_eq!(
         app.spine_tree_views

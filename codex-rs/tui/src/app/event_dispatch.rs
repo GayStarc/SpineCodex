@@ -3,8 +3,8 @@
 //! This module contains the exhaustive `AppEvent` dispatcher and exit-mode handling. Large domain
 //! actions are delegated to focused app submodules so the central match remains the routing layer.
 
-use super::resize_reflow::trailing_automatic_spine_tree_start;
-use super::resize_reflow::trailing_run_start;
+use super::resize_reflow::is_automatic_spine_tree_history;
+use super::resize_reflow::trailing_stream_start_across_spine_history;
 use super::*;
 use crate::config_update::format_config_error;
 use crate::external_agent_config_migration_flow::ExternalAgentConfigMigrationFlowOutcome;
@@ -225,20 +225,29 @@ impl App {
 
                 tui.frame_requester().schedule_frame();
             }
-            AppEvent::BeginInitialHistoryReplayBuffer => {
-                self.begin_initial_history_replay_buffer();
-            }
-            AppEvent::BeginThreadSwitchHistoryReplayBuffer => {
-                self.begin_thread_switch_history_replay_buffer();
+            AppEvent::BeginHistoryReplayBuffer {
+                thread_id,
+                replay_epoch,
+            } => {
+                self.begin_history_replay(thread_id, replay_epoch);
             }
             AppEvent::InsertHistoryCell(cell) => {
-                self.insert_history_cell(tui, cell);
+                if !self.is_discarding_stale_history_replay() {
+                    self.insert_history_cell(tui, cell);
+                }
             }
             AppEvent::UpsertSpineTreeCell { snapshot, .. } => {
                 let Some(parent_thread_id) = ThreadId::from_string(&snapshot.thread_id).ok() else {
                     return Ok(AppRunControl::Continue);
                 };
+                if self
+                    .spine_projection_rollback_fences
+                    .contains_key(&parent_thread_id)
+                {
+                    return Ok(AppRunControl::Continue);
+                }
                 let is_active = self.chat_widget.thread_id() == Some(parent_thread_id);
+                let can_publish = is_active && self.initial_history_replay_buffer.is_none();
                 let animations_enabled = self.config.animations;
                 let (history, live) = {
                     let state = self
@@ -248,12 +257,12 @@ impl App {
                             crate::history_cell::SpineTreeViewState::new(animations_enabled)
                         });
                     state.apply_tree_update(snapshot);
-                    let history = is_active
+                    let history = can_publish
                         .then(|| state.take_pending_history_cell())
                         .flatten();
                     (history, (state.snapshot().cloned(), state.render_cell()))
                 };
-                if is_active {
+                if can_publish {
                     if let Some(cell) = history {
                         self.upsert_spine_tree_history(tui, cell)?;
                     }
@@ -266,6 +275,12 @@ impl App {
                 else {
                     return Ok(AppRunControl::Continue);
                 };
+                if self
+                    .spine_projection_rollback_fences
+                    .contains_key(&parent_thread_id)
+                {
+                    return Ok(AppRunControl::Continue);
+                }
                 let child_threads = notification
                     .tasks
                     .iter()
@@ -306,17 +321,29 @@ impl App {
                     }
                     (state.snapshot().cloned(), state.render_cell())
                 };
-                if self.chat_widget.thread_id() == Some(parent_thread_id) {
+                if self.chat_widget.thread_id() == Some(parent_thread_id)
+                    && self.initial_history_replay_buffer.is_none()
+                {
                     self.chat_widget.set_spine_tree_view(live.0, live.1);
                     tui.frame_requester().schedule_frame();
                 }
             }
             AppEvent::SpineTreeViewChanged { parent_thread_id } => {
+                if self
+                    .spine_projection_rollback_fences
+                    .contains_key(&parent_thread_id)
+                {
+                    return Ok(AppRunControl::Continue);
+                }
                 if self.chat_widget.thread_id() == Some(parent_thread_id) {
+                    if self.initial_history_replay_buffer.is_some() {
+                        return Ok(AppRunControl::Continue);
+                    }
                     let view = self
                         .spine_tree_views
                         .get_mut(&parent_thread_id)
                         .map(|state| {
+                            state.promote_due_handoff_to_pending(Instant::now());
                             (
                                 state.take_pending_history_cell(),
                                 state.snapshot().cloned(),
@@ -337,7 +364,14 @@ impl App {
                 parent_thread_id,
                 turn_id,
             } => {
+                if self
+                    .spine_projection_rollback_fences
+                    .contains_key(&parent_thread_id)
+                {
+                    return Ok(AppRunControl::Continue);
+                }
                 let is_active = self.chat_widget.thread_id() == Some(parent_thread_id);
+                let can_publish = is_active && self.initial_history_replay_buffer.is_none();
                 let update = self
                     .spine_tree_views
                     .get_mut(&parent_thread_id)
@@ -346,7 +380,7 @@ impl App {
                             .clear_incomplete_spawn_overlays(turn_id.as_deref())
                             .then(|| {
                                 (
-                                    is_active
+                                    can_publish
                                         .then(|| state.take_pending_history_cell())
                                         .flatten(),
                                     state.snapshot().cloned(),
@@ -354,7 +388,7 @@ impl App {
                                 )
                             })
                     });
-                if is_active && let Some((history, snapshot, live_cell)) = update {
+                if can_publish && let Some((history, snapshot, live_cell)) = update {
                     if let Some(cell) = history {
                         self.upsert_spine_tree_history(tui, cell)?;
                     }
@@ -364,6 +398,15 @@ impl App {
             }
             AppEvent::InvalidateSpineTreeView { thread_id } => {
                 self.spine_tree_views.remove(&thread_id);
+                if let std::collections::hash_map::Entry::Occupied(mut fence) =
+                    self.spine_projection_rollback_fences.entry(thread_id)
+                {
+                    if *fence.get() > 1 {
+                        *fence.get_mut() -= 1;
+                    } else {
+                        fence.remove();
+                    }
+                }
                 if self.chat_widget.thread_id() == Some(thread_id) {
                     self.chat_widget.set_spine_tree_view(None, None);
                     tui.frame_requester().schedule_frame();
@@ -393,7 +436,20 @@ impl App {
                 self.insert_history_cell(tui, Box::new(cell));
             }
             AppEvent::EndInitialHistoryReplayBuffer => {
+                if self.finish_stale_history_replay() {
+                    if self.initial_history_replay_buffer.is_none()
+                        && let Some(parent_thread_id) = self.chat_widget.thread_id()
+                    {
+                        self.app_event_tx
+                            .send(AppEvent::SpineTreeViewChanged { parent_thread_id });
+                    }
+                    return Ok(AppRunControl::Continue);
+                }
                 self.finish_initial_history_replay_buffer(tui);
+                if let Some(parent_thread_id) = self.chat_widget.thread_id() {
+                    self.app_event_tx
+                        .send(AppEvent::SpineTreeViewChanged { parent_thread_id });
+                }
             }
             AppEvent::ConsolidateAgentMessage {
                 source,
@@ -412,19 +468,31 @@ impl App {
                 self.insert_pending_usage_output_after_stream_shutdown(tui);
             }
             AppEvent::ConsolidateProposedPlan(source) => {
-                let plan_end = trailing_automatic_spine_tree_start(&self.transcript_cells);
-                let start = trailing_run_start::<history_cell::ProposedPlanStreamCell>(
-                    &self.transcript_cells[..plan_end],
-                );
                 let consolidated: Arc<dyn HistoryCell> =
                     Arc::new(history_cell::new_proposed_plan(source, &self.config.cwd));
 
-                if start < plan_end {
-                    self.transcript_cells
-                        .splice(start..plan_end, std::iter::once(consolidated.clone()));
+                if let Some(start) = trailing_stream_start_across_spine_history::<
+                    history_cell::ProposedPlanStreamCell,
+                >(&self.transcript_cells)
+                {
+                    let end = self.transcript_cells.len();
+                    let trailing_spine_history = self.transcript_cells[start..end]
+                        .iter()
+                        .filter(|cell| is_automatic_spine_tree_history(cell))
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    let had_trailing_spine_history = !trailing_spine_history.is_empty();
+                    self.transcript_cells.splice(
+                        start..end,
+                        std::iter::once(consolidated.clone()).chain(trailing_spine_history),
+                    );
 
                     if let Some(Overlay::Transcript(t)) = &mut self.overlay {
-                        t.consolidate_cells(start..plan_end, consolidated.clone());
+                        if had_trailing_spine_history {
+                            t.replace_cells(self.transcript_cells.clone());
+                        } else {
+                            t.consolidate_cells(start..end, consolidated.clone());
+                        }
                         tui.frame_requester().schedule_frame();
                     }
 
