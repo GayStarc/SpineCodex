@@ -918,12 +918,13 @@ impl BottomPane {
     pub(crate) fn update_status(
         &mut self,
         header: String,
+        header_is_reasoning: bool,
         details: Option<String>,
         details_capitalization: StatusDetailsCapitalization,
         details_max_lines: usize,
     ) {
         if let Some(status) = self.status.as_mut() {
-            status.update_header(header);
+            status.update_header(header, header_is_reasoning);
             status.update_details(details, details_capitalization, details_max_lines.max(1));
             self.request_redraw();
         }
@@ -2503,6 +2504,7 @@ mod tests {
         pane.set_task_running(/*running*/ true);
         pane.update_status(
             "Working".to_string(),
+            /*header_is_reasoning*/ false,
             Some("First detail line\nSecond detail line".to_string()),
             StatusDetailsCapitalization::CapitalizeFirst,
             STATUS_DETAILS_DEFAULT_MAX_LINES,

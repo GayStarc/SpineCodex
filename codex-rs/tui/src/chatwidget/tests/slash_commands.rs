@@ -127,6 +127,43 @@ async fn organic_working_status_is_scoped_to_spine_jit_agent_turns() {
 }
 
 #[tokio::test]
+async fn reasoning_status_provenance_survives_operational_override_and_restore() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.turn_lifecycle.last_turn_id = Some("turn-1".to_string());
+    chat.set_feature_enabled(Feature::SpineJit, /*enabled*/ true);
+    chat.turn_lifecycle.start(Instant::now());
+    chat.update_task_running_state();
+
+    chat.on_agent_reasoning_delta("**Planning memory rollout inspection**".to_string());
+    let status = chat.bottom_pane.status_widget().expect("status widget");
+    assert_eq!(status.header(), "Planning memory rollout inspection");
+    assert_eq!(status.header_is_reasoning(), true);
+
+    chat.status_state.remember_retry_status_header();
+    chat.set_status_header("Reconnecting... 2/5".to_string());
+    let status = chat.bottom_pane.status_widget().expect("status widget");
+    assert_eq!(status.header(), "Reconnecting... 2/5");
+    assert_eq!(status.header_is_reasoning(), false);
+
+    chat.restore_retry_status_header_if_present();
+    let status = chat.bottom_pane.status_widget().expect("status widget");
+    assert_eq!(status.header(), "Planning memory rollout inspection");
+    assert_eq!(status.header_is_reasoning(), true);
+
+    chat.set_status_header("Waiting for background terminal".to_string());
+    chat.restore_reasoning_status_header();
+    let status = chat.bottom_pane.status_widget().expect("status widget");
+    assert_eq!(status.header(), "Planning memory rollout inspection");
+    assert_eq!(status.header_is_reasoning(), true);
+
+    chat.reasoning_buffer.clear();
+    chat.restore_reasoning_status_header();
+    let status = chat.bottom_pane.status_widget().expect("status widget");
+    assert_eq!(status.header(), "Working");
+    assert_eq!(status.header_is_reasoning(), false);
+}
+
+#[tokio::test]
 async fn debugspine_with_node_id_renders_only_node_details_and_memory() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.last_spine_tree_snapshot = Some(codex_app_server_protocol::SpineTreeUpdatedNotification {

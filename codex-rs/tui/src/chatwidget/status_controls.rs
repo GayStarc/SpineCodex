@@ -28,16 +28,23 @@ impl ChatWidget {
                     StatusDetailsCapitalization::Preserve => trimmed.to_string(),
                 }
             });
-        self.status_state.set_status(StatusIndicatorState {
-            header: header.clone(),
-            details: details.clone(),
+        self.apply_status_indicator_state(StatusIndicatorState {
+            header,
+            header_source: StatusHeaderSource::Standard,
+            details,
             details_max_lines,
         });
+    }
+
+    pub(super) fn apply_status_indicator_state(&mut self, status: StatusIndicatorState) {
+        let header_is_reasoning = status.header_source == StatusHeaderSource::Reasoning;
+        self.status_state.set_status(status.clone());
         self.bottom_pane.update_status(
-            header,
-            details,
+            status.header,
+            header_is_reasoning,
+            status.details,
             StatusDetailsCapitalization::Preserve,
-            details_max_lines,
+            status.details_max_lines,
         );
         let title_uses_status = self
             .config
@@ -62,6 +69,15 @@ impl ChatWidget {
             StatusDetailsCapitalization::CapitalizeFirst,
             STATUS_DETAILS_DEFAULT_MAX_LINES,
         );
+    }
+
+    pub(super) fn set_reasoning_status_header(&mut self, header: String) {
+        self.apply_status_indicator_state(StatusIndicatorState {
+            header,
+            header_source: StatusHeaderSource::Reasoning,
+            details: None,
+            details_max_lines: STATUS_DETAILS_DEFAULT_MAX_LINES,
+        });
     }
 
     /// Sets the currently rendered footer status-line value.

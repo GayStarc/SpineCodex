@@ -9,7 +9,7 @@ impl ChatWidget {
     pub(super) fn restore_reasoning_status_header(&mut self) {
         if let Some(header) = extract_first_bold(&self.reasoning_buffer) {
             self.status_state.terminal_title_status_kind = TerminalTitleStatusKind::Thinking;
-            self.set_status_header(header);
+            self.set_reasoning_status_header(header);
         } else if self.bottom_pane.is_task_running() {
             self.status_state.terminal_title_status_kind = TerminalTitleStatusKind::Working;
             self.set_status_header(String::from("Working"));
@@ -85,12 +85,7 @@ impl ChatWidget {
         }
 
         self.bottom_pane.ensure_status_indicator();
-        self.set_status(
-            self.status_state.current_status.header.clone(),
-            self.status_state.current_status.details.clone(),
-            StatusDetailsCapitalization::Preserve,
-            self.status_state.current_status.details_max_lines,
-        );
+        self.apply_status_indicator_state(self.status_state.current_status.clone());
         self.status_state.pending_status_indicator_restore = false;
     }
 
@@ -217,7 +212,7 @@ impl ChatWidget {
         if let Some(header) = extract_first_bold(&self.reasoning_buffer) {
             // Update the shimmer header to the extracted reasoning chunk header.
             self.status_state.terminal_title_status_kind = TerminalTitleStatusKind::Thinking;
-            self.set_status_header(header);
+            self.set_reasoning_status_header(header);
         } else {
             // Fallback while we don't yet have a bold header: leave existing header as-is.
         }
