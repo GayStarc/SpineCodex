@@ -2696,6 +2696,218 @@ async fn open_agent_picker_preserves_cached_metadata_for_replay_threads() -> Res
     Ok(())
 }
 
+async fn record_running_path_backed_agent(app: &mut App, thread_id: ThreadId, agent_path: &str) {
+    let channel = ThreadEventChannel::new(/*capacity*/ 4);
+    channel
+        .store
+        .lock()
+        .await
+        .push_notification(turn_started_notification(thread_id, "turn-running"));
+    app.thread_event_channels.insert(thread_id, channel);
+    app.agent_navigation
+        .record_sub_agent_activity(SubAgentActivityDisplay {
+            thread_id,
+            agent_path: agent_path.to_string(),
+            is_running_hint: true,
+        });
+}
+
+fn display_test_thread(app: &mut App, thread_id: ThreadId) {
+    app.active_thread_id = Some(thread_id);
+    app.chat_widget
+        .handle_thread_session_quiet(test_thread_session(
+            thread_id,
+            test_path_buf("/tmp/agent-picker-parent"),
+        ));
+}
+
+fn install_live_spawn_overlay(
+    app: &mut App,
+    parent_thread_id: ThreadId,
+    call_id: &str,
+    children: &[(ThreadId, &str)],
+) {
+    let state = app.spine_tree_views.entry(parent_thread_id).or_default();
+    state.apply_tree_update(app_spine_snapshot(parent_thread_id, "turn-spawn", 1, None));
+    state.apply_spawn_progress(SpineSpawnProgressUpdatedNotification {
+        thread_id: parent_thread_id.to_string(),
+        turn_id: "turn-spawn".to_string(),
+        call_id: call_id.to_string(),
+        tasks: children
+            .iter()
+            .enumerate()
+            .map(
+                |(ordinal, (thread_id, agent_path))| SpineSpawnTaskProgress {
+                    ordinal: ordinal.try_into().expect("test task ordinal fits u32"),
+                    summary: format!("worker {ordinal}"),
+                    thread_id: thread_id.to_string(),
+                    agent_path: Some((*agent_path).to_string()),
+                    status: CollabAgentStatus::Running,
+                },
+            )
+            .collect(),
+    });
+    if app.chat_widget.thread_id() == Some(parent_thread_id)
+        && app.initial_history_replay_buffer.is_none()
+    {
+        app.refresh_spine_tree_view_for_chat_widget();
+    }
+}
+
+fn try_render_inserted_history_cell(
+    app_event_rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
+) -> Option<String> {
+    while let Ok(event) = app_event_rx.try_recv() {
+        if let AppEvent::InsertHistoryCell(cell) = event {
+            return Some(
+                cell.display_lines(/*width*/ 120)
+                    .into_iter()
+                    .map(|line| line.to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            );
+        }
+    }
+    None
+}
+
+fn render_inserted_history_cell(
+    app_event_rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
+) -> String {
+    try_render_inserted_history_cell(app_event_rx).expect("expected InsertHistoryCell event")
+}
+
+#[tokio::test]
+async fn open_agent_picker_suppresses_visible_spine_spawn_children() -> Result<()> {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let mut app_server =
+        crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
+    let parent_thread_id = ThreadId::new();
+    let child_thread_id = ThreadId::new();
+    display_test_thread(&mut app, parent_thread_id);
+    record_running_path_backed_agent(&mut app, child_thread_id, "/root/spawn-child").await;
+    install_live_spawn_overlay(
+        &mut app,
+        parent_thread_id,
+        "spawn-visible",
+        &[(child_thread_id, "/root/spawn-child")],
+    );
+
+    app.open_agent_picker(&mut app_server).await;
+
+    assert_eq!(try_render_inserted_history_cell(&mut app_event_rx), None);
+    Ok(())
+}
+
+#[tokio::test]
+async fn open_agent_picker_shows_only_native_children_in_mixed_status() -> Result<()> {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let mut app_server =
+        crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
+    let parent_thread_id = ThreadId::new();
+    let spine_child_thread_id = ThreadId::new();
+    let native_child_thread_id = ThreadId::new();
+    display_test_thread(&mut app, parent_thread_id);
+    record_running_path_backed_agent(&mut app, spine_child_thread_id, "/root/spawn-child").await;
+    record_running_path_backed_agent(&mut app, native_child_thread_id, "/root/native-child").await;
+    install_live_spawn_overlay(
+        &mut app,
+        parent_thread_id,
+        "spawn-visible",
+        &[(spine_child_thread_id, "/root/spawn-child")],
+    );
+
+    app.open_agent_picker(&mut app_server).await;
+
+    let rendered = render_inserted_history_cell(&mut app_event_rx);
+    insta::assert_snapshot!(rendered, @r###"
+    /agent
+    Sub-agents running
+
+      • `/root/native-child`
+        No recent activity yet.
+    "###);
+    Ok(())
+}
+
+#[tokio::test]
+async fn open_agent_picker_ignores_inactive_spine_spawn_overlays() -> Result<()> {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let mut app_server =
+        crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
+    let visible_parent_thread_id = ThreadId::new();
+    let inactive_parent_thread_id = ThreadId::new();
+    let child_thread_id = ThreadId::new();
+    display_test_thread(&mut app, visible_parent_thread_id);
+    record_running_path_backed_agent(&mut app, child_thread_id, "/root/background-child").await;
+    install_live_spawn_overlay(
+        &mut app,
+        inactive_parent_thread_id,
+        "spawn-inactive",
+        &[(child_thread_id, "/root/background-child")],
+    );
+
+    app.open_agent_picker(&mut app_server).await;
+
+    let rendered = render_inserted_history_cell(&mut app_event_rx);
+    assert!(rendered.contains("/root/background-child"), "{rendered}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn open_agent_picker_shows_child_after_spine_spawn_settles() -> Result<()> {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let mut app_server =
+        crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
+    let parent_thread_id = ThreadId::new();
+    let child_thread_id = ThreadId::new();
+    display_test_thread(&mut app, parent_thread_id);
+    record_running_path_backed_agent(&mut app, child_thread_id, "/root/settled-child").await;
+    install_live_spawn_overlay(
+        &mut app,
+        parent_thread_id,
+        "spawn-settled",
+        &[(child_thread_id, "/root/settled-child")],
+    );
+    let mut settled = app_spine_snapshot(parent_thread_id, "turn-spawn", 2, None);
+    settled.settled_spawn_call_ids = vec!["spawn-settled".to_string()];
+    app.spine_tree_views
+        .get_mut(&parent_thread_id)
+        .expect("missing Spine tree view")
+        .apply_tree_update(settled);
+
+    app.open_agent_picker(&mut app_server).await;
+
+    let rendered = render_inserted_history_cell(&mut app_event_rx);
+    assert!(rendered.contains("/root/settled-child"), "{rendered}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn open_agent_picker_does_not_suppress_unpublished_spine_overlay_during_replay() -> Result<()>
+{
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let mut app_server =
+        crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
+    let parent_thread_id = ThreadId::new();
+    let child_thread_id = ThreadId::new();
+    display_test_thread(&mut app, parent_thread_id);
+    app.prepare_thread_switch_history_replay_buffer(parent_thread_id);
+    record_running_path_backed_agent(&mut app, child_thread_id, "/root/replay-child").await;
+    install_live_spawn_overlay(
+        &mut app,
+        parent_thread_id,
+        "spawn-during-replay",
+        &[(child_thread_id, "/root/replay-child")],
+    );
+
+    app.open_agent_picker(&mut app_server).await;
+
+    let rendered = render_inserted_history_cell(&mut app_event_rx);
+    assert!(rendered.contains("/root/replay-child"), "{rendered}");
+    Ok(())
+}
+
 #[tokio::test]
 async fn open_agent_picker_clears_completed_path_backed_agent_running_state() -> Result<()> {
     let mut app = Box::pin(make_test_app()).await;

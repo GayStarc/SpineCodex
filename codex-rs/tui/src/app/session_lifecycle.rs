@@ -33,15 +33,37 @@ impl App {
             .agent_navigation
             .ordered_path_backed_subagent_threads(self.primary_thread_id);
         if !path_backed_threads.is_empty() {
+            let visible_spine_tree = self
+                .chat_widget
+                .thread_id()
+                .filter(|_| self.initial_history_replay_buffer.is_none())
+                .and_then(|thread_id| self.spine_tree_views.get(&thread_id))
+                .filter(|state| state.snapshot().is_some());
+            let is_visible_spine_spawn_child = |thread_id: ThreadId| {
+                visible_spine_tree.is_some_and(|state| {
+                    state
+                        .overlay_key_for_child_thread(&thread_id.to_string())
+                        .is_some()
+                })
+            };
+            let has_visible_spine_spawn_child = path_backed_threads
+                .iter()
+                .any(|(thread_id, _)| is_visible_spine_spawn_child(*thread_id));
             let running_threads: Vec<_> = path_backed_threads
                 .into_iter()
                 .filter_map(|(thread_id, entry)| {
-                    if !entry.is_running || entry.is_closed {
+                    if !entry.is_running
+                        || entry.is_closed
+                        || is_visible_spine_spawn_child(thread_id)
+                    {
                         return None;
                     }
                     Some((thread_id, entry.agent_path.as_deref()?.trim().to_string()))
                 })
                 .collect();
+            if has_visible_spine_spawn_child && running_threads.is_empty() {
+                return;
+            }
             let mut entries = Vec::new();
             for (thread_id, agent_path) in running_threads {
                 let preview = if let Some(channel) = self.thread_event_channels.get(&thread_id) {
