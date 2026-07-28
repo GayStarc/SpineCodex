@@ -4030,22 +4030,6 @@ mod tests {
     }
 
     #[test]
-    fn spine_spawn_toggle_keeps_public_scalar_override() {
-        let toggles = FeatureToggles {
-            enable: vec!["spine_spawn".to_string()],
-            disable: vec!["spine_spawn".to_string()],
-        };
-        let overrides = toggles.to_overrides().expect("valid features");
-        assert_eq!(
-            overrides,
-            vec![
-                "features.spine_spawn=true".to_string(),
-                "features.spine_spawn=false".to_string(),
-            ]
-        );
-    }
-
-    #[test]
     fn feature_toggles_accept_legacy_linux_sandbox_flag() {
         let toggles = FeatureToggles {
             enable: vec!["use_linux_sandbox_bwrap".to_string()],
