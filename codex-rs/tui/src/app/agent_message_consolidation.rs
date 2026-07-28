@@ -13,25 +13,13 @@ use std::sync::Arc;
 use color_eyre::eyre::Result;
 
 use super::App;
+use super::resize_reflow::trailing_automatic_spine_tree_start;
 use super::resize_reflow::trailing_run_start;
 use crate::app_event::ConsolidationScrollbackReflow;
 use crate::history_cell;
 use crate::history_cell::HistoryCell;
 use crate::pager_overlay::Overlay;
 use crate::tui;
-
-fn trailing_automatic_spine_tree_start(cells: &[Arc<dyn HistoryCell>]) -> usize {
-    let mut start = cells.len();
-    while start > 0
-        && cells[start - 1]
-            .as_any()
-            .downcast_ref::<history_cell::SpineTreeUpdateCell>()
-            .is_some_and(history_cell::SpineTreeUpdateCell::is_automatic_history)
-    {
-        start -= 1;
-    }
-    start
-}
 
 impl App {
     pub(super) fn handle_consolidate_agent_message(
@@ -45,18 +33,20 @@ impl App {
         // Some finalize paths must preserve a last provisional stream cell long
         // enough for queue ordering, then fold it into the canonical
         // source-backed cell during consolidation.
+        let end = self.transcript_cells.len();
+        let mut message_end = trailing_automatic_spine_tree_start(&self.transcript_cells);
+        let had_trailing_spine_history = message_end < end;
+        let had_deferred_history_cell = deferred_history_cell.is_some();
         if let Some(cell) = deferred_history_cell {
             let cell: Arc<dyn HistoryCell> = cell.into();
-            if let Some(Overlay::Transcript(t)) = &mut self.overlay {
-                t.insert_cell(cell.clone());
-            }
-            self.transcript_cells.push(cell);
+            debug_assert!(cell.as_any().is::<history_cell::AgentMessageCell>());
+            self.transcript_cells.insert(message_end, cell);
+            message_end += 1;
         }
 
         // Walk backward to find the contiguous run of streaming AgentMessageCells that
-        // belong to the just-finalized stream.
-        let end = self.transcript_cells.len();
-        let message_end = trailing_automatic_spine_tree_start(&self.transcript_cells);
+        // belong to the just-finalized stream. Ordered automatic tree history may
+        // follow that run while the stream-consolidation event is still queued.
         tracing::debug!(
             "ConsolidateAgentMessage: transcript_cells.len()={end}, source_len={}",
             source.len()
@@ -74,11 +64,15 @@ impl App {
                 .splice(start..message_end, std::iter::once(consolidated.clone()));
 
             if let Some(Overlay::Transcript(t)) = &mut self.overlay {
-                t.consolidate_cells(start..message_end, consolidated.clone());
+                if had_deferred_history_cell {
+                    t.replace_cells(self.transcript_cells.clone());
+                } else {
+                    t.consolidate_cells(start..message_end, consolidated.clone());
+                }
                 tui.frame_requester().schedule_frame();
             }
 
-            if message_end < end {
+            if had_trailing_spine_history {
                 self.finish_required_stream_reflow(tui)?;
             } else {
                 self.finish_agent_message_consolidation(tui, scrollback_reflow)?;

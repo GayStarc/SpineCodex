@@ -160,10 +160,7 @@ impl SpineTreeViewState {
         self.overlays
             .retain(|overlay| !self.settled_spawn_call_ids.contains(overlay.call_id()));
 
-        let refresh_pending_history = !started_handoff
-            && (display_changed
-                || handoff_superseded
-                || (self.pending_handoff.is_none() && self.pending_history.is_some()));
+        let refresh_pending_history = !started_handoff && (display_changed || handoff_superseded);
         if refresh_pending_history {
             self.pending_history = self.snapshot.clone();
         }
@@ -1825,7 +1822,12 @@ mod tests {
         let history = state
             .take_pending_history_cell()
             .expect("the prior semantic edge should remain pending once");
-        assert_eq!(history.snapshot_seq(), 3);
+        assert_eq!(
+            history.snapshot_seq(),
+            2,
+            "projection-only updates must not rewrite the edge-time presentation"
+        );
+        assert_eq!(history.turn_id(), "turn");
         assert!(render(&history.display_lines(80)).contains("nested task"));
         assert!(state.take_pending_history_cell().is_none());
     }

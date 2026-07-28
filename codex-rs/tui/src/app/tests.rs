@@ -947,6 +947,29 @@ async fn inactive_spine_history_coalesces_and_is_consumed_once_on_view_refresh()
             .get(&inactive_thread_id)
             .is_some_and(SpineTreeViewState::has_pending_history)
     );
+    let mut projection_only = app
+        .spine_tree_views
+        .get(&inactive_thread_id)
+        .and_then(SpineTreeViewState::snapshot)
+        .cloned()
+        .expect("latest inactive snapshot");
+    projection_only.turn_id = "projection-only".to_string();
+    projection_only.snapshot_seq = 4;
+    projection_only.nodes[1].context_pressure =
+        Some(codex_app_server_protocol::SpineNodeContextPressure {
+            open_input_tokens: Some(10),
+            current_input_tokens: Some(20),
+            context_tokens: Some(30),
+            problem: None,
+        });
+    app.handle_event(
+        &mut tui,
+        &mut app_server,
+        AppEvent::UpsertSpineTreeCell {
+            snapshot: projection_only,
+        },
+    )
+    .await?;
 
     app.chat_widget
         .handle_thread_session_quiet(test_thread_session(
@@ -967,6 +990,12 @@ async fn inactive_spine_history_coalesces_and_is_consumed_once_on_view_refresh()
     let rendered = lines_to_single_string(&app.transcript_cells[0].display_lines(80));
     assert!(!rendered.contains("first inactive edge"), "{rendered}");
     assert!(rendered.contains("latest inactive edge"), "{rendered}");
+    let automatic = app.transcript_cells[0]
+        .as_any()
+        .downcast_ref::<crate::history_cell::SpineTreeUpdateCell>()
+        .expect("automatic tree history");
+    assert_eq!(automatic.snapshot_seq(), 3);
+    assert_eq!(automatic.turn_id(), "turn-a");
     assert!(
         !app.spine_tree_views
             .get(&inactive_thread_id)
@@ -1121,6 +1150,157 @@ async fn automatic_spine_history_does_not_block_agent_message_consolidation() ->
             .iter()
             .any(|line| line.to_string().contains("tree after stream"))
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn automatic_spine_history_preserves_deferred_agent_stream_consolidation() -> Result<()> {
+    let mut app = make_test_app().await;
+    let thread_id = ThreadId::new();
+    app.chat_widget
+        .handle_thread_session_quiet(test_thread_session(
+            thread_id,
+            test_path_buf("/tmp/spine-deferred-consolidation"),
+        ));
+    app.transcript_cells = vec![Arc::new(AgentMessageCell::new(
+        vec![Line::from("committed stream prefix")],
+        /*is_first_line*/ true,
+    )) as Arc<dyn HistoryCell>];
+
+    let mut state = SpineTreeViewState::default();
+    state.apply_tree_update(app_spine_snapshot(thread_id, "turn-a", 1, None));
+    state.apply_tree_update(app_spine_snapshot(
+        thread_id,
+        "turn-a",
+        2,
+        Some("tree after deferred stream"),
+    ));
+    let tree = state
+        .take_pending_history_cell()
+        .expect("semantic edge should produce history");
+    let mut tui = crate::tui::test_support::make_test_tui().expect("test tui");
+    app.upsert_spine_tree_history(&mut tui, tree)?;
+    app.overlay = Some(Overlay::new_transcript(
+        app.transcript_cells.clone(),
+        app.keymap.pager.clone(),
+    ));
+    assert!(
+        app.should_mark_reflow_as_stream_time(),
+        "automatic history must not hide the transient stream prefix"
+    );
+
+    app.handle_consolidate_agent_message(
+        &mut tui,
+        "committed stream prefix\n\n| a | b |\n| - | - |\n| 1 | 2 |".to_string(),
+        test_path_buf("/tmp/spine-deferred-consolidation"),
+        ConsolidationScrollbackReflow::Required,
+        Some(Box::new(AgentMessageCell::new(
+            vec![Line::from("deferred table tail")],
+            /*is_first_line*/ false,
+        ))),
+    )?;
+
+    assert_eq!(app.transcript_cells.len(), 2);
+    assert!(app.transcript_cells[0].as_any().is::<AgentMarkdownCell>());
+    assert!(
+        app.transcript_cells
+            .iter()
+            .all(|cell| !cell.as_any().is::<AgentMessageCell>()),
+        "all transient agent stream cells must be consolidated"
+    );
+    assert!(
+        app.transcript_cells[1]
+            .as_any()
+            .downcast_ref::<crate::history_cell::SpineTreeUpdateCell>()
+            .is_some_and(crate::history_cell::SpineTreeUpdateCell::is_automatic_history)
+    );
+    let overlay_cell_count = match app.overlay.as_ref() {
+        Some(Overlay::Transcript(transcript)) => transcript.committed_cell_count(),
+        _ => panic!("expected transcript overlay"),
+    };
+    assert_eq!(overlay_cell_count, app.transcript_cells.len());
+    Ok(())
+}
+
+#[tokio::test]
+async fn automatic_spine_history_does_not_block_proposed_plan_consolidation() -> Result<()> {
+    let mut app = make_test_app().await;
+    let thread_id = ThreadId::new();
+    app.chat_widget
+        .handle_thread_session_quiet(test_thread_session(
+            thread_id,
+            test_path_buf("/tmp/spine-plan-consolidation"),
+        ));
+    app.transcript_cells = vec![
+        Arc::new(crate::history_cell::new_proposed_plan_stream(
+            vec![Line::from("plan prefix")],
+            /*is_stream_continuation*/ false,
+        )) as Arc<dyn HistoryCell>,
+        Arc::new(crate::history_cell::new_proposed_plan_stream(
+            vec![Line::from("plan continuation")],
+            /*is_stream_continuation*/ true,
+        )) as Arc<dyn HistoryCell>,
+    ];
+
+    let mut state = SpineTreeViewState::default();
+    state.apply_tree_update(app_spine_snapshot(thread_id, "turn-a", 1, None));
+    state.apply_tree_update(app_spine_snapshot(
+        thread_id,
+        "turn-a",
+        2,
+        Some("tree after plan"),
+    ));
+    let tree = state
+        .take_pending_history_cell()
+        .expect("semantic edge should produce history");
+    let mut tui = crate::tui::test_support::make_test_tui().expect("test tui");
+    app.upsert_spine_tree_history(&mut tui, tree)?;
+    app.overlay = Some(Overlay::new_transcript(
+        app.transcript_cells.clone(),
+        app.keymap.pager.clone(),
+    ));
+    assert!(
+        app.should_mark_reflow_as_stream_time(),
+        "automatic history must not hide the transient plan run"
+    );
+
+    let mut app_server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
+        .await
+        .expect("embedded app server");
+    app.handle_event(
+        &mut tui,
+        &mut app_server,
+        AppEvent::ConsolidateProposedPlan("final source-backed plan".to_string()),
+    )
+    .await?;
+
+    assert_eq!(app.transcript_cells.len(), 2);
+    assert!(
+        app.transcript_cells[0]
+            .as_any()
+            .is::<crate::history_cell::ProposedPlanCell>()
+    );
+    assert!(
+        app.transcript_cells
+            .iter()
+            .all(|cell| !cell
+                .as_any()
+                .is::<crate::history_cell::ProposedPlanStreamCell>()),
+        "all transient plan stream cells must be consolidated"
+    );
+    assert!(
+        app.transcript_cells[1]
+            .as_any()
+            .downcast_ref::<crate::history_cell::SpineTreeUpdateCell>()
+            .is_some_and(crate::history_cell::SpineTreeUpdateCell::is_automatic_history)
+    );
+    let overlay_cell_count = match app.overlay.as_ref() {
+        Some(Overlay::Transcript(transcript)) => transcript.committed_cell_count(),
+        _ => panic!("expected transcript overlay"),
+    };
+    assert_eq!(overlay_cell_count, app.transcript_cells.len());
+
+    app_server.shutdown().await.expect("app server shutdown");
     Ok(())
 }
 

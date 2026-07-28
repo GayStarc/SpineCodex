@@ -694,9 +694,10 @@ pub(crate) enum AppEvent {
     /// Finish buffering initial resume replay after all replay events have been queued.
     EndInitialHistoryReplayBuffer,
 
-    /// Replace the contiguous run of streaming `AgentMessageCell`s at the end of
-    /// the transcript with a single `AgentMarkdownCell` that stores the raw
-    /// markdown source and re-renders from it on resize.
+    /// Replace the contiguous run of streaming `AgentMessageCell`s at the
+    /// transcript tail, immediately before any automatic Spine tree history,
+    /// with a single `AgentMarkdownCell` that stores the raw markdown source
+    /// and re-renders from it on resize.
     ///
     /// Emitted by `ChatWidget::flush_answer_stream_with_separator` after stream
     /// finalization. The `App` handler walks backward through `transcript_cells`
@@ -714,7 +715,8 @@ pub(crate) enum AppEvent {
     },
 
     /// Replace the contiguous run of streaming `ProposedPlanStreamCell`s at the
-    /// end of the transcript with a single source-backed `ProposedPlanCell`.
+    /// transcript tail, immediately before any automatic Spine tree history,
+    /// with a single source-backed `ProposedPlanCell`.
     ///
     /// Emitted by `ChatWidget::on_plan_item_completed` after plan stream
     /// finalization.

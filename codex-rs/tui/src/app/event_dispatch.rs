@@ -3,6 +3,7 @@
 //! This module contains the exhaustive `AppEvent` dispatcher and exit-mode handling. Large domain
 //! actions are delegated to focused app submodules so the central match remains the routing layer.
 
+use super::resize_reflow::trailing_automatic_spine_tree_start;
 use super::resize_reflow::trailing_run_start;
 use super::*;
 use crate::config_update::format_config_error;
@@ -411,19 +412,19 @@ impl App {
                 self.insert_pending_usage_output_after_stream_shutdown(tui);
             }
             AppEvent::ConsolidateProposedPlan(source) => {
-                let end = self.transcript_cells.len();
+                let plan_end = trailing_automatic_spine_tree_start(&self.transcript_cells);
                 let start = trailing_run_start::<history_cell::ProposedPlanStreamCell>(
-                    &self.transcript_cells,
+                    &self.transcript_cells[..plan_end],
                 );
                 let consolidated: Arc<dyn HistoryCell> =
                     Arc::new(history_cell::new_proposed_plan(source, &self.config.cwd));
 
-                if start < end {
+                if start < plan_end {
                     self.transcript_cells
-                        .splice(start..end, std::iter::once(consolidated.clone()));
+                        .splice(start..plan_end, std::iter::once(consolidated.clone()));
 
                     if let Some(Overlay::Transcript(t)) = &mut self.overlay {
-                        t.consolidate_cells(start..end, consolidated.clone());
+                        t.consolidate_cells(start..plan_end, consolidated.clone());
                         tui.frame_requester().schedule_frame();
                     }
 

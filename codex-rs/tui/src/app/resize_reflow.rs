@@ -65,6 +65,21 @@ pub(super) fn trailing_run_start<T: 'static>(transcript_cells: &[Arc<dyn History
     start
 }
 
+pub(super) fn trailing_automatic_spine_tree_start(
+    transcript_cells: &[Arc<dyn HistoryCell>],
+) -> usize {
+    let mut start = transcript_cells.len();
+    while start > 0
+        && transcript_cells[start - 1]
+            .as_any()
+            .downcast_ref::<history_cell::SpineTreeUpdateCell>()
+            .is_some_and(history_cell::SpineTreeUpdateCell::is_automatic_history)
+    {
+        start -= 1;
+    }
+    start
+}
+
 impl App {
     pub(super) fn reset_history_emission_state(&mut self) {
         self.has_emitted_history_lines = false;
@@ -529,11 +544,12 @@ impl App {
     /// narrow window after a controller has stopped but before the app has processed the
     /// consolidation event that replaces transient stream cells with source-backed cells.
     pub(super) fn should_mark_reflow_as_stream_time(&self) -> bool {
+        let stream_end = trailing_automatic_spine_tree_start(&self.transcript_cells);
+        let stream_prefix = &self.transcript_cells[..stream_end];
         self.chat_widget.has_active_agent_stream()
             || self.chat_widget.has_active_plan_stream()
-            || trailing_run_start::<history_cell::AgentMessageCell>(&self.transcript_cells)
-                < self.transcript_cells.len()
-            || trailing_run_start::<history_cell::ProposedPlanStreamCell>(&self.transcript_cells)
-                < self.transcript_cells.len()
+            || trailing_run_start::<history_cell::AgentMessageCell>(stream_prefix) < stream_end
+            || trailing_run_start::<history_cell::ProposedPlanStreamCell>(stream_prefix)
+                < stream_end
     }
 }
