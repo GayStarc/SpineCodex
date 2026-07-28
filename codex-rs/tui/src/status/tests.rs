@@ -15,9 +15,11 @@ use crate::product_brand::SPINE_BRAND_COLOR;
 use crate::status::StatusAccountDisplay;
 use crate::status::remote_connection::RemoteConnectionStatus;
 use crate::test_support::PathBufExt;
+use crate::test_support::normalize_cli_version_for_snapshot;
 use crate::test_support::test_path_buf;
 use crate::token_usage::TokenUsage;
 use crate::token_usage::TokenUsageInfo;
+use crate::version::CODEX_CLI_VERSION;
 use app_test_support::ChatGptAuthFixture;
 use app_test_support::write_chatgpt_auth;
 use app_test_support::write_models_cache;
@@ -177,6 +179,10 @@ fn render_lines(lines: &[Line<'static>]) -> Vec<String> {
 }
 
 fn sanitize_directory(lines: Vec<String>) -> Vec<String> {
+    assert!(
+        lines.iter().any(|line| line.contains(CODEX_CLI_VERSION)),
+        "status snapshot should contain the current CLI version"
+    );
     let frame_width = lines
         .iter()
         .find(|line| line.starts_with('╭'))
@@ -184,7 +190,7 @@ fn sanitize_directory(lines: Vec<String>) -> Vec<String> {
     lines
         .into_iter()
         .map(|line| {
-            if let (Some(frame_width), Some(dir_pos), Some(pipe_idx)) =
+            let line = if let (Some(frame_width), Some(dir_pos), Some(pipe_idx)) =
                 (frame_width, line.find("Directory: "), line.rfind('│'))
             {
                 let prefix = &line[..dir_pos + "Directory: ".len()];
@@ -203,7 +209,8 @@ fn sanitize_directory(lines: Vec<String>) -> Vec<String> {
                 rebuilt
             } else {
                 line
-            }
+            };
+            normalize_cli_version_for_snapshot(line)
         })
         .collect()
 }

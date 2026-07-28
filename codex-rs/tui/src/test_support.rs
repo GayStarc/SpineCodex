@@ -22,6 +22,15 @@ pub(crate) fn test_path_display(path: &str) -> String {
     test_path_buf(path).display().to_string()
 }
 
+pub(crate) fn normalize_cli_version_for_snapshot(text: impl Into<String>) -> String {
+    let stable_version = crate::version::CODEX_CLI_VERSION
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { 'x' } else { ch })
+        .collect::<String>();
+    text.into()
+        .replace(crate::version::CODEX_CLI_VERSION, &stable_version)
+}
+
 pub(crate) fn session_source_cli<T>() -> T
 where
     T: DeserializeOwned,

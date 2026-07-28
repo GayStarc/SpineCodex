@@ -886,7 +886,7 @@ fn spawn_allows_leading_text_and_ordinary_sibling_calls() {
 }
 
 #[test]
-fn spawn_calls_are_imported_in_function_call_then_task_order() {
+fn host_unreachable_multiple_spawn_annotations_are_total_and_ordered() {
     let tasks = spawn_tasks();
     let RolloutEvent::ToolCall(mut first) = spawn(
         1,

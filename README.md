@@ -15,6 +15,28 @@ spine-codex
 The package installs its own `spine-codex` command and does not replace the
 official `codex` command.
 
+## Update SpineCodex
+
+Update a global npm installation to the latest release:
+
+```bash
+npm install -g @spinejit/spine-codex@latest
+spine-codex --version
+```
+
+## Experimental features
+
+Run `/experimental` in the TUI to enable either feature. Both are disabled by
+default; save the selection and start a new conversation for it to take effect.
+
+- **Spine spawn (`spine_spawn`)** runs differentiated branches concurrently,
+  then joins their terminal results into the current Spine tree. It requires
+  SpineJIT and is available only for direct, non-Plan model calls.
+- **Spinetree memory projection (`spinetree_memory_projection`)** projects
+  closed-node memory as read-only Markdown under `.codex/spinetree/` for local
+  inspection. It also maintains a derived `USER.md` from the active typed
+  rollout history and requires SpineJIT.
+
 ## Why SpineCodex
 
 Long Codex tasks tend to hit three practical limits:
@@ -58,9 +80,9 @@ This structure gives SpineCodex four practical advantages:
   difficult work can split recursively and receive more test-time reasoning
   where it is needed.
 - **A natural Agent Spawn boundary.** A node already defines the child task,
-  its inherited context, and the memory it returns. SpineCodex plans to use the
-  same boundary for independent child agents through the experimental
-  `spine_spawn` feature.
+  its inherited context, and the memory it returns. SpineCodex uses the same
+  boundary for independent child agents through the experimental `spine_spawn`
+  feature.
 
 The tree does not make the model's context window infinite. It makes more of
 that window useful by compiling completed work throughout the task instead of
@@ -114,19 +136,6 @@ well scoped.
 Run SpineCodex like Codex. SpineJIT is enabled by default, and the agent manages
 the task tree as it works; there is no tree to maintain by hand. Use
 `/spine-tree` in the TUI to inspect the current tree and live task.
-
-## Feature controls
-
-- `/experimental` exposes `spine_spawn` for running independent child tasks
-  concurrently and importing their results into the Spine tree. It remains
-  disabled by default and is available only for direct, non-Plan model calls.
-- `--enable spinetree_memory_projection` projects closed-node memory as
-  read-only Markdown under `.codex/spinetree/` for local inspection. Each
-  projection session also maintains a derived `USER.md`; normal User messages
-  append to it, while resume/rollback/fork reconstruction replaces it from the
-  active typed rollout history.
-- The same projection feature can be enabled from `/experimental`; it remains
-  disabled by default and also requires `spine_jit`.
 
 ## Project
 

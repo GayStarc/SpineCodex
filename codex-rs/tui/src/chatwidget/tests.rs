@@ -231,6 +231,13 @@ fn next_goal_draft(
     }
 }
 
+fn cache_missing_project_root(chat: &mut ChatWidget) {
+    chat.status_line_project_root_name_cache = Some(CachedProjectRootName {
+        cwd: chat.config.cwd.to_path_buf(),
+        root_name: None,
+    });
+}
+
 mod app_server;
 mod approval_requests;
 mod composer_submission;

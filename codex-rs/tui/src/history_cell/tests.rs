@@ -8,6 +8,8 @@ use crate::legacy_core::config::Config;
 use crate::legacy_core::config::ConfigBuilder;
 use crate::product_brand::SPINE_BRAND_COLOR;
 use crate::session_state::ThreadSessionState;
+use crate::test_support::normalize_cli_version_for_snapshot;
+use crate::version::CODEX_CLI_VERSION;
 use crate::wrapping::word_wrap_lines;
 use codex_app_server_protocol::AskForApproval;
 use codex_app_server_protocol::McpAuthStatus;
@@ -639,6 +641,8 @@ async fn session_info_availability_nux_tooltip_snapshot() {
     );
 
     let rendered = render_transcript(&cell).join("\n");
+    assert!(rendered.contains(CODEX_CLI_VERSION));
+    let rendered = normalize_cli_version_for_snapshot(rendered);
     insta::assert_snapshot!(rendered);
 }
 
@@ -1126,6 +1130,8 @@ fn standalone_unix_update_available_history_cell_snapshot() {
     let cell =
         UpdateAvailableHistoryCell::new("9.9.9".to_string(), Some(UpdateAction::StandaloneUnix));
     let rendered = render_lines(&cell.display_lines(/*width*/ 110)).join("\n");
+    assert!(rendered.contains(CODEX_CLI_VERSION));
+    let rendered = normalize_cli_version_for_snapshot(rendered);
 
     insta::assert_snapshot!(rendered);
 }
@@ -1135,6 +1141,8 @@ fn standalone_windows_update_available_history_cell_snapshot() {
     let cell =
         UpdateAvailableHistoryCell::new("9.9.9".to_string(), Some(UpdateAction::StandaloneWindows));
     let rendered = render_lines(&cell.display_lines(/*width*/ 110)).join("\n");
+    assert!(rendered.contains(CODEX_CLI_VERSION));
+    let rendered = normalize_cli_version_for_snapshot(rendered);
 
     insta::assert_snapshot!(rendered);
 }
@@ -1144,6 +1152,8 @@ fn pnpm_update_available_history_cell_snapshot() {
     let cell =
         UpdateAvailableHistoryCell::new("9.9.9".to_string(), Some(UpdateAction::PnpmGlobalLatest));
     let rendered = render_lines(&cell.display_lines(/*width*/ 110)).join("\n");
+    assert!(rendered.contains(CODEX_CLI_VERSION));
+    let rendered = normalize_cli_version_for_snapshot(rendered);
 
     insta::assert_snapshot!(rendered);
 }
