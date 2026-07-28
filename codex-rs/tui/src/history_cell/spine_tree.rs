@@ -820,7 +820,7 @@ fn render_history_bucket(
         Span::from(line_prefix).dim(),
         "◌".dim(),
         " ".into(),
-        Span::from(count.to_string()).green().bold(),
+        Span::from(count.to_string()).green(),
         " previous ".green(),
         Span::from(history_bucket_noun(count)).green(),
     ]);
@@ -1148,7 +1148,7 @@ mod tests {
             .find(|span| span.content == "2")
             .expect("history bucket count");
         assert_eq!(history_count.style.fg, Some(Color::Green));
-        assert!(history_count.style.add_modifier.contains(Modifier::BOLD));
+        assert!(!history_count.style.add_modifier.contains(Modifier::BOLD));
         assert!(!history_count.style.add_modifier.contains(Modifier::DIM));
         let history_previous = lines[1]
             .spans
@@ -1278,7 +1278,7 @@ mod tests {
             .find(|span| span.content == "1")
             .expect("history bucket count");
         assert_eq!(history_count.style.fg, Some(Color::Green));
-        assert!(history_count.style.add_modifier.contains(Modifier::BOLD));
+        assert!(!history_count.style.add_modifier.contains(Modifier::BOLD));
         assert!(!history_count.style.add_modifier.contains(Modifier::DIM));
         let raw = render(&cell.raw_lines());
         assert!(raw.contains("1 previous leaf"), "{raw}");
