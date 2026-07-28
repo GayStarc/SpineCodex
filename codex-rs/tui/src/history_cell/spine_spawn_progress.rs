@@ -451,16 +451,17 @@ fn completion_activity_spans(frame: &CompletionFrame) -> Vec<Span<'static>> {
         .activity_slots
         .iter()
         .enumerate()
-        .map(|(index, slot)| {
+        .filter_map(|(index, slot)| {
             let check_wins =
                 index == 0 && frame.check_alpha > 0.0 && frame.check_alpha >= slot.alpha;
+            if !check_wins && slot.alpha <= f32::EPSILON {
+                return None;
+            }
             let (content, alpha) = if check_wins {
                 (
                     format!("✓{}", " ".repeat(check_width.saturating_sub(1))),
                     frame.check_alpha,
                 )
-            } else if slot.alpha <= f32::EPSILON {
-                (" ".repeat(slot.width), 0.0)
             } else {
                 let mut content = slot.grapheme.clone();
                 content.push_str(&" ".repeat(slot.width.saturating_sub(slot.grapheme.width())));
@@ -472,7 +473,7 @@ fn completion_activity_spans(frame: &CompletionFrame) -> Vec<Span<'static>> {
                 alpha,
                 background,
             );
-            Span::styled(content, style)
+            Some(Span::styled(content, style))
         })
         .collect()
 }

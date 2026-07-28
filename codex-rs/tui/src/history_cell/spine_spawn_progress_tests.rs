@@ -372,8 +372,7 @@ fn completed_task_retires_word_and_frozen_body_before_check() {
         .collect::<Vec<_>>()
         .join("\n");
     assert_eq!(final_lines.len(), 1);
-    assert!(final_text.contains('✓'), "{final_text}");
-    assert!(final_text.contains("task summary"), "{final_text}");
+    assert_eq!(final_text, "  └ ✓ task summary");
     assert!(!final_text.contains(&word), "{final_text}");
     assert!(!final_text.contains("before completion"), "{final_text}");
 }
