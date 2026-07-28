@@ -343,7 +343,7 @@ fn apply_trim_edit(item: &mut ResponseItem, edit: &TrimEdit) {
         _ => return,
     };
     let body = match edit {
-        TrimEdit::Tagged { trim_id, body } => format!("[TRIM_ID: {trim_id}]\n{body}"),
+        TrimEdit::Tagged { trim_id, body, .. } => format!("[TRIM_ID: {trim_id}]\n{body}"),
         TrimEdit::Snipped => super::TOOL_RESULT_CLEARED_MESSAGE.to_string(),
         TrimEdit::Sliced(value) => value.clone(),
     };
