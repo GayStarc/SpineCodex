@@ -351,8 +351,8 @@ async fn spine_spawn_is_independent_from_multi_agent_v2() {
 }
 
 #[tokio::test]
-async fn spine_spawn_schema_is_independent_from_configured_child_capacity() {
-    fn spawn_task_bounds(plan: &ToolPlanProbe) -> (Option<usize>, bool) {
+async fn spine_spawn_schema_tracks_configured_child_capacity() {
+    fn spawn_task_bounds(plan: &ToolPlanProbe) -> (Option<usize>, Option<usize>) {
         let ToolSpec::Namespace(namespace) = plan.visible_spec("spine") else {
             panic!("expected Spine namespace");
         };
@@ -372,8 +372,7 @@ async fn spine_spawn_schema_is_independent_from_configured_child_capacity() {
             .as_ref()
             .and_then(|properties| properties.get("tasks"))
             .expect("spawn tasks schema");
-        let serialized = serde_json::to_value(tasks).expect("serialize spawn tasks schema");
-        (tasks.min_items, serialized.get("maxItems").is_some())
+        (tasks.min_items, tasks.max_items)
     }
 
     let defaults = probe(|turn| {
@@ -381,17 +380,18 @@ async fn spine_spawn_schema_is_independent_from_configured_child_capacity() {
         set_feature(turn, Feature::MultiAgentV2, /*enabled*/ false);
     })
     .await;
-    assert_eq!(spawn_task_bounds(&defaults), (Some(2), false));
+    assert_eq!(spawn_task_bounds(&defaults), (Some(2), Some(3)));
 
     let configured = probe(|turn| {
         set_features(turn, &[Feature::SpineJit, Feature::SpineSpawn]);
         set_feature(turn, Feature::MultiAgentV2, /*enabled*/ false);
         update_config(turn, |config| {
             config.spine_spawn.max_concurrent_threads_per_session = 6;
+            config.multi_agent_v2.max_concurrent_threads_per_session = 17;
         });
     })
     .await;
-    assert_eq!(spawn_task_bounds(&configured), (Some(2), false));
+    assert_eq!(spawn_task_bounds(&configured), (Some(2), Some(5)));
 
     let insufficient = probe(|turn| {
         set_features(turn, &[Feature::SpineJit, Feature::SpineSpawn]);
@@ -401,12 +401,12 @@ async fn spine_spawn_schema_is_independent_from_configured_child_capacity() {
         });
     })
     .await;
-    assert_eq!(spawn_task_bounds(&insufficient), (Some(2), false));
     assert!(
-        insufficient
+        !insufficient
             .namespace_function_names("spine")
             .contains(&"spawn".to_string())
     );
+    insufficient.assert_registered_lacks(&[&ToolName::namespaced("spine", "spawn").to_string()]);
 }
 
 #[tokio::test]

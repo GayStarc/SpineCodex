@@ -97,7 +97,11 @@ pub(crate) fn create_spine_tool(name: &str) -> ToolSpec {
     wrap_spine_tool(function)
 }
 
-pub(crate) fn create_spine_spawn_tool() -> ToolSpec {
+pub(crate) fn create_spine_spawn_tool(max_items: usize) -> ToolSpec {
+    assert!(
+        max_items >= 2,
+        "spine.spawn schema requires capacity for at least two tasks"
+    );
     let task = JsonSchema::object(
         BTreeMap::from([
             (
@@ -129,7 +133,8 @@ pub(crate) fn create_spine_spawn_tool() -> ToolSpec {
                     task,
                     Some("Ordered differentiated branch assignments.".to_string()),
                 )
-                .with_min_items(2),
+                .with_min_items(2)
+                .with_max_items(max_items),
             )]),
             Some(vec!["tasks".to_string()]),
             Some(false.into()),
@@ -216,7 +221,7 @@ mod tests {
             assert_eq!(function.name, name);
             assert!(!function.name.contains("tree"));
         }
-        let ToolSpec::Namespace(namespace) = create_spine_spawn_tool() else {
+        let ToolSpec::Namespace(namespace) = create_spine_spawn_tool(3) else {
             panic!("expected namespace spec");
         };
         let ResponsesApiNamespaceTool::Function(function) = &namespace.tools[0];
@@ -257,8 +262,8 @@ mod tests {
     }
 
     #[test]
-    fn spawn_schema_requires_exact_task_objects_without_capacity_bound() {
-        let ToolSpec::Namespace(namespace) = create_spine_spawn_tool() else {
+    fn spawn_schema_bounds_exact_task_objects_by_child_capacity() {
+        let ToolSpec::Namespace(namespace) = create_spine_spawn_tool(5) else {
             panic!("expected namespace spec");
         };
         let ResponsesApiNamespaceTool::Function(function) = &namespace.tools[0];
@@ -266,7 +271,7 @@ mod tests {
         assert_eq!(schema["required"], serde_json::json!(["tasks"]));
         assert_eq!(schema["additionalProperties"], serde_json::json!(false));
         assert_eq!(schema["properties"]["tasks"]["minItems"], 2);
-        assert!(schema["properties"]["tasks"]["maxItems"].is_null());
+        assert_eq!(schema["properties"]["tasks"]["maxItems"], 5);
         assert_eq!(
             schema["properties"]["tasks"]["items"]["required"],
             serde_json::json!(["summary", "prompt"])
