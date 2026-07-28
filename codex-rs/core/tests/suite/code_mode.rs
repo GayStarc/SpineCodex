@@ -44,6 +44,7 @@ use core_test_support::skip_if_wine_exec;
 use core_test_support::stdio_server_bin;
 use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::TestCodexBuilder;
+use core_test_support::test_codex::spine_test_codex;
 use core_test_support::test_codex::test_codex;
 use core_test_support::test_codex::turn_permission_fields;
 use core_test_support::wait_for_event;
@@ -3017,6 +3018,81 @@ image(out);
         .and_then(Value::as_str)
         .expect("image helper should emit an input_image item with image_url");
     assert!(emitted_image_url.starts_with("data:image/png;base64,"));
+    assert_eq!(
+        items[1].get("detail").and_then(Value::as_str),
+        Some("original")
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn spine_code_mode_carrier_prepares_view_image_webp_output() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let mut builder = spine_test_codex()
+        .with_model("gpt-5.4")
+        .with_config(move |config| {
+            config
+                .features
+                .enable(Feature::CodeMode)
+                .expect("enable CodeMode");
+        });
+    let test = builder.build(&server).await?;
+
+    let image = ImageBuffer::from_pixel(2, 2, Rgba([20, 40, 60, 255]));
+    let mut encoded = Cursor::new(Vec::new());
+    DynamicImage::ImageRgba8(image).write_to(&mut encoded, image::ImageFormat::WebP)?;
+    let image_path = test.cwd_path().join("spine_code_mode_view_image.webp");
+    fs::write(&image_path, encoded.into_inner())?;
+
+    let image_path_json = serde_json::to_string(&image_path.to_string_lossy().to_string())?;
+    let code = format!(
+        r#"
+const out = await tools.view_image({{ path: {image_path_json}, detail: "original" }});
+image(out);
+"#
+    );
+
+    responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-1"),
+            ev_custom_tool_call("call-1", "exec", &code),
+            ev_completed("resp-1"),
+        ]),
+    )
+    .await;
+    let second_mock = responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_assistant_message("msg-1", "done"),
+            ev_completed("resp-2"),
+        ]),
+    )
+    .await;
+
+    test.submit_turn("use exec to inspect and emit the WebP image")
+        .await?;
+
+    let req = second_mock.single_request();
+    let request_body = req.body_json().to_string();
+    assert!(!request_body.contains("spine.code_mode.output.v1"));
+    assert!(!request_body.contains("application/octet-stream"));
+
+    let items = custom_tool_output_items(&req, "call-1");
+    assert_eq!(items.len(), 2);
+    assert_eq!(
+        items[1].get("type").and_then(Value::as_str),
+        Some("input_image")
+    );
+    assert!(
+        items[1]
+            .get("image_url")
+            .and_then(Value::as_str)
+            .is_some_and(|url| url.starts_with("data:image/webp;base64,"))
+    );
     assert_eq!(
         items[1].get("detail").and_then(Value::as_str),
         Some("original")

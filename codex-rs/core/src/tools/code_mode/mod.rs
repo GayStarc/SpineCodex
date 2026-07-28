@@ -472,13 +472,14 @@ mod tests {
     }
 
     #[test]
-    fn execute_output_wraps_and_marks_the_exact_visible_body() {
+    fn execute_output_wraps_and_marks_the_prepared_visible_body() {
+        let png_base64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
         let visible_body = FunctionCallOutputBody::ContentItems(vec![
             FunctionCallOutputContentItem::InputText {
                 text: "visible".to_string(),
             },
             FunctionCallOutputContentItem::InputImage {
-                image_url: "data:image/png;base64,AA==".to_string(),
+                image_url: format!("data:application/octet-stream;base64,{png_base64}"),
                 detail: None,
             },
         ]);
@@ -512,7 +513,18 @@ mod tests {
         let carrier = decode_marked_body(name.as_deref(), &output.body)
             .expect("valid carrier")
             .expect("marked carrier");
-        assert_eq!(carrier.visible_body, visible_body);
+        assert_eq!(
+            carrier.visible_body,
+            FunctionCallOutputBody::ContentItems(vec![
+                FunctionCallOutputContentItem::InputText {
+                    text: "visible".to_string(),
+                },
+                FunctionCallOutputContentItem::InputImage {
+                    image_url: format!("data:image/png;base64,{png_base64}"),
+                    detail: None,
+                },
+            ])
+        );
     }
 
     #[tokio::test]

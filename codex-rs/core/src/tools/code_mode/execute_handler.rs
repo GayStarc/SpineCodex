@@ -1,4 +1,5 @@
 use crate::function_tool::FunctionCallError;
+use crate::image_preparation::prepare_function_call_output_body;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolOutput;
@@ -207,8 +208,10 @@ impl CodeModeExecuteOutput {
     ) -> Result<Self, String> {
         let carrier_body = carrier
             .map(|(cell_id, nested_spine_calls)| {
+                let mut visible_body = function_output_body(&visible.body);
+                prepare_function_call_output_body(&mut visible_body);
                 let carrier = CodeModeOutputCarrierV1::new(
-                    function_output_body(&visible.body),
+                    visible_body,
                     visible.success,
                     cell_id.to_string(),
                     nested_spine_calls,

@@ -1,4 +1,5 @@
 use codex_protocol::models::ContentItem;
+use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::models::ImageDetail;
 use codex_protocol::models::ResponseItem;
@@ -53,9 +54,7 @@ pub(crate) fn prepare_response_items(items: &mut [ResponseItem]) {
             ResponseItem::Message { content, .. } => prepare_message_content(content),
             ResponseItem::FunctionCallOutput { output, .. }
             | ResponseItem::CustomToolCallOutput { output, .. } => {
-                if let Some(content) = output.content_items_mut() {
-                    prepare_tool_output_content(content);
-                }
+                prepare_function_call_output_body(&mut output.body);
             }
             ResponseItem::AdditionalTools { .. }
             | ResponseItem::Reasoning { .. }
@@ -72,6 +71,12 @@ pub(crate) fn prepare_response_items(items: &mut [ResponseItem]) {
             | ResponseItem::ContextCompaction { .. }
             | ResponseItem::Other => {}
         }
+    }
+}
+
+pub(crate) fn prepare_function_call_output_body(body: &mut FunctionCallOutputBody) {
+    if let FunctionCallOutputBody::ContentItems(content) = body {
+        prepare_tool_output_content(content);
     }
 }
 
