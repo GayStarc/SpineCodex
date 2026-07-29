@@ -56,16 +56,7 @@ pub(crate) enum InsertHistoryMode {
     AppendThroughTerminal,
 }
 
-fn mode_for_viewport_topology(
-    requested: InsertHistoryMode,
-    area: ratatui::layout::Rect,
-    screen_size: Size,
-    wrapped_lines: u16,
-) -> InsertHistoryMode {
-    let available_viewport_shift =
-        wrapped_lines.min(screen_size.height.saturating_sub(area.bottom()));
-    let effective_viewport_top = area.top().saturating_add(available_viewport_shift);
-
+fn resolve_mode(requested: InsertHistoryMode, effective_viewport_top: u16) -> InsertHistoryMode {
     // DECSTBM needs distinct top and bottom margins; `1..0` and `1..1` cannot confine history.
     if requested == InsertHistoryMode::Standard && effective_viewport_top < 2 {
         InsertHistoryMode::AppendThroughTerminal
@@ -181,9 +172,12 @@ where
         wrapped.extend(line_wrapped);
     }
     let wrapped_lines = u16::try_from(wrapped_rows).unwrap_or(u16::MAX);
-    let mode = mode_for_viewport_topology(mode, area, screen_size, wrapped_lines);
+    let available_viewport_shift =
+        wrapped_lines.min(screen_size.height.saturating_sub(area.bottom()));
+    let effective_viewport_top = area.top().saturating_add(available_viewport_shift);
+    let resolved_mode = resolve_mode(mode, effective_viewport_top);
 
-    match mode {
+    match resolved_mode {
         InsertHistoryMode::AppendThroughTerminal => {
             // The existing viewport is immediately replaced in the same draw pass. Clear it
             // before terminal scrolling can move composer contents into scrollback.
@@ -219,7 +213,7 @@ where
             let cursor_top = if area.bottom() < screen_size.height {
                 // If the viewport is not at the bottom of the screen, scroll it down to make room.
                 // Don't scroll it past the bottom of the screen.
-                let scroll_amount = wrapped_lines.min(screen_size.height - area.bottom());
+                let scroll_amount = available_viewport_shift;
 
                 let top_1based = area.top() + 1;
                 queue!(writer, SetScrollRegion(top_1based..screen_size.height))?;
@@ -600,54 +594,18 @@ mod tests {
     }
 
     #[test]
-    fn topology_uses_append_when_no_valid_history_scroll_region_exists() {
-        let screen_size = Size::new(/*width*/ 80, /*height*/ 24);
+    fn mode_requires_a_valid_history_scroll_region() {
+        use InsertHistoryMode::AppendThroughTerminal as Append;
+        use InsertHistoryMode::Standard;
 
-        assert_eq!(
-            mode_for_viewport_topology(
-                InsertHistoryMode::Standard,
-                Rect::new(0, 0, 80, 24),
-                screen_size,
-                /*wrapped_lines*/ 1,
-            ),
-            InsertHistoryMode::AppendThroughTerminal,
-        );
-        assert_eq!(
-            mode_for_viewport_topology(
-                InsertHistoryMode::Standard,
-                Rect::new(0, 1, 80, 23),
-                screen_size,
-                /*wrapped_lines*/ 1,
-            ),
-            InsertHistoryMode::AppendThroughTerminal,
-        );
-        assert_eq!(
-            mode_for_viewport_topology(
-                InsertHistoryMode::Standard,
-                Rect::new(0, 0, 80, 3),
-                screen_size,
-                /*wrapped_lines*/ 2,
-            ),
-            InsertHistoryMode::Standard,
-        );
-        assert_eq!(
-            mode_for_viewport_topology(
-                InsertHistoryMode::Standard,
-                Rect::new(0, 1, 80, 3),
-                screen_size,
-                /*wrapped_lines*/ 1,
-            ),
-            InsertHistoryMode::Standard,
-        );
-        assert_eq!(
-            mode_for_viewport_topology(
-                InsertHistoryMode::AppendThroughTerminal,
-                Rect::new(0, 8, 80, 8),
-                screen_size,
-                /*wrapped_lines*/ 1,
-            ),
-            InsertHistoryMode::AppendThroughTerminal,
-        );
+        for (requested, effective_top, expected) in [
+            (Standard, 0, Append),
+            (Standard, 1, Append),
+            (Standard, 2, Standard),
+            (Append, 2, Append),
+        ] {
+            assert_eq!(resolve_mode(requested, effective_top), expected);
+        }
     }
 
     #[test]
@@ -696,31 +654,47 @@ mod tests {
     }
 
     #[test]
-    fn vt100_partial_viewport_keeps_standard_history_insertion() {
+    fn vt100_partial_viewports_keep_standard_history_insertion() {
         let width: u16 = 32;
         let height: u16 = 8;
-        let backend = VT100Backend::new_with_scrollback(width, height, /*scrollback_len*/ 16);
-        let mut term = crate::custom_terminal::Terminal::with_options(backend).expect("terminal");
-        term.set_viewport_area(Rect::new(0, 0, width, 3));
 
-        draw_live_status(&mut term, "Emerging");
-        insert_history_lines(
-            &mut term,
-            vec![
-                Line::from("first history row"),
-                Line::from("second history row"),
-            ],
-        )
-        .expect("insert history above a shiftable viewport");
-        assert_eq!(term.viewport_area.top(), 2);
-        draw_live_status(&mut term, "Kindling");
+        for (initial_top, history_lines) in [
+            (0, vec!["first history row", "second history row"]),
+            (1, vec!["only history row"]),
+        ] {
+            let backend =
+                VT100Backend::new_with_scrollback(width, height, /*scrollback_len*/ 16);
+            let mut term =
+                crate::custom_terminal::Terminal::with_options(backend).expect("terminal");
+            term.set_viewport_area(Rect::new(0, initial_top, width, 3));
 
-        let visible_rows: Vec<String> = term.backend().vt100().screen().rows(0, width).collect();
-        assert_eq!(visible_rows[0].trim_end(), "first history row");
-        assert_eq!(visible_rows[1].trim_end(), "second history row");
-        assert_eq!(visible_rows[2].trim_end(), "live: Kindling task");
-        assert_eq!(visible_rows[3].trim_end(), "");
-        assert_eq!(visible_rows[4].trim_end(), "branch work remains active");
+            draw_live_status(&mut term, "Emerging");
+            insert_history_lines(
+                &mut term,
+                history_lines.iter().map(|line| Line::from(*line)).collect(),
+            )
+            .expect("insert history above a shiftable viewport");
+            assert_eq!(term.viewport_area.top(), 2);
+            draw_live_status(&mut term, "Kindling");
+
+            let visible_rows: Vec<String> =
+                term.backend().vt100().screen().rows(0, width).collect();
+            let mut expected_rows = vec![""; usize::from(height)];
+            let history_start = 2 - history_lines.len();
+            for (index, line) in history_lines.iter().enumerate() {
+                expected_rows[history_start + index] = line;
+            }
+            expected_rows[2] = "live: Kindling task";
+            expected_rows[4] = "branch work remains active";
+            assert_eq!(
+                visible_rows
+                    .iter()
+                    .map(|row| row.trim_end())
+                    .collect::<Vec<_>>(),
+                expected_rows,
+                "shiftable viewport diverged from initial top {initial_top}",
+            );
+        }
     }
 
     #[test]
