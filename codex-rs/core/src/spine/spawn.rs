@@ -32,6 +32,7 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 const CORRECTION_MESSAGE: &str = "No supervisory continuation is active during this fission. Continue within the current branch and return its terminal memory when complete or precisely bounded.";
+pub(crate) const MIN_SPAWN_TASKS: usize = 2;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -55,8 +56,10 @@ pub(crate) fn parse_tasks(arguments: &str) -> Result<Vec<SpawnTask>, String> {
     let tasks = serde_json::from_str::<SpawnArgs>(arguments)
         .map_err(|error| format!("invalid spine.spawn arguments: {error}"))?
         .tasks;
-    if tasks.len() < 2 {
-        return Err("spine.spawn requires at least two tasks".to_string());
+    if tasks.len() < MIN_SPAWN_TASKS {
+        return Err(format!(
+            "spine.spawn requires at least {MIN_SPAWN_TASKS} tasks"
+        ));
     }
     for (ordinal, task) in tasks.iter().enumerate() {
         if task.summary.trim().is_empty() {

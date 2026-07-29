@@ -1445,8 +1445,22 @@ async fn configured_per_call_bound_is_model_visible_and_rejects_oversized_batche
         .and_then(|namespace| namespace["tools"].as_array())
         .and_then(|tools| tools.iter().find(|tool| tool["name"] == SPAWN_TOOL))
         .context("model request is missing spine.spawn")?;
-    assert_eq!(spawn["parameters"]["properties"]["tasks"]["minItems"], 2);
-    assert_eq!(spawn["parameters"]["properties"]["tasks"]["maxItems"], 2);
+    assert!(
+        spawn["description"]
+            .as_str()
+            .is_some_and(|description| description.ends_with(
+                "The tasks array must contain at least 2 and at most 2 task assignments."
+            )),
+        "configured task bound must be visible in the tool description"
+    );
+    assert_eq!(
+        spawn["parameters"]["properties"]["tasks"].get("minItems"),
+        None
+    );
+    assert_eq!(
+        spawn["parameters"]["properties"]["tasks"].get("maxItems"),
+        None
+    );
     assert_eq!(
         test.thread_manager.list_thread_ids().await.len(),
         1,

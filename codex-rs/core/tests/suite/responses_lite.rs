@@ -407,7 +407,13 @@ async fn non_lite_uses_standalone_image_generation_by_default() -> Result<()> {
     let request = response_mock.single_request();
     assert_eq!(request.header(RESPONSES_LITE_HEADER), None);
     assert!(request.tool_by_name("web", "run").is_none());
-    assert!(request.tool_by_name("image_gen", "imagegen").is_some());
+    let image_generation = request
+        .tool_by_name("image_gen", "imagegen")
+        .context("Responses request should include image_gen.imagegen")?;
+    let referenced_image_paths =
+        &image_generation["parameters"]["properties"]["referenced_image_paths"];
+    assert_eq!(referenced_image_paths.get("minItems"), None);
+    assert_eq!(referenced_image_paths.get("maxItems"), None);
     let body = request.body_json();
     let tools = body["tools"]
         .as_array()

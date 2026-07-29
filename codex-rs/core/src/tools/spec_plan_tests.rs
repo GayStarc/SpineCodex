@@ -351,8 +351,8 @@ async fn spine_spawn_is_independent_from_multi_agent_v2() {
 }
 
 #[tokio::test]
-async fn spine_spawn_schema_tracks_configured_child_capacity() {
-    fn spawn_task_bounds(plan: &ToolPlanProbe) -> (Option<usize>, Option<usize>) {
+async fn spine_spawn_description_tracks_configured_child_capacity() {
+    fn spawn_description(plan: &ToolPlanProbe) -> &str {
         let ToolSpec::Namespace(namespace) = plan.visible_spec("spine") else {
             panic!("expected Spine namespace");
         };
@@ -366,13 +366,7 @@ async fn spine_spawn_schema_tracks_configured_child_capacity() {
         else {
             panic!("expected spine.spawn");
         };
-        let tasks = spawn
-            .parameters
-            .properties
-            .as_ref()
-            .and_then(|properties| properties.get("tasks"))
-            .expect("spawn tasks schema");
-        (tasks.min_items, tasks.max_items)
+        &spawn.description
     }
 
     let defaults = probe(|turn| {
@@ -380,7 +374,10 @@ async fn spine_spawn_schema_tracks_configured_child_capacity() {
         set_feature(turn, Feature::MultiAgentV2, /*enabled*/ false);
     })
     .await;
-    assert_eq!(spawn_task_bounds(&defaults), (Some(2), Some(3)));
+    assert!(
+        spawn_description(&defaults)
+            .ends_with("The tasks array must contain at least 2 and at most 3 task assignments.")
+    );
 
     let configured = probe(|turn| {
         set_features(turn, &[Feature::SpineJit, Feature::SpineSpawn]);
@@ -391,7 +388,10 @@ async fn spine_spawn_schema_tracks_configured_child_capacity() {
         });
     })
     .await;
-    assert_eq!(spawn_task_bounds(&configured), (Some(2), Some(5)));
+    assert!(
+        spawn_description(&configured)
+            .ends_with("The tasks array must contain at least 2 and at most 5 task assignments.")
+    );
 
     let insufficient = probe(|turn| {
         set_features(turn, &[Feature::SpineJit, Feature::SpineSpawn]);

@@ -39,23 +39,30 @@ fn json_schema_serializes_encrypted_marker() {
 }
 
 #[test]
-fn json_schema_serializes_optional_array_bounds() {
-    let default_array = JsonSchema::array(
-        JsonSchema::string(/*description*/ None),
-        /*description*/ None,
-    );
-    let bounded_array = default_array.clone().with_min_items(2).with_max_items(5);
+fn parse_tool_input_schema_drops_array_bounds() {
+    let schema = parse_tool_input_schema(&serde_json::json!({
+        "type": "object",
+        "properties": {
+            "paths": {
+                "type": "array",
+                "items": {"type": "string"},
+                "minItems": 2,
+                "maxItems": 5
+            }
+        }
+    }))
+    .expect("parse schema");
 
-    let default_value = serde_json::to_value(default_array).expect("serialize default array");
-    assert_eq!(default_value.get("minItems"), None);
-    assert_eq!(default_value.get("maxItems"), None);
     assert_eq!(
-        serde_json::to_value(bounded_array).expect("serialize bounded array"),
+        serde_json::to_value(schema).expect("serialize schema"),
         serde_json::json!({
-            "type": "array",
-            "items": {"type": "string"},
-            "minItems": 2,
-            "maxItems": 5,
+            "type": "object",
+            "properties": {
+                "paths": {
+                    "type": "array",
+                    "items": {"type": "string"}
+                }
+            }
         })
     );
 }

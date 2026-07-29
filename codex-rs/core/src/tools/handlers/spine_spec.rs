@@ -1,3 +1,4 @@
+use crate::spine::spawn::MIN_SPAWN_TASKS;
 use codex_tools::JsonSchema;
 use codex_tools::ResponsesApiNamespace;
 use codex_tools::ResponsesApiNamespaceTool;
@@ -37,6 +38,12 @@ const SPAWN_DESCRIPTION: &str = concat!(
     "Do not spawn paraphrased branches over the same tightly coupled question unless they are deliberately assigned as independent replication or falsification. ",
     "Branch workspace and external effects are non-transactional, so production-file writes require disjoint ownership or one explicitly named integration owner."
 );
+
+fn spawn_task_count_description(min_tasks: usize, max_tasks: usize) -> String {
+    format!(
+        "The tasks array must contain at least {min_tasks} and at most {max_tasks} task assignments."
+    )
+}
 
 pub(crate) fn create_spine_tool(name: &str) -> ToolSpec {
     let function = match name {
@@ -97,10 +104,10 @@ pub(crate) fn create_spine_tool(name: &str) -> ToolSpec {
     wrap_spine_tool(function)
 }
 
-pub(crate) fn create_spine_spawn_tool(max_items: usize) -> ToolSpec {
+pub(crate) fn create_spine_spawn_tool(max_tasks: usize) -> ToolSpec {
     assert!(
-        max_items >= 2,
-        "spine.spawn schema requires capacity for at least two tasks"
+        max_tasks >= MIN_SPAWN_TASKS,
+        "spine.spawn requires capacity for at least {MIN_SPAWN_TASKS} tasks"
     );
     let task = JsonSchema::object(
         BTreeMap::from([
@@ -123,7 +130,10 @@ pub(crate) fn create_spine_spawn_tool(max_items: usize) -> ToolSpec {
     );
     wrap_spine_tool(ResponsesApiTool {
         name: SPINE_SPAWN.to_string(),
-        description: SPAWN_DESCRIPTION.to_string(),
+        description: format!(
+            "{SPAWN_DESCRIPTION} {}",
+            spawn_task_count_description(MIN_SPAWN_TASKS, max_tasks)
+        ),
         strict: false,
         defer_loading: None,
         parameters: JsonSchema::object(
@@ -132,9 +142,7 @@ pub(crate) fn create_spine_spawn_tool(max_items: usize) -> ToolSpec {
                 JsonSchema::array(
                     task,
                     Some("Ordered differentiated branch assignments.".to_string()),
-                )
-                .with_min_items(2)
-                .with_max_items(max_items),
+                ),
             )]),
             Some(vec!["tasks".to_string()]),
             Some(false.into()),
@@ -262,16 +270,30 @@ mod tests {
     }
 
     #[test]
-    fn spawn_schema_bounds_exact_task_objects_by_child_capacity() {
+    fn spawn_description_advertises_configured_task_bounds_without_schema_keywords() {
         let ToolSpec::Namespace(namespace) = create_spine_spawn_tool(5) else {
             panic!("expected namespace spec");
         };
         let ResponsesApiNamespaceTool::Function(function) = &namespace.tools[0];
+        assert_eq!(
+            function.description,
+            format!(
+                "{SPAWN_DESCRIPTION} The tasks array must contain at least 2 and at most 5 task assignments."
+            )
+        );
         let schema = serde_json::to_value(&function.parameters).unwrap();
         assert_eq!(schema["required"], serde_json::json!(["tasks"]));
         assert_eq!(schema["additionalProperties"], serde_json::json!(false));
-        assert_eq!(schema["properties"]["tasks"]["minItems"], 2);
-        assert_eq!(schema["properties"]["tasks"]["maxItems"], 5);
+        assert_eq!(
+            schema["properties"]["tasks"].get("minItems"),
+            None,
+            "task bounds belong in the tool description"
+        );
+        assert_eq!(
+            schema["properties"]["tasks"].get("maxItems"),
+            None,
+            "task bounds belong in the tool description"
+        );
         assert_eq!(
             schema["properties"]["tasks"]["items"]["required"],
             serde_json::json!(["summary", "prompt"])
