@@ -33,7 +33,12 @@ use std::sync::Mutex as StdMutex;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
-const CORRECTION_MESSAGE: &str = "No supervisory continuation is active during this fission. Continue within the current branch and return its terminal memory when complete or precisely bounded.";
+const CORRECTION_MESSAGE: &str = concat!(
+    "This spawned execution branch remains active. Continue exactly the declared assignment and ",
+    "follow its collaboration contract when one is declared. When the assignment is complete or ",
+    "precisely bounded, return exactly one non-empty, tool-free assistant final response containing ",
+    "terminal memory. That response ends this branch execution."
+);
 pub(crate) const MIN_SPAWN_TASKS: usize = 2;
 
 #[derive(Debug, Deserialize)]
@@ -948,7 +953,30 @@ fn transaction_task_name(call_id: &str, ordinal: usize) -> String {
 
 fn task_envelope(task: &SpawnTask) -> String {
     format!(
-        "You are one branch of a spine.spawn fission. The original continuation is suspended during this fission; no supervisory model is active. Do not communicate with the originating parent or root during the fission; keep descendant coordination inside this branch. Work directly on the differentiated assignment below using the inherited context. Other branches may execute concurrently in the shared workspace; follow any peer roster and coordination contract declared in this assignment. Complete this assignment or precisely bound its result, then communicate the result only by returning exactly one final message containing its terminal memory.\n\nBranch label and outcome: {}\n\nAssignment:\n{}",
+        concat!(
+            "You are a spawned execution branch. Your role is to complete exactly the assignment ",
+            "below and return bounded terminal memory to the spawning continuation.\n\n",
+            "The assignment is already an active branch scope. Begin the assigned work directly. ",
+            "Use spine.open, spine.close, and spine.next only to manage genuine descendant work ",
+            "within this assignment.\n\n",
+            "Executable work is defined by the assignment. Inherited context supplies constraints ",
+            "and evidence for that work.\n\n",
+            "Independent execution is the default. When the assignment declares a collaboration ",
+            "contract, that contract is part of the assignment. Execute the declared branch role ",
+            "through the shared coordination root. Publish updates through this branch's declared ",
+            "single-writer artifact. Read the named peer artifacts at the declared synchronization ",
+            "points, follow the declared format/update/read protocol, and use the declared bounded ",
+            "fallback when peer state is unavailable.\n\n",
+            "Peer progress and results enter this branch's working context through the declared ",
+            "publish-and-read protocol. Other shared-workspace changes remain context for the ",
+            "assignment and do not add executable work. Any integration responsibility is ",
+            "performed by the branch explicitly named for it in the assignment.\n\n",
+            "Treat each <spine_tran_status> update as task-tree parser telemetry for this branch ",
+            "session. Across status updates, executable work remains defined by the assignment.\n\n",
+            "Complete this branch by returning exactly one non-empty, tool-free assistant final ",
+            "response containing terminal memory. After returning it, execution ends.\n\n",
+            "Branch label and outcome: {}\n\nAssignment:\n{}"
+        ),
         task.summary, task.prompt
     )
 }

@@ -44,7 +44,13 @@ const SPAWN_TOOL: &str = "spawn";
 const SPAWN_CALL_ID: &str = "spawn-lifecycle-call";
 const FIRST_PARENT_PROMPT: &str = "run the lifecycle spawn batch";
 const SECOND_PARENT_PROMPT: &str = "run the replacement spawn batch";
-const CORRECTION_MESSAGE: &str = "No supervisory continuation is active during this fission. Continue within the current branch and return its terminal memory when complete or precisely bounded.";
+const BRANCH_PROMPT_MARKER: &str = "You are a spawned execution branch.";
+const CORRECTION_MESSAGE: &str = concat!(
+    "This spawned execution branch remains active. Continue exactly the declared assignment and ",
+    "follow its collaboration contract when one is declared. When the assignment is complete or ",
+    "precisely bounded, return exactly one non-empty, tool-free assistant final response containing ",
+    "terminal memory. That response ends this branch execution."
+);
 const CODE_MODE_SPINE_CARRIER_MARKER: &str = "spine.code_mode.output.v1";
 
 fn body_contains(request: &wiremock::Request, text: &str) -> bool {
@@ -74,8 +80,7 @@ fn body_has_child_task_marker(body: &Value, marker: &str) -> bool {
                                 part.get("text")
                                     .and_then(Value::as_str)
                                     .is_some_and(|text| {
-                                        text.contains("You are one branch of a spine.spawn fission")
-                                            && text.contains(marker)
+                                        text.contains(BRANCH_PROMPT_MARKER) && text.contains(marker)
                                     })
                             })
                         })
@@ -100,7 +105,7 @@ fn has_function_call_output(request: &wiremock::Request, call_id: &str) -> bool 
 
 fn is_parent_spawn_request(request: &wiremock::Request) -> bool {
     body_contains(request, FIRST_PARENT_PROMPT)
-        && !body_contains(request, "You are one branch of a spine.spawn fission")
+        && !body_contains(request, BRANCH_PROMPT_MARKER)
         && !has_function_call_output(request, SPAWN_CALL_ID)
 }
 
@@ -255,7 +260,7 @@ fn parent_projection_request(
         .find(|request| {
             request.body_contains_text(first_memory)
                 && request.body_contains_text(second_memory)
-                && !request.body_contains_text("You are one branch of a spine.spawn fission")
+                && !request.body_contains_text(BRANCH_PROMPT_MARKER)
         })
         .expect("parent follow-up should contain the completed spawn projection")
 }
@@ -361,7 +366,7 @@ async fn build_reverse_completion_fixture(
         |request: &wiremock::Request| {
             body_contains(request, "first memory")
                 && body_contains(request, "second memory")
-                && !body_contains(request, "You are one branch of a spine.spawn fission")
+                && !body_contains(request, BRANCH_PROMPT_MARKER)
         },
         sse(vec![
             ev_response_created("parent-followup-response"),
@@ -433,7 +438,7 @@ async fn spawn_starts_batch_concurrently_and_orders_reverse_completion_impl() ->
     let observe_overlap = async {
         if let Err(error) = wait_for_request(&first_child, "first child", |request| {
             request.body_contains_text("first-child-marker")
-                && request.body_contains_text("You are one branch of a spine.spawn fission")
+                && request.body_contains_text(BRANCH_PROMPT_MARKER)
         })
         .await
         {
@@ -453,7 +458,7 @@ async fn spawn_starts_batch_concurrently_and_orders_reverse_completion_impl() ->
         }
         wait_for_request(&second_child, "second child", |request| {
             request.body_contains_text("second-child-marker")
-                && request.body_contains_text("You are one branch of a spine.spawn fission")
+                && request.body_contains_text(BRANCH_PROMPT_MARKER)
         })
         .await?;
         assert!(
@@ -485,12 +490,12 @@ async fn spawn_starts_batch_concurrently_and_orders_reverse_completion_impl() ->
     let parent_first_request =
         unique_matching_request(&parent_spawn, "initial parent", |request| {
             request.body_contains_text(FIRST_PARENT_PROMPT)
-                && !request.body_contains_text("You are one branch of a spine.spawn fission")
+                && !request.body_contains_text(BRANCH_PROMPT_MARKER)
                 && request.function_call_output_text(SPAWN_CALL_ID).is_none()
         });
     let child_first_request = first_matching_request(&first_child, |request| {
         request.body_contains_text("first-child-marker")
-            && request.body_contains_text("You are one branch of a spine.spawn fission")
+            && request.body_contains_text(BRANCH_PROMPT_MARKER)
     });
     let parent_first_body = parent_first_request.body_json();
     let child_first_body = child_first_request.body_json();
@@ -590,7 +595,7 @@ text(JSON.stringify({left, right, spawned}));
         &server,
         move |request: &wiremock::Request| {
             body_contains(request, parent_prompt)
-                && !body_contains(request, "You are one branch of a spine.spawn fission")
+                && !body_contains(request, BRANCH_PROMPT_MARKER)
                 && !body_contains(request, "exec-nested-spawn")
         },
         sse(vec![
@@ -631,7 +636,7 @@ text(JSON.stringify({left, right, spawned}));
         |request: &wiremock::Request| {
             body_contains(request, "nested first memory")
                 && body_contains(request, "nested second memory")
-                && !body_contains(request, "You are one branch of a spine.spawn fission")
+                && !body_contains(request, BRANCH_PROMPT_MARKER)
         },
         sse(vec![
             ev_response_created("nested-spawn-followup-response"),
@@ -774,8 +779,7 @@ await tools.spine__spawn({
     mount_sse_once_match(
         &server,
         move |request: &wiremock::Request| {
-            body_contains(request, parent_prompt)
-                && !body_contains(request, "You are one branch of a spine.spawn fission")
+            body_contains(request, parent_prompt) && !body_contains(request, BRANCH_PROMPT_MARKER)
         },
         sse(vec![
             ev_response_created("nested-cancel-parent-response"),
@@ -943,7 +947,7 @@ async fn intermediate_message_is_corrected_once_and_never_reaches_parent_model()
         |request: &wiremock::Request| {
             body_contains(request, "corrected child memory")
                 && body_contains(request, "ordinary child memory")
-                && !body_contains(request, "You are one branch of a spine.spawn fission")
+                && !body_contains(request, BRANCH_PROMPT_MARKER)
         },
         sse(vec![
             ev_response_created("parent-followup-response"),
@@ -957,7 +961,7 @@ async fn intermediate_message_is_corrected_once_and_never_reaches_parent_model()
     let inject_intermediate = async {
         wait_for_request(&corrected_child, "corrected child first turn", |request| {
             request.body_contains_text("corrected-child-marker")
-                && request.body_contains_text("You are one branch of a spine.spawn fission")
+                && request.body_contains_text(BRANCH_PROMPT_MARKER)
         })
         .await?;
         test.codex
@@ -1152,7 +1156,7 @@ async fn descendant_root_message_is_corrected_while_branch_internal_message_is_d
         |request: &wiremock::Request| {
             body_contains(request, "descendant branch memory")
                 && body_contains(request, "ordinary sibling memory")
-                && !body_contains(request, "You are one branch of a spine.spawn fission")
+                && !body_contains(request, BRANCH_PROMPT_MARKER)
         },
         sse(vec![
             ev_response_created("parent-descendant-followup-response"),
@@ -1332,12 +1336,12 @@ async fn interrupt_tears_down_children_drops_late_mail_and_releases_batch_capaci
         .await?;
     wait_for_request(&cancel_first, "cancel first child", |request| {
         request.body_contains_text("cancel-first-marker")
-            && request.body_contains_text("You are one branch of a spine.spawn fission")
+            && request.body_contains_text(BRANCH_PROMPT_MARKER)
     })
     .await?;
     wait_for_request(&cancel_second, "cancel second child", |request| {
         request.body_contains_text("cancel-second-marker")
-            && request.body_contains_text("You are one branch of a spine.spawn fission")
+            && request.body_contains_text(BRANCH_PROMPT_MARKER)
     })
     .await?;
     wait_for_request(
@@ -1417,8 +1421,7 @@ async fn interrupt_tears_down_children_drops_late_mail_and_releases_batch_capaci
         .zip(["replacement-first-marker", "replacement-second-marker"])
     {
         wait_for_request(mock_response, marker, |request| {
-            request.body_contains_text(marker)
-                && request.body_contains_text("You are one branch of a spine.spawn fission")
+            request.body_contains_text(marker) && request.body_contains_text(BRANCH_PROMPT_MARKER)
         })
         .await?;
     }
@@ -1448,7 +1451,7 @@ async fn successful_batches_release_transaction_children_for_immediate_reuse() -
         move |request: &wiremock::Request| {
             body_contains(request, FIRST_PARENT_PROMPT)
                 && !body_contains(request, SECOND_PARENT_PROMPT)
-                && !body_contains(request, "You are one branch of a spine.spawn fission")
+                && !body_contains(request, BRANCH_PROMPT_MARKER)
                 && !has_function_call_output(request, first_call_id)
         },
         sse(vec![
@@ -1495,7 +1498,7 @@ async fn successful_batches_release_transaction_children_for_immediate_reuse() -
                 && body_contains(request, "first batch memory two")
                 && !body_contains(request, SECOND_PARENT_PROMPT)
                 && has_function_call_output(request, first_call_id)
-                && !body_contains(request, "You are one branch of a spine.spawn fission")
+                && !body_contains(request, BRANCH_PROMPT_MARKER)
         },
         sse(vec![
             ev_response_created("first-success-followup-response"),
@@ -1510,7 +1513,7 @@ async fn successful_batches_release_transaction_children_for_immediate_reuse() -
         &server,
         move |request: &wiremock::Request| {
             body_contains(request, SECOND_PARENT_PROMPT)
-                && !body_contains(request, "You are one branch of a spine.spawn fission")
+                && !body_contains(request, BRANCH_PROMPT_MARKER)
                 && !has_function_call_output(request, second_call_id)
         },
         sse(vec![
@@ -1556,7 +1559,7 @@ async fn successful_batches_release_transaction_children_for_immediate_reuse() -
             body_contains(request, "second batch memory one")
                 && body_contains(request, "second batch memory two")
                 && has_function_call_output(request, second_call_id)
-                && !body_contains(request, "You are one branch of a spine.spawn fission")
+                && !body_contains(request, BRANCH_PROMPT_MARKER)
         },
         sse(vec![
             ev_response_created("second-success-followup-response"),
@@ -1677,7 +1680,7 @@ async fn configured_per_call_bound_is_model_visible_and_rejects_oversized_batche
         &server,
         move |request: &wiremock::Request| {
             body_contains(request, PROMPT)
-                && !body_contains(request, "You are one branch of a spine.spawn fission")
+                && !body_contains(request, BRANCH_PROMPT_MARKER)
                 && !has_function_call_output(request, CALL_ID)
         },
         sse(vec![
@@ -1696,7 +1699,7 @@ async fn configured_per_call_bound_is_model_visible_and_rejects_oversized_batche
         &server,
         move |request: &wiremock::Request| {
             has_function_call_output(request, CALL_ID)
-                && !body_contains(request, "You are one branch of a spine.spawn fission")
+                && !body_contains(request, BRANCH_PROMPT_MARKER)
         },
         sse(vec![
             ev_response_created("over-limit-followup-response"),
