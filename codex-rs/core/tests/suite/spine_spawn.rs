@@ -1,5 +1,6 @@
 use anyhow::Context;
 use anyhow::Result;
+use codex_core::test_support::submit_interrupt_then_mailbox_for_test;
 use codex_features::Feature;
 use codex_protocol::AgentPath;
 use codex_protocol::models::ResponseItem;
@@ -1185,7 +1186,9 @@ async fn descendant_root_message_is_corrected_while_branch_internal_message_is_d
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn interrupt_tears_down_children_and_releases_batch_capacity() -> Result<()> {
+async fn interrupt_tears_down_children_drops_late_mail_and_releases_batch_capacity() -> Result<()> {
+    const CANCEL_SPAWN_DESCENDANT_CALL_ID: &str = "cancel-spawn-descendant";
+    const LATE_DESCENDANT_MESSAGE: &str = "late-descendant-message-must-not-reach-root";
     let server = start_mock_server().await;
     mount_sse_once_match(
         &server,
@@ -1202,13 +1205,52 @@ async fn interrupt_tears_down_children_and_releases_batch_capacity() -> Result<(
         ]),
     )
     .await;
-    let cancel_first = mount_response_once_match(
+    let cancel_first = mount_sse_once_match(
         &server,
-        |request: &wiremock::Request| child_task_marker(request, "cancel-first-marker"),
-        sse_response(sse(vec![
+        |request: &wiremock::Request| {
+            child_task_marker(request, "cancel-first-marker")
+                && !has_function_call_output(request, CANCEL_SPAWN_DESCENDANT_CALL_ID)
+        },
+        sse(vec![
             ev_response_created("cancel-first-response"),
-            ev_assistant_message("cancel-first-message", "too late"),
+            ev_function_call_with_namespace(
+                CANCEL_SPAWN_DESCENDANT_CALL_ID,
+                "collaboration",
+                "spawn_agent",
+                &json!({
+                    "message": "cancel-descendant-marker",
+                    "task_name": "worker",
+                    "fork_turns": "all",
+                })
+                .to_string(),
+            ),
             ev_completed("cancel-first-response"),
+        ]),
+    )
+    .await;
+    let cancel_first_followup = mount_response_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            has_function_call_output(request, CANCEL_SPAWN_DESCENDANT_CALL_ID)
+        },
+        sse_response(sse(vec![
+            ev_response_created("cancel-first-followup-response"),
+            ev_assistant_message("cancel-first-followup-message", "too late"),
+            ev_completed("cancel-first-followup-response"),
+        ]))
+        .set_delay(Duration::from_secs(5)),
+    )
+    .await;
+    let cancel_descendant = mount_response_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            body_contains(request, "cancel-descendant-marker")
+                && body_contains(request, "\"type\":\"agent_message\"")
+        },
+        sse_response(sse(vec![
+            ev_response_created("cancel-descendant-response"),
+            ev_assistant_message("cancel-descendant-message", "too late"),
+            ev_completed("cancel-descendant-response"),
         ]))
         .set_delay(Duration::from_secs(5)),
     )
@@ -1228,7 +1270,10 @@ async fn interrupt_tears_down_children_and_releases_batch_capacity() -> Result<(
     let replacement_call_id = "spawn-replacement-call";
     mount_sse_once_match(
         &server,
-        |request: &wiremock::Request| body_contains(request, SECOND_PARENT_PROMPT),
+        |request: &wiremock::Request| {
+            body_contains(request, SECOND_PARENT_PROMPT)
+                && !body_contains(request, LATE_DESCENDANT_MESSAGE)
+        },
         sse(vec![
             ev_response_created("replacement-parent-response"),
             ev_function_call_with_namespace(
@@ -1270,7 +1315,8 @@ async fn interrupt_tears_down_children_and_releases_batch_capacity() -> Result<(
             .await,
         );
     }
-    let test = spine_builder().build(&server).await?;
+    let test = multi_agent_v2_spine_builder().build(&server).await?;
+    let mut created_threads = test.thread_manager.subscribe_thread_created();
 
     test.codex
         .submit(Op::UserInput {
@@ -1294,7 +1340,46 @@ async fn interrupt_tears_down_children_and_releases_batch_capacity() -> Result<(
             && request.body_contains_text("You are one branch of a spine.spawn fission")
     })
     .await?;
-    test.codex.submit(Op::Interrupt).await?;
+    wait_for_request(
+        &cancel_first_followup,
+        "cancel first child after descendant spawn",
+        |request| {
+            request.input().iter().any(|item| {
+                item.get("call_id").and_then(Value::as_str) == Some(CANCEL_SPAWN_DESCENDANT_CALL_ID)
+            })
+        },
+    )
+    .await?;
+    wait_for_request(&cancel_descendant, "cancel descendant", |request| {
+        request.body_contains_text("cancel-descendant-marker")
+    })
+    .await?;
+    let mut transaction_thread_ids = Vec::new();
+    for _ in 0..3 {
+        transaction_thread_ids
+            .push(tokio::time::timeout(Duration::from_secs(5), created_threads.recv()).await??);
+    }
+    submit_interrupt_then_mailbox_for_test(
+        test.codex.as_ref(),
+        InterAgentCommunication::new(
+            AgentPath::try_from("/root/spawn_spawnlifecyclecall_0/worker")
+                .expect("descendant path should be valid"),
+            AgentPath::root(),
+            Vec::new(),
+            LATE_DESCENDANT_MESSAGE.to_string(),
+            /*trigger_turn*/ false,
+        ),
+    )
+    .await?;
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if matches!(test.codex.next_event().await?.msg, EventMsg::TurnAborted(_)) {
+                return Result::<()>::Ok(());
+            }
+        }
+    })
+    .await
+    .context("Interrupt did not complete within the native hard-abort bound")??;
 
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
@@ -1307,6 +1392,12 @@ async fn interrupt_tears_down_children_and_releases_batch_capacity() -> Result<(
             anyhow::bail!("cancelled transaction children remained loaded");
         }
         sleep(Duration::from_millis(10)).await;
+    }
+    for thread_id in transaction_thread_ids {
+        assert!(
+            test.thread_manager.get_thread(thread_id).await.is_err(),
+            "Interrupt must remove every direct branch and recursive descendant"
+        );
     }
 
     test.codex

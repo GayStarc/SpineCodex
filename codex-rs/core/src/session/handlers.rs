@@ -294,6 +294,13 @@ pub async fn inter_agent_communication(
 ) {
     let trigger_turn = communication.trigger_turn;
     let author = communication.author.clone();
+    if sess
+        .input_queue
+        .take_cancelled_mailbox_submission(&sub_id, &author)
+    {
+        crate::agent_communication::emit_agent_communication_receive(&sub_id);
+        return;
+    }
     sess.input_queue
         .enqueue_mailbox_communication(communication)
         .await;

@@ -225,6 +225,7 @@ use self::config_lock::validate_config_lock_if_configured;
 use self::handlers::submission_dispatch_span;
 use self::handlers::submission_loop;
 pub(crate) use self::input_queue::InputQueueActivity;
+pub(crate) use self::input_queue::MailboxSubmissionCancellation;
 pub(crate) use self::input_queue::TurnInput;
 pub(crate) use self::input_queue::TurnInputQueue;
 pub use self::mcp_runtime::McpRuntimeSnapshot;

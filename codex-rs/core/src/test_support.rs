@@ -22,11 +22,15 @@ use codex_models_manager::collaboration_mode_presets;
 use codex_models_manager::manager::SharedModelsManager;
 use codex_models_manager::test_support::construct_model_info_offline_for_tests;
 use codex_models_manager::test_support::get_model_offline_for_tests;
+use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::CollaborationModeMask;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelPreset;
+use codex_protocol::protocol::InterAgentCommunication;
+use codex_protocol::protocol::Op;
 use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::Submission;
 use once_cell::sync::Lazy;
 
 use crate::ThreadManager;
@@ -35,6 +39,7 @@ use crate::responses_metadata::CodexResponsesMetadata;
 use crate::responses_metadata::CodexResponsesRequestKind;
 use crate::responses_metadata::subagent_header_value;
 use crate::responses_metadata::subagent_metadata_kind;
+use crate::session::new_submission_id;
 use crate::thread_manager;
 use crate::unified_exec;
 
@@ -63,6 +68,40 @@ pub fn set_thread_manager_test_mode(enabled: bool) {
 
 pub fn set_deterministic_process_ids(enabled: bool) {
     unified_exec::set_deterministic_process_ids_for_tests(enabled);
+}
+
+pub async fn submit_interrupt_then_mailbox_for_test(
+    thread: &crate::CodexThread,
+    communication: InterAgentCommunication,
+) -> codex_protocol::error::Result<(String, String)> {
+    let mailbox_submission_id = new_submission_id();
+    let author: AgentPath = communication.author.clone();
+    let registration = thread
+        .codex
+        .session
+        .input_queue
+        .register_mailbox_submission(mailbox_submission_id.clone(), author);
+    let interrupt_submission_id = new_submission_id();
+    thread
+        .codex
+        .submit_with_id(Submission {
+            id: interrupt_submission_id.clone(),
+            op: Op::Interrupt,
+            client_user_message_id: None,
+            trace: None,
+        })
+        .await?;
+    thread
+        .codex
+        .submit_with_id(Submission {
+            id: mailbox_submission_id.clone(),
+            op: Op::InterAgentCommunication { communication },
+            client_user_message_id: None,
+            trace: None,
+        })
+        .await?;
+    registration.accepted();
+    Ok((interrupt_submission_id, mailbox_submission_id))
 }
 
 pub fn auth_manager_from_auth(auth: CodexAuth) -> Arc<AuthManager> {

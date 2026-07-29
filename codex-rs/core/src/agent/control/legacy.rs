@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::HashSet;
 
 impl AgentControl {
     /// Submit a shutdown request for a live agent without marking it explicitly closed in
@@ -118,35 +119,30 @@ impl AgentControl {
         result
     }
 
-    /// Stop every live agent in the supplied Spawn path subtrees, including agents created
-    /// while teardown is already in progress.
+    /// Stop every live agent in the supplied Spawn thread subtrees, including pathless Native
+    /// descendants and agents created while teardown is already in progress.
     pub(crate) async fn shutdown_spine_spawn_subtrees(
         &self,
-        roots: &[AgentPath],
+        roots: &[ThreadId],
     ) -> CodexResult<()> {
         let state = self.upgrade()?;
         let mut failures = Vec::new();
         loop {
-            let mut live = self
-                .state
-                .live_agents()
-                .into_iter()
-                .filter_map(|metadata| {
-                    let path = metadata.agent_path?;
-                    let thread_id = metadata.agent_id?;
-                    roots
-                        .iter()
-                        .any(|root| path_is_in_subtree(&path, root))
-                        .then_some((thread_id, path))
-                })
-                .collect::<Vec<_>>();
+            let mut seen = HashSet::new();
+            let mut live = Vec::new();
+            for root in roots {
+                for thread_id in
+                    std::iter::once(*root).chain(self.live_thread_spawn_descendants(*root).await?)
+                {
+                    if seen.insert(thread_id) && state.get_thread(thread_id).await.is_ok() {
+                        live.push(thread_id);
+                    }
+                }
+            }
             if live.is_empty() {
                 break;
             }
-            live.sort_by_key(|(_, path)| {
-                path.as_str().bytes().filter(|byte| *byte == b'/').count()
-            });
-            for (thread_id, _) in live {
+            for thread_id in live {
                 match self
                     .shutdown_live_agent_for_spine_spawn(&state, thread_id)
                     .await
@@ -165,32 +161,5 @@ impl AgentControl {
                 failures.join("; ")
             )))
         }
-    }
-}
-
-fn path_is_in_subtree(candidate: &AgentPath, root: &AgentPath) -> bool {
-    candidate == root
-        || candidate
-            .as_str()
-            .strip_prefix(root.as_str())
-            .is_some_and(|suffix| suffix.starts_with('/'))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn subtree_membership_requires_a_segment_boundary() {
-        let root = AgentPath::try_from("/root/branch").unwrap();
-        assert!(path_is_in_subtree(&root, &root));
-        assert!(path_is_in_subtree(
-            &AgentPath::try_from("/root/branch/worker").unwrap(),
-            &root,
-        ));
-        assert!(!path_is_in_subtree(
-            &AgentPath::try_from("/root/branch_other").unwrap(),
-            &root,
-        ));
     }
 }

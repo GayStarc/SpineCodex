@@ -5,6 +5,7 @@ use crate::agent::control::SpawnAgentOptions;
 use crate::agent::next_thread_spawn_depth;
 use crate::agent_communication::AgentCommunicationContext;
 use crate::agent_communication::AgentCommunicationKind;
+use crate::session::MailboxSubmissionCancellation;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use crate::tools::handlers::multi_agents_common::build_agent_spawn_config;
@@ -30,7 +31,6 @@ use std::fmt::Display;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::time::Duration;
-use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
 const CORRECTION_MESSAGE: &str = "No supervisory continuation is active during this fission. Continue within the current branch and return its terminal memory when complete or precisely bounded.";
@@ -61,17 +61,18 @@ pub(crate) struct SpawnLifecycle {
 
 struct SpawnLifecycleShared {
     state: StdMutex<SpawnLifecycleState>,
-    revision_tx: watch::Sender<u64>,
 }
 
 #[derive(Default)]
 struct SpawnLifecycleState {
-    active_transactions: usize,
+    next_transaction_id: u64,
+    active_transactions: HashMap<u64, Option<MailboxSubmissionCancellation>>,
     abort_barriers: usize,
 }
 
 pub(crate) struct SpawnTransactionGuard {
     shared: Arc<SpawnLifecycleShared>,
+    transaction_id: u64,
 }
 
 pub(crate) struct SpawnAbortBarrier {
@@ -81,11 +82,9 @@ pub(crate) struct SpawnAbortBarrier {
 
 impl Default for SpawnLifecycle {
     fn default() -> Self {
-        let (revision_tx, _) = watch::channel(0);
         Self {
             shared: Arc::new(SpawnLifecycleShared {
                 state: StdMutex::new(SpawnLifecycleState::default()),
-                revision_tx,
             }),
         }
     }
@@ -98,25 +97,38 @@ impl SpawnLifecycle {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state.abort_barriers > 0 {
+        if state.abort_barriers > 0 || !state.active_transactions.is_empty() {
             return None;
         }
-        state.active_transactions += 1;
+        let transaction_id = state.next_transaction_id;
+        state.next_transaction_id = state.next_transaction_id.wrapping_add(1);
+        state.active_transactions.insert(transaction_id, None);
         Some(SpawnTransactionGuard {
             shared: Arc::clone(&self.shared),
+            transaction_id,
         })
     }
 
     pub(crate) fn begin_abort(&self) -> SpawnAbortBarrier {
-        let had_active_transactions = {
+        let (had_active_transactions, mailbox_cancellations) = {
             let mut state = self
                 .shared
                 .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             state.abort_barriers += 1;
-            state.active_transactions > 0
+            (
+                !state.active_transactions.is_empty(),
+                state
+                    .active_transactions
+                    .values()
+                    .filter_map(Clone::clone)
+                    .collect::<Vec<_>>(),
+            )
         };
+        for cancellation in mailbox_cancellations {
+            cancellation.activate();
+        }
         SpawnAbortBarrier {
             shared: Arc::clone(&self.shared),
             had_active_transactions,
@@ -128,22 +140,6 @@ impl SpawnAbortBarrier {
     pub(crate) fn had_active_transactions(&self) -> bool {
         self.had_active_transactions
     }
-
-    pub(crate) async fn wait_until_idle(&self) {
-        let mut revision_rx = self.shared.revision_tx.subscribe();
-        loop {
-            let is_idle = self
-                .shared
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .active_transactions
-                == 0;
-            if is_idle || revision_rx.changed().await.is_err() {
-                return;
-            }
-        }
-    }
 }
 
 impl Drop for SpawnTransactionGuard {
@@ -153,10 +149,27 @@ impl Drop for SpawnTransactionGuard {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.active_transactions = state.active_transactions.saturating_sub(1);
-        drop(state);
-        let next = (*self.shared.revision_tx.borrow()).wrapping_add(1);
-        self.shared.revision_tx.send_replace(next);
+        state.active_transactions.remove(&self.transaction_id);
+    }
+}
+
+impl SpawnTransactionGuard {
+    fn install_mailbox_cancellation(&self, cancellation: MailboxSubmissionCancellation) {
+        let should_activate = {
+            let mut state = self
+                .shared
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let should_activate = state.abort_barriers > 0;
+            if let Some(slot) = state.active_transactions.get_mut(&self.transaction_id) {
+                *slot = Some(cancellation.clone());
+            }
+            should_activate
+        };
+        if should_activate {
+            cancellation.activate();
+        }
     }
 }
 
@@ -338,9 +351,27 @@ async fn execute_batch(
     cancellation_token: CancellationToken,
     calls: &[SpawnBatchCall],
 ) -> Result<HashMap<String, SpawnReceipt>, String> {
-    let _transaction_guard = session.spine_spawn_lifecycle.try_enter().ok_or_else(|| {
-        "spine.spawn cannot start while the originating turn is aborting".to_string()
+    let calls = calls.to_vec();
+    tokio::spawn(execute_batch_transaction(
+        session,
+        turn,
+        cancellation_token,
+        calls,
+    ))
+    .await
+    .map_err(|error| format!("spine.spawn transaction task failed: {error}"))?
+}
+
+async fn execute_batch_transaction(
+    session: Arc<Session>,
+    turn: Arc<TurnContext>,
+    cancellation_token: CancellationToken,
+    calls: Vec<SpawnBatchCall>,
+) -> Result<HashMap<String, SpawnReceipt>, String> {
+    let transaction_guard = session.spine_spawn_lifecycle.try_enter().ok_or_else(|| {
+        "spine.spawn cannot start while another transaction is active or aborting".to_string()
     })?;
+    let calls = calls.as_slice();
     if cancellation_token.is_cancelled() {
         return Err("spine.spawn was cancelled before child creation".to_string());
     }
@@ -436,12 +467,24 @@ async fn execute_batch(
         .iter()
         .map(|(_, thread_id, path)| (path.clone(), *thread_id))
         .collect::<HashMap<_, _>>();
+    let child_thread_ids = live
+        .iter()
+        .map(|(_, thread_id, _)| *thread_id)
+        .collect::<Vec<_>>();
+    let mailbox_cancellation = session
+        .input_queue
+        .mailbox_submission_cancellation(&child_paths);
+    transaction_guard.install_mailbox_cancellation(mailbox_cancellation.clone());
+    if cancellation_token.is_cancelled() {
+        mailbox_cancellation.activate();
+    }
 
     if start_failed {
         let mut corrected_ids = HashSet::new();
         let teardown_result = teardown_transaction_children_with_correction(
             &session,
             &parent_path,
+            &child_thread_ids,
             &child_paths,
             &child_by_path,
             &mut corrected_ids,
@@ -585,6 +628,7 @@ async fn execute_batch(
     let teardown_result = teardown_transaction_children_with_correction(
         &session,
         &parent_path,
+        &child_thread_ids,
         &child_paths,
         &child_by_path,
         &mut corrected_ids,
@@ -643,12 +687,12 @@ async fn execute_batch(
 
 async fn teardown_transaction_children(
     session: &Session,
-    transaction_roots: &[AgentPath],
+    transaction_root_thread_ids: &[ThreadId],
 ) -> Result<(), String> {
     session
         .services
         .agent_control
-        .shutdown_spine_spawn_subtrees(transaction_roots)
+        .shutdown_spine_spawn_subtrees(transaction_root_thread_ids)
         .await
         .map_err(|error| format!("spine.spawn child teardown failed: {error}"))
 }
@@ -656,11 +700,12 @@ async fn teardown_transaction_children(
 async fn teardown_transaction_children_with_correction(
     session: &Arc<Session>,
     parent_path: &AgentPath,
+    transaction_root_thread_ids: &[ThreadId],
     transaction_roots: &[AgentPath],
     child_by_path: &HashMap<AgentPath, ThreadId>,
     corrected_ids: &mut HashSet<String>,
 ) -> Result<(), String> {
-    let teardown = teardown_transaction_children(session.as_ref(), transaction_roots);
+    let teardown = teardown_transaction_children(session.as_ref(), transaction_root_thread_ids);
     tokio::pin!(teardown);
     let mut interval = tokio::time::interval(Duration::from_millis(25));
     loop {

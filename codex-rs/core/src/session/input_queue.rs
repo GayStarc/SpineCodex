@@ -9,6 +9,8 @@ use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use tokio::sync::Mutex;
 use tokio::sync::watch;
 
@@ -43,13 +45,35 @@ pub(crate) struct InputQueue {
 
 struct MailboxSubmissionState {
     // Tracks accepted inter-agent submissions until the receiver materializes them.
-    pending: StdMutex<HashMap<String, AgentPath>>,
+    tracker: StdMutex<MailboxSubmissionTracker>,
     revision_tx: watch::Sender<u64>,
+}
+
+#[derive(Default)]
+struct MailboxSubmissionTracker {
+    submissions: HashMap<String, TrackedMailboxSubmission>,
+    cancelled_author_subtrees: HashMap<AgentPath, usize>,
+}
+
+struct TrackedMailboxSubmission {
+    author: AgentPath,
+    cancelled: bool,
 }
 
 pub(crate) struct MailboxSubmissionRegistration {
     state: Arc<MailboxSubmissionState>,
     submission: Option<(String, AgentPath)>,
+}
+
+#[derive(Clone)]
+pub(crate) struct MailboxSubmissionCancellation {
+    inner: Arc<MailboxSubmissionCancellationInner>,
+}
+
+struct MailboxSubmissionCancellationInner {
+    state: Arc<MailboxSubmissionState>,
+    roots: Vec<AgentPath>,
+    active: AtomicBool,
 }
 
 impl InputQueue {
@@ -60,7 +84,7 @@ impl InputQueue {
             activity_tx,
             mailbox_pending_mails: Mutex::new(VecDeque::new()),
             mailbox_submissions: Arc::new(MailboxSubmissionState {
-                pending: StdMutex::new(HashMap::new()),
+                tracker: StdMutex::new(MailboxSubmissionTracker::default()),
                 revision_tx,
             }),
         }
@@ -81,6 +105,28 @@ impl InputQueue {
 
     pub(crate) fn complete_mailbox_submission(&self, submission_id: &str, author: &AgentPath) {
         self.mailbox_submissions.remove(submission_id, author);
+    }
+
+    pub(crate) fn mailbox_submission_cancellation(
+        &self,
+        roots: &[AgentPath],
+    ) -> MailboxSubmissionCancellation {
+        MailboxSubmissionCancellation {
+            inner: Arc::new(MailboxSubmissionCancellationInner {
+                state: Arc::clone(&self.mailbox_submissions),
+                roots: deduplicated_paths(roots),
+                active: AtomicBool::new(false),
+            }),
+        }
+    }
+
+    pub(crate) fn take_cancelled_mailbox_submission(
+        &self,
+        submission_id: &str,
+        author: &AgentPath,
+    ) -> bool {
+        self.mailbox_submissions
+            .take_cancelled(submission_id, author)
     }
 
     pub(crate) async fn wait_for_mailbox_submissions(
@@ -324,34 +370,115 @@ impl InputQueue {
 
 impl MailboxSubmissionState {
     fn insert(&self, submission_id: String, author: AgentPath) {
-        let mut pending = self
-            .pending
+        let mut tracker = self
+            .tracker
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        pending.insert(submission_id, author);
-        drop(pending);
+        let cancelled = tracker
+            .cancelled_author_subtrees
+            .keys()
+            .any(|root| path_is_in_subtree(&author, root));
+        tracker.submissions.insert(
+            submission_id,
+            TrackedMailboxSubmission { author, cancelled },
+        );
+        drop(tracker);
         self.bump_revision();
     }
 
     fn remove(&self, submission_id: &str, author: &AgentPath) {
-        let mut pending = self
-            .pending
+        let mut tracker = self
+            .tracker
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if pending.get(submission_id) != Some(author) {
+        if tracker
+            .submissions
+            .get(submission_id)
+            .map(|submission| &submission.author)
+            != Some(author)
+        {
             return;
         }
-        pending.remove(submission_id);
-        drop(pending);
+        tracker.submissions.remove(submission_id);
+        drop(tracker);
         self.bump_revision();
     }
 
     fn has_matching(&self, predicate: &impl Fn(&AgentPath) -> bool) -> bool {
-        self.pending
+        self.tracker
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .submissions
             .values()
-            .any(predicate)
+            .any(|submission| !submission.cancelled && predicate(&submission.author))
+    }
+
+    fn cancel_author_subtrees(&self, roots: &[AgentPath]) {
+        let mut tracker = self
+            .tracker
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for root in roots {
+            *tracker
+                .cancelled_author_subtrees
+                .entry(root.clone())
+                .or_default() += 1;
+        }
+        let cancelled_author_subtrees = tracker
+            .cancelled_author_subtrees
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut changed = !roots.is_empty();
+        for submission in tracker.submissions.values_mut() {
+            if !submission.cancelled
+                && cancelled_author_subtrees
+                    .iter()
+                    .any(|root| path_is_in_subtree(&submission.author, root))
+            {
+                submission.cancelled = true;
+                changed = true;
+            }
+        }
+        drop(tracker);
+        if changed {
+            self.bump_revision();
+        }
+    }
+
+    fn release_author_subtrees(&self, roots: &[AgentPath]) {
+        let mut tracker = self
+            .tracker
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for root in roots {
+            match tracker.cancelled_author_subtrees.get_mut(root) {
+                Some(count) if *count > 1 => *count -= 1,
+                Some(_) => {
+                    tracker.cancelled_author_subtrees.remove(root);
+                }
+                None => {}
+            }
+        }
+    }
+
+    fn take_cancelled(&self, submission_id: &str, author: &AgentPath) -> bool {
+        let mut tracker = self
+            .tracker
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let cancelled = tracker
+            .submissions
+            .get(submission_id)
+            .is_some_and(|submission| submission.author == *author && submission.cancelled);
+        if cancelled {
+            tracker.submissions.remove(submission_id);
+        }
+        drop(tracker);
+        if cancelled {
+            self.bump_revision();
+        }
+        cancelled
     }
 
     fn bump_revision(&self) {
@@ -360,10 +487,44 @@ impl MailboxSubmissionState {
     }
 }
 
+fn path_is_in_subtree(candidate: &AgentPath, root: &AgentPath) -> bool {
+    candidate == root
+        || candidate
+            .as_str()
+            .strip_prefix(root.as_str())
+            .is_some_and(|suffix| suffix.starts_with('/'))
+}
+
+fn deduplicated_paths(paths: &[AgentPath]) -> Vec<AgentPath> {
+    let mut deduplicated = Vec::new();
+    for path in paths {
+        if !deduplicated.contains(path) {
+            deduplicated.push(path.clone());
+        }
+    }
+    deduplicated
+}
+
 impl MailboxSubmissionRegistration {
     pub(crate) fn accepted(mut self) {
         // The receiver now owns completion of this pending submission.
         self.submission = None;
+    }
+}
+
+impl MailboxSubmissionCancellation {
+    pub(crate) fn activate(&self) {
+        if !self.inner.active.swap(true, Ordering::AcqRel) {
+            self.inner.state.cancel_author_subtrees(&self.inner.roots);
+        }
+    }
+}
+
+impl Drop for MailboxSubmissionCancellationInner {
+    fn drop(&mut self) {
+        if *self.active.get_mut() {
+            self.state.release_author_subtrees(&self.roots);
+        }
     }
 }
 
@@ -640,5 +801,62 @@ mod tests {
         )
         .await
         .expect("cancelled registration should be removed");
+    }
+
+    #[tokio::test]
+    async fn cancelling_mailbox_subtree_releases_waiters_and_tombstones_late_delivery() {
+        let input_queue = InputQueue::new();
+        let transaction_root = AgentPath::try_from("/root/spawn_a").expect("agent path");
+        let descendant = AgentPath::try_from("/root/spawn_a/worker/deep").expect("agent path");
+        let unrelated = AgentPath::try_from("/root/spawn_b").expect("agent path");
+
+        let descendant_submission =
+            input_queue.register_mailbox_submission("descendant".to_string(), descendant.clone());
+        descendant_submission.accepted();
+        let unrelated_submission =
+            input_queue.register_mailbox_submission("unrelated".to_string(), unrelated.clone());
+        unrelated_submission.accepted();
+
+        let matching = input_queue.wait_for_mailbox_submissions(|author| author == &descendant);
+        tokio::pin!(matching);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(10), &mut matching)
+                .await
+                .is_err()
+        );
+
+        let cancellation =
+            input_queue.mailbox_submission_cancellation(std::slice::from_ref(&transaction_root));
+        cancellation.activate();
+        tokio::time::timeout(std::time::Duration::from_secs(1), &mut matching)
+            .await
+            .expect("cancelled subtree submission should no longer block quiescence");
+        assert!(
+            input_queue.take_cancelled_mailbox_submission("descendant", &descendant),
+            "the queued descendant delivery should retain a cancellation tombstone"
+        );
+        assert!(
+            !input_queue.take_cancelled_mailbox_submission("unrelated", &unrelated),
+            "an unrelated submission must remain pending"
+        );
+
+        let late_submission =
+            input_queue.register_mailbox_submission("late".to_string(), descendant.clone());
+        late_submission.accepted();
+        assert!(
+            input_queue.take_cancelled_mailbox_submission("late", &descendant),
+            "new submissions from a cancelled transaction subtree must be tombstoned"
+        );
+
+        drop(cancellation);
+        let reused_path_submission =
+            input_queue.register_mailbox_submission("reused".to_string(), descendant.clone());
+        reused_path_submission.accepted();
+        assert!(
+            !input_queue.take_cancelled_mailbox_submission("reused", &descendant),
+            "dropping the cancellation fence must allow a future transaction to reuse the path"
+        );
+        input_queue.complete_mailbox_submission("reused", &descendant);
+        input_queue.complete_mailbox_submission("unrelated", &unrelated);
     }
 }

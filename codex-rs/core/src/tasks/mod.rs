@@ -831,7 +831,6 @@ impl Session {
         let sub_id = task.turn_context.sub_id.clone();
         let spawn_abort_barrier = self.spine_spawn_lifecycle.begin_abort();
         if task.cancellation_token.is_cancelled() {
-            spawn_abort_barrier.wait_until_idle().await;
             task.handle.abort();
             if spawn_abort_barrier.had_active_transactions() {
                 let _ = task.handle.await;
@@ -854,7 +853,6 @@ impl Session {
             }
         }
 
-        spawn_abort_barrier.wait_until_idle().await;
         task.handle.abort();
         if spawn_abort_barrier.had_active_transactions() {
             let _ = task.handle.await;

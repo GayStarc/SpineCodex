@@ -162,25 +162,15 @@ fn subtree_membership_uses_agent_path_segment_boundaries() {
     ));
 }
 
-#[tokio::test]
-async fn abort_barrier_waits_for_active_spawn_and_blocks_new_admission() {
+#[test]
+fn abort_barrier_blocks_new_admission_without_owning_transaction_cleanup() {
     let lifecycle = SpawnLifecycle::default();
     let transaction = lifecycle.try_enter().expect("first Spawn may enter");
     let abort_barrier = lifecycle.begin_abort();
 
     assert!(abort_barrier.had_active_transactions());
     assert!(lifecycle.try_enter().is_none());
-    assert!(
-        tokio::time::timeout(Duration::from_millis(10), abort_barrier.wait_until_idle(),)
-            .await
-            .is_err(),
-        "abort barrier returned before the active Spawn guard was released"
-    );
-
     drop(transaction);
-    tokio::time::timeout(Duration::from_secs(1), abort_barrier.wait_until_idle())
-        .await
-        .expect("abort barrier should observe Spawn cleanup completion");
     assert!(lifecycle.try_enter().is_none());
 
     drop(abort_barrier);

@@ -45,6 +45,7 @@ use codex_thread_store::LocalThreadStoreConfig;
 use codex_thread_store::ThreadStore;
 use codex_utils_path_uri::PathUri;
 use pretty_assertions::assert_eq;
+use std::collections::HashSet;
 use tempfile::TempDir;
 use tokio::time::Duration;
 use tokio::time::sleep;
@@ -3072,6 +3073,94 @@ async fn shutdown_agent_tree_closes_live_descendants() {
     let mut shutdown_ids = shutdown_ids;
     shutdown_ids.sort_by_key(std::string::ToString::to_string);
     assert_eq!(shutdown_ids, expected_shutdown_ids);
+}
+
+#[tokio::test]
+async fn shutdown_spine_spawn_subtrees_closes_pathless_native_descendants() {
+    let harness = AgentControlHarness::new().await;
+    let (origin_thread_id, _origin_thread) = harness.start_thread().await;
+    let branch_path = AgentPath::try_from("/root/spawn_transaction_0").expect("agent path");
+
+    let branch_thread_id = harness
+        .control
+        .spawn_agent(
+            harness.config.clone(),
+            text_input("hello branch"),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: origin_thread_id,
+                depth: 1,
+                agent_path: Some(branch_path),
+                agent_nickname: None,
+                agent_role: Some("branch".to_string()),
+            })),
+        )
+        .await
+        .expect("branch spawn should succeed");
+    let child_thread_id = harness
+        .control
+        .spawn_agent(
+            harness.config.clone(),
+            text_input("hello pathless child"),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: branch_thread_id,
+                depth: 2,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: Some("explorer".to_string()),
+            })),
+        )
+        .await
+        .expect("pathless child spawn should succeed");
+    let grandchild_thread_id = harness
+        .control
+        .spawn_agent(
+            harness.config.clone(),
+            text_input("hello pathless grandchild"),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: child_thread_id,
+                depth: 3,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: Some("worker".to_string()),
+            })),
+        )
+        .await
+        .expect("pathless grandchild spawn should succeed");
+
+    wait_for_live_thread_spawn_children(&harness.control, origin_thread_id, &[branch_thread_id])
+        .await;
+    wait_for_live_thread_spawn_children(&harness.control, branch_thread_id, &[child_thread_id])
+        .await;
+    wait_for_live_thread_spawn_children(&harness.control, child_thread_id, &[grandchild_thread_id])
+        .await;
+
+    harness
+        .control
+        .shutdown_spine_spawn_subtrees(&[branch_thread_id])
+        .await
+        .expect("Spine transaction subtree shutdown should succeed");
+
+    assert_ne!(
+        harness.control.get_status(origin_thread_id).await,
+        AgentStatus::NotFound
+    );
+    for thread_id in [branch_thread_id, child_thread_id, grandchild_thread_id] {
+        assert_eq!(
+            harness.control.get_status(thread_id).await,
+            AgentStatus::NotFound
+        );
+    }
+
+    let shutdown_ids = harness
+        .manager
+        .captured_ops()
+        .into_iter()
+        .filter_map(|(thread_id, op)| matches!(op, Op::Shutdown).then_some(thread_id))
+        .collect::<HashSet<_>>();
+    assert_eq!(
+        shutdown_ids,
+        HashSet::from([branch_thread_id, child_thread_id, grandchild_thread_id,])
+    );
 }
 
 #[tokio::test]
