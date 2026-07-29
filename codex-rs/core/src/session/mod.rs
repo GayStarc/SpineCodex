@@ -910,7 +910,7 @@ impl Codex {
 ///
 /// Some use cases take advantage of the fact that these are UUID7 which
 /// encodes a timestamp, so think carefully before changing this.
-fn new_submission_id() -> String {
+pub(crate) fn new_submission_id() -> String {
     Uuid::now_v7().to_string()
 }
 

@@ -182,6 +182,15 @@ fn metadata_v2_spine_builder() -> TestCodexBuilder {
         })
 }
 
+fn multi_agent_v2_spine_builder() -> TestCodexBuilder {
+    metadata_v2_spine_builder().with_config(|config| {
+        config
+            .features
+            .enable(Feature::MultiAgentV2)
+            .expect("enable MultiAgentV2");
+    })
+}
+
 fn nested_spawn_builder() -> TestCodexBuilder {
     metadata_v2_spine_builder()
         .with_model_info_override("gpt-5.6-sol", |model_info| {
@@ -996,6 +1005,181 @@ async fn intermediate_message_is_corrected_once_and_never_reaches_parent_model()
         "ordinary child memory",
     );
     assert!(!parent_request.body_contains_text("intermediate-secret"));
+    assert!(!parent_request.body_contains_text(CORRECTION_MESSAGE));
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn descendant_root_message_is_corrected_while_branch_internal_message_is_delivered()
+-> Result<()> {
+    const B0_SPAWN_D0_CALL_ID: &str = "b0-spawn-d0";
+    const B0_WAIT_CALL_ID: &str = "b0-wait-for-descendant";
+    const B0_PATH: &str = "/root/spawn_spawnlifecyclecall_0";
+    const D0_SEND_BRANCH_CALL_ID: &str = "d0-send-branch";
+    const D0_SEND_ROOT_CALL_ID: &str = "d0-send-root";
+    const D0_WAIT_CALL_ID: &str = "d0-wait-for-correction";
+    const D0_SECRET: &str = "descendant-intermediate-secret";
+    const D0_BRANCH_MESSAGE: &str = "descendant-branch-internal-message";
+
+    let server = start_mock_server().await;
+    mount_sse_once_match(
+        &server,
+        is_parent_spawn_request,
+        sse(vec![
+            ev_response_created("parent-descendant-spawn-response"),
+            ev_function_call_with_namespace(
+                SPAWN_CALL_ID,
+                SPAWN_NAMESPACE,
+                SPAWN_TOOL,
+                &spawn_args("descendant-parent-marker", "ordinary-sibling-marker"),
+            ),
+            ev_completed("parent-descendant-spawn-response"),
+        ]),
+    )
+    .await;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            child_task_marker(request, "descendant-parent-marker")
+                && !has_function_call_output(request, B0_SPAWN_D0_CALL_ID)
+        },
+        sse(vec![
+            ev_response_created("b0-spawn-d0-response"),
+            ev_function_call_with_namespace(
+                B0_SPAWN_D0_CALL_ID,
+                "collaboration",
+                "spawn_agent",
+                &json!({
+                    "message": "descendant-worker-marker",
+                    "task_name": "worker",
+                    "fork_turns": "all",
+                })
+                .to_string(),
+            ),
+            ev_completed("b0-spawn-d0-response"),
+        ]),
+    )
+    .await;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            has_function_call_output(request, B0_SPAWN_D0_CALL_ID)
+                && !has_function_call_output(request, B0_WAIT_CALL_ID)
+        },
+        sse(vec![
+            ev_response_created("b0-wait-response"),
+            ev_shell_command_call(B0_WAIT_CALL_ID, "sleep 0.3"),
+            ev_completed("b0-wait-response"),
+        ]),
+    )
+    .await;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            has_function_call_output(request, B0_WAIT_CALL_ID)
+                && body_contains(request, D0_BRANCH_MESSAGE)
+        },
+        sse(vec![
+            ev_response_created("b0-final-response"),
+            ev_assistant_message("b0-final-message", "descendant branch memory"),
+            ev_completed("b0-final-response"),
+        ]),
+    )
+    .await;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            body_contains(request, "descendant-worker-marker")
+                && body_contains(request, "\"type\":\"agent_message\"")
+                && !has_function_call_output(request, D0_SEND_ROOT_CALL_ID)
+        },
+        sse(vec![
+            ev_response_created("d0-send-response"),
+            ev_function_call_with_namespace(
+                D0_SEND_BRANCH_CALL_ID,
+                "collaboration",
+                "send_message",
+                &json!({
+                    "target": B0_PATH,
+                    "message": D0_BRANCH_MESSAGE,
+                })
+                .to_string(),
+            ),
+            ev_function_call_with_namespace(
+                D0_SEND_ROOT_CALL_ID,
+                "collaboration",
+                "send_message",
+                &json!({
+                    "target": "/root",
+                    "message": D0_SECRET,
+                })
+                .to_string(),
+            ),
+            ev_shell_command_call(D0_WAIT_CALL_ID, "sleep 0.3"),
+            ev_completed("d0-send-response"),
+        ]),
+    )
+    .await;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            has_function_call_output(request, D0_SEND_BRANCH_CALL_ID)
+                && has_function_call_output(request, D0_SEND_ROOT_CALL_ID)
+                && has_function_call_output(request, D0_WAIT_CALL_ID)
+                && body_contains(request, CORRECTION_MESSAGE)
+        },
+        sse(vec![
+            ev_response_created("d0-corrected-response"),
+            ev_assistant_message("d0-corrected-message", "descendant terminal memory"),
+            ev_completed("d0-corrected-response"),
+        ]),
+    )
+    .await;
+    mount_response_once_match(
+        &server,
+        |request: &wiremock::Request| child_task_marker(request, "ordinary-sibling-marker"),
+        sse_response(sse(vec![
+            ev_response_created("ordinary-sibling-response"),
+            ev_assistant_message("ordinary-sibling-message", "ordinary sibling memory"),
+            ev_completed("ordinary-sibling-response"),
+        ]))
+        .set_delay(Duration::from_millis(700)),
+    )
+    .await;
+    let parent_followup = mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            body_contains(request, "descendant branch memory")
+                && body_contains(request, "ordinary sibling memory")
+                && !body_contains(request, "You are one branch of a spine.spawn fission")
+        },
+        sse(vec![
+            ev_response_created("parent-descendant-followup-response"),
+            ev_assistant_message("parent-descendant-followup-message", "parent done"),
+            ev_completed("parent-descendant-followup-response"),
+        ]),
+    )
+    .await;
+    let test = multi_agent_v2_spine_builder().build(&server).await?;
+    let mut created_threads = test.thread_manager.subscribe_thread_created();
+
+    test.submit_turn(FIRST_PARENT_PROMPT).await?;
+
+    for _ in 0..3 {
+        let thread_id =
+            tokio::time::timeout(Duration::from_secs(5), created_threads.recv()).await??;
+        assert!(
+            test.thread_manager.get_thread(thread_id).await.is_err(),
+            "Spawn must remove every direct branch and descendant before returning"
+        );
+    }
+    let parent_request = parent_projection_request(
+        &parent_followup,
+        "descendant branch memory",
+        "ordinary sibling memory",
+    );
+    assert!(!parent_request.body_contains_text(D0_SECRET));
+    assert!(!parent_request.body_contains_text(D0_BRANCH_MESSAGE));
     assert!(!parent_request.body_contains_text(CORRECTION_MESSAGE));
     Ok(())
 }

@@ -12,6 +12,7 @@ use crate::config::RolloutBudgetConfig;
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::rollout_budget::RolloutBudget;
 use crate::session::emit_subagent_session_started;
+use crate::session::new_submission_id;
 use crate::session_prefix::format_inter_agent_completion_message;
 use crate::session_prefix::format_subagent_context_line;
 use crate::session_prefix::format_subagent_notification_message;
@@ -245,15 +246,29 @@ impl AgentControl {
         let last_task_message = last_task_message_from_communication(&communication);
         let communication_for_log =
             crate::agent_communication::logging_enabled().then(|| communication.clone());
+        let target = state.get_thread(agent_id).await?;
+        let submission_id = new_submission_id();
+        let submission = target
+            .codex
+            .session
+            .input_queue
+            .register_mailbox_submission(submission_id.clone(), communication.author.clone());
         let result = self
             .handle_thread_request_result(
                 agent_id,
                 state,
                 state
-                    .send_op(agent_id, Op::InterAgentCommunication { communication })
+                    .send_op_with_id(
+                        agent_id,
+                        submission_id,
+                        Op::InterAgentCommunication { communication },
+                    )
                     .await,
             )
             .await;
+        if result.is_ok() {
+            submission.accepted();
+        }
         if let (Some(communication), Ok(communication_id)) =
             (communication_for_log, result.as_ref())
         {
@@ -336,6 +351,10 @@ impl AgentControl {
         self.state
             .agent_metadata_for_thread(agent_id)
             .ok_or(CodexErr::ThreadNotFound(agent_id))
+    }
+
+    pub(crate) fn agent_id_for_path(&self, agent_path: &AgentPath) -> Option<ThreadId> {
+        self.state.agent_id_for_path(agent_path)
     }
 
     pub(crate) async fn list_live_agent_subtree_thread_ids(

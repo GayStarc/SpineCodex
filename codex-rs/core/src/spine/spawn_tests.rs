@@ -141,6 +141,53 @@ fn coordinator_helpers_keep_safe_names_and_truthful_terminal_results() {
 }
 
 #[test]
+fn subtree_membership_uses_agent_path_segment_boundaries() {
+    let root = AgentPath::try_from("/root/spawn_a").unwrap();
+    assert!(path_is_in_subtree(&root, &root));
+    assert!(path_is_in_subtree(
+        &AgentPath::try_from("/root/spawn_a/worker").unwrap(),
+        &root,
+    ));
+    assert!(path_is_in_subtree(
+        &AgentPath::try_from("/root/spawn_a/worker/deep").unwrap(),
+        &root,
+    ));
+    assert!(!path_is_in_subtree(
+        &AgentPath::try_from("/root/spawn_a2").unwrap(),
+        &root,
+    ));
+    assert!(!path_is_in_subtree(
+        &AgentPath::try_from("/root/other/spawn_a").unwrap(),
+        &root,
+    ));
+}
+
+#[tokio::test]
+async fn abort_barrier_waits_for_active_spawn_and_blocks_new_admission() {
+    let lifecycle = SpawnLifecycle::default();
+    let transaction = lifecycle.try_enter().expect("first Spawn may enter");
+    let abort_barrier = lifecycle.begin_abort();
+
+    assert!(abort_barrier.had_active_transactions());
+    assert!(lifecycle.try_enter().is_none());
+    assert!(
+        tokio::time::timeout(Duration::from_millis(10), abort_barrier.wait_until_idle(),)
+            .await
+            .is_err(),
+        "abort barrier returned before the active Spawn guard was released"
+    );
+
+    drop(transaction);
+    tokio::time::timeout(Duration::from_secs(1), abort_barrier.wait_until_idle())
+        .await
+        .expect("abort barrier should observe Spawn cleanup completion");
+    assert!(lifecycle.try_enter().is_none());
+
+    drop(abort_barrier);
+    assert!(lifecycle.try_enter().is_some());
+}
+
+#[test]
 fn initial_progress_normalizes_fast_terminal_statuses() {
     let thread_id = codex_protocol::ThreadId::new();
     assert_eq!(

@@ -24,6 +24,41 @@ impl AgentControl {
         result
     }
 
+    async fn shutdown_live_agent_for_spine_spawn(
+        &self,
+        state: &Arc<ThreadManagerState>,
+        agent_id: ThreadId,
+    ) -> CodexResult<()> {
+        let mut failures = Vec::new();
+        match state.get_thread(agent_id).await {
+            Ok(thread) => {
+                thread.codex.session.ensure_rollout_materialized().await;
+                if let Err(error) = thread.codex.session.flush_rollout().await {
+                    failures.push(error.to_string());
+                }
+                if !matches!(thread.agent_status().await, AgentStatus::Shutdown)
+                    && let Err(error) = state.send_op(agent_id, Op::Shutdown {}).await
+                {
+                    failures.push(error.to_string());
+                }
+                thread.wait_until_terminated().await;
+            }
+            Err(CodexErr::ThreadNotFound(_)) | Err(CodexErr::InternalAgentDied) => {}
+            Err(error) => failures.push(error.to_string()),
+        }
+        let _ = state.remove_thread(&agent_id).await;
+        self.forget_v2_residency(agent_id);
+        self.state.release_spawned_thread(agent_id);
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(CodexErr::Fatal(format!(
+                "agent {agent_id} shutdown completed with errors: {}",
+                failures.join("; ")
+            )))
+        }
+    }
+
     /// Mark `agent_id` as explicitly closed in persisted spawn-edge state, then shut down the
     /// agent and any live descendants reached from the in-memory tree.
     pub(crate) async fn close_agent(&self, agent_id: ThreadId) -> CodexResult<String> {
@@ -81,5 +116,81 @@ impl AgentControl {
             }
         }
         result
+    }
+
+    /// Stop every live agent in the supplied Spawn path subtrees, including agents created
+    /// while teardown is already in progress.
+    pub(crate) async fn shutdown_spine_spawn_subtrees(
+        &self,
+        roots: &[AgentPath],
+    ) -> CodexResult<()> {
+        let state = self.upgrade()?;
+        let mut failures = Vec::new();
+        loop {
+            let mut live = self
+                .state
+                .live_agents()
+                .into_iter()
+                .filter_map(|metadata| {
+                    let path = metadata.agent_path?;
+                    let thread_id = metadata.agent_id?;
+                    roots
+                        .iter()
+                        .any(|root| path_is_in_subtree(&path, root))
+                        .then_some((thread_id, path))
+                })
+                .collect::<Vec<_>>();
+            if live.is_empty() {
+                break;
+            }
+            live.sort_by_key(|(_, path)| {
+                path.as_str().bytes().filter(|byte| *byte == b'/').count()
+            });
+            for (thread_id, _) in live {
+                match self
+                    .shutdown_live_agent_for_spine_spawn(&state, thread_id)
+                    .await
+                {
+                    Ok(_) | Err(CodexErr::ThreadNotFound(_)) | Err(CodexErr::InternalAgentDied) => {
+                    }
+                    Err(error) => failures.push(format!("{thread_id}: {error}")),
+                }
+            }
+        }
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(CodexErr::Fatal(format!(
+                "spine.spawn subtree shutdown completed with errors: {}",
+                failures.join("; ")
+            )))
+        }
+    }
+}
+
+fn path_is_in_subtree(candidate: &AgentPath, root: &AgentPath) -> bool {
+    candidate == root
+        || candidate
+            .as_str()
+            .strip_prefix(root.as_str())
+            .is_some_and(|suffix| suffix.starts_with('/'))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn subtree_membership_requires_a_segment_boundary() {
+        let root = AgentPath::try_from("/root/branch").unwrap();
+        assert!(path_is_in_subtree(&root, &root));
+        assert!(path_is_in_subtree(
+            &AgentPath::try_from("/root/branch/worker").unwrap(),
+            &root,
+        ));
+        assert!(!path_is_in_subtree(
+            &AgentPath::try_from("/root/branch_other").unwrap(),
+            &root,
+        ));
     }
 }

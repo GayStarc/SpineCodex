@@ -28,7 +28,9 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt::Display;
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 use std::time::Duration;
+use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
 const CORRECTION_MESSAGE: &str = "No supervisory continuation is active during this fission. Continue within the current branch and return its terminal memory when complete or precisely bounded.";
@@ -50,6 +52,123 @@ pub(crate) struct SpawnBatchCall {
 #[derive(Default)]
 pub(crate) struct SpawnBatchCoordinator {
     completed: HashMap<String, Result<SpawnReceipt, String>>,
+}
+
+#[derive(Clone)]
+pub(crate) struct SpawnLifecycle {
+    shared: Arc<SpawnLifecycleShared>,
+}
+
+struct SpawnLifecycleShared {
+    state: StdMutex<SpawnLifecycleState>,
+    revision_tx: watch::Sender<u64>,
+}
+
+#[derive(Default)]
+struct SpawnLifecycleState {
+    active_transactions: usize,
+    abort_barriers: usize,
+}
+
+pub(crate) struct SpawnTransactionGuard {
+    shared: Arc<SpawnLifecycleShared>,
+}
+
+pub(crate) struct SpawnAbortBarrier {
+    shared: Arc<SpawnLifecycleShared>,
+    had_active_transactions: bool,
+}
+
+impl Default for SpawnLifecycle {
+    fn default() -> Self {
+        let (revision_tx, _) = watch::channel(0);
+        Self {
+            shared: Arc::new(SpawnLifecycleShared {
+                state: StdMutex::new(SpawnLifecycleState::default()),
+                revision_tx,
+            }),
+        }
+    }
+}
+
+impl SpawnLifecycle {
+    pub(crate) fn try_enter(&self) -> Option<SpawnTransactionGuard> {
+        let mut state = self
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.abort_barriers > 0 {
+            return None;
+        }
+        state.active_transactions += 1;
+        Some(SpawnTransactionGuard {
+            shared: Arc::clone(&self.shared),
+        })
+    }
+
+    pub(crate) fn begin_abort(&self) -> SpawnAbortBarrier {
+        let had_active_transactions = {
+            let mut state = self
+                .shared
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.abort_barriers += 1;
+            state.active_transactions > 0
+        };
+        SpawnAbortBarrier {
+            shared: Arc::clone(&self.shared),
+            had_active_transactions,
+        }
+    }
+}
+
+impl SpawnAbortBarrier {
+    pub(crate) fn had_active_transactions(&self) -> bool {
+        self.had_active_transactions
+    }
+
+    pub(crate) async fn wait_until_idle(&self) {
+        let mut revision_rx = self.shared.revision_tx.subscribe();
+        loop {
+            let is_idle = self
+                .shared
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .active_transactions
+                == 0;
+            if is_idle || revision_rx.changed().await.is_err() {
+                return;
+            }
+        }
+    }
+}
+
+impl Drop for SpawnTransactionGuard {
+    fn drop(&mut self) {
+        let mut state = self
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.active_transactions = state.active_transactions.saturating_sub(1);
+        drop(state);
+        let next = (*self.shared.revision_tx.borrow()).wrapping_add(1);
+        self.shared.revision_tx.send_replace(next);
+    }
+}
+
+impl Drop for SpawnAbortBarrier {
+    fn drop(&mut self) {
+        let mut state = self
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.abort_barriers = state.abort_barriers.saturating_sub(1);
+    }
 }
 
 pub(crate) fn parse_tasks(arguments: &str) -> Result<Vec<SpawnTask>, String> {
@@ -219,6 +338,9 @@ async fn execute_batch(
     cancellation_token: CancellationToken,
     calls: &[SpawnBatchCall],
 ) -> Result<HashMap<String, SpawnReceipt>, String> {
+    let _transaction_guard = session.spine_spawn_lifecycle.try_enter().ok_or_else(|| {
+        "spine.spawn cannot start while the originating turn is aborting".to_string()
+    })?;
     if cancellation_token.is_cancelled() {
         return Err("spine.spawn was cancelled before child creation".to_string());
     }
@@ -310,9 +432,30 @@ async fn execute_batch(
         mut results,
         failed: start_failed,
     } = classify_start_results(&child_paths, start_results);
+    let child_by_path = live
+        .iter()
+        .map(|(_, thread_id, path)| (path.clone(), *thread_id))
+        .collect::<HashMap<_, _>>();
 
     if start_failed {
-        teardown_transaction_children(session.as_ref(), &live).await?;
+        let mut corrected_ids = HashSet::new();
+        let teardown_result = teardown_transaction_children_with_correction(
+            &session,
+            &parent_path,
+            &child_paths,
+            &child_by_path,
+            &mut corrected_ids,
+        )
+        .await;
+        quiesce_transaction_messages(
+            &session,
+            &parent_path,
+            &child_paths,
+            &child_by_path,
+            &mut corrected_ids,
+        )
+        .await;
+        teardown_result?;
         for (ordinal, thread_id, _) in &live {
             let diagnostic =
                 "child aborted because another transaction child failed to start".to_string();
@@ -326,10 +469,6 @@ async fn execute_batch(
         return finish_batch_receipts(calls, results);
     }
 
-    let child_by_path = live
-        .iter()
-        .map(|(_, thread_id, path)| (path.clone(), *thread_id))
-        .collect::<HashMap<_, _>>();
     let progress_calls = Arc::new(calls.to_vec());
     let progress_paths = Arc::new(child_paths.clone());
     let mut progress_thread_ids = vec![None; task_count];
@@ -409,13 +548,21 @@ async fn execute_batch(
                 correct_intermediate_messages(
                     &session,
                     &parent_path,
+                    &child_paths,
                     &child_by_path,
                     &mut corrected_ids,
                 ).await;
             }
         }
     };
-    correct_intermediate_messages(&session, &parent_path, &child_by_path, &mut corrected_ids).await;
+    correct_intermediate_messages(
+        &session,
+        &parent_path,
+        &child_paths,
+        &child_by_path,
+        &mut corrected_ids,
+    )
+    .await;
 
     let cancelled = match terminal {
         Some(completed_results) => {
@@ -435,7 +582,23 @@ async fn execute_batch(
         }
     };
 
-    teardown_transaction_children(session.as_ref(), &live).await?;
+    let teardown_result = teardown_transaction_children_with_correction(
+        &session,
+        &parent_path,
+        &child_paths,
+        &child_by_path,
+        &mut corrected_ids,
+    )
+    .await;
+    quiesce_transaction_messages(
+        &session,
+        &parent_path,
+        &child_paths,
+        &child_by_path,
+        &mut corrected_ids,
+    )
+    .await;
+    teardown_result?;
 
     if cancelled {
         for (ordinal, thread_id, _) in &live {
@@ -480,32 +643,76 @@ async fn execute_batch(
 
 async fn teardown_transaction_children(
     session: &Session,
-    live: &[(usize, ThreadId, AgentPath)],
+    transaction_roots: &[AgentPath],
 ) -> Result<(), String> {
-    let teardown = live.iter().map(|(_, thread_id, _)| async move {
-        let thread_id = *thread_id;
-        (
-            thread_id,
-            session
-                .services
-                .agent_control
-                .shutdown_agent_tree(thread_id)
-                .await,
-        )
-    });
-    let failures = join_all(teardown)
+    session
+        .services
+        .agent_control
+        .shutdown_spine_spawn_subtrees(transaction_roots)
         .await
-        .into_iter()
-        .filter_map(|(thread_id, result)| result.err().map(|error| format!("{thread_id}: {error}")))
-        .collect::<Vec<_>>();
-    if failures.is_empty() {
-        Ok(())
-    } else {
-        Err(format!(
-            "spine.spawn child teardown failed: {}",
-            failures.join("; ")
-        ))
+        .map_err(|error| format!("spine.spawn child teardown failed: {error}"))
+}
+
+async fn teardown_transaction_children_with_correction(
+    session: &Arc<Session>,
+    parent_path: &AgentPath,
+    transaction_roots: &[AgentPath],
+    child_by_path: &HashMap<AgentPath, ThreadId>,
+    corrected_ids: &mut HashSet<String>,
+) -> Result<(), String> {
+    let teardown = teardown_transaction_children(session.as_ref(), transaction_roots);
+    tokio::pin!(teardown);
+    let mut interval = tokio::time::interval(Duration::from_millis(25));
+    loop {
+        tokio::select! {
+            result = &mut teardown => break result,
+            _ = interval.tick() => {
+                correct_intermediate_messages(
+                    session,
+                    parent_path,
+                    transaction_roots,
+                    child_by_path,
+                    corrected_ids,
+                ).await;
+            }
+        }
     }
+}
+
+async fn quiesce_transaction_messages(
+    session: &Arc<Session>,
+    parent_path: &AgentPath,
+    transaction_roots: &[AgentPath],
+    child_by_path: &HashMap<AgentPath, ThreadId>,
+    corrected_ids: &mut HashSet<String>,
+) {
+    let quiescence = session.input_queue.wait_for_mailbox_submissions(|author| {
+        author_is_in_transaction_subtree(author, transaction_roots)
+    });
+    tokio::pin!(quiescence);
+    let mut interval = tokio::time::interval(Duration::from_millis(25));
+    loop {
+        tokio::select! {
+            _ = &mut quiescence => break,
+            _ = interval.tick() => {
+                correct_intermediate_messages(
+                    session,
+                    parent_path,
+                    transaction_roots,
+                    child_by_path,
+                    corrected_ids,
+                ).await;
+            }
+        }
+    }
+    correct_intermediate_messages(
+        session,
+        parent_path,
+        transaction_roots,
+        child_by_path,
+        corrected_ids,
+    )
+    .await;
 }
 
 fn batch_progress_event(
@@ -696,7 +903,7 @@ fn transaction_task_name(call_id: &str, ordinal: usize) -> String {
 
 fn task_envelope(task: &SpawnTask) -> String {
     format!(
-        "You are one branch of a spine.spawn fission. The original continuation is suspended during this fission; no supervisory model is active. Work directly on the differentiated assignment below using the inherited context. Other branches may execute concurrently in the shared workspace; follow any peer roster and coordination contract declared in this assignment. Complete this assignment or precisely bound its result, then return exactly one final message containing its terminal memory.\n\nBranch label and outcome: {}\n\nAssignment:\n{}",
+        "You are one branch of a spine.spawn fission. The original continuation is suspended during this fission; no supervisory model is active. Do not communicate with the originating parent or root during the fission; keep descendant coordination inside this branch. Work directly on the differentiated assignment below using the inherited context. Other branches may execute concurrently in the shared workspace; follow any peer roster and coordination contract declared in this assignment. Complete this assignment or precisely bound its result, then communicate the result only by returning exactly one final message containing its terminal memory.\n\nBranch label and outcome: {}\n\nAssignment:\n{}",
         task.summary, task.prompt
     )
 }
@@ -726,12 +933,15 @@ fn is_spawn_terminal(status: &AgentStatus) -> bool {
 async fn correct_intermediate_messages(
     session: &Session,
     parent_path: &AgentPath,
+    transaction_roots: &[AgentPath],
     child_by_path: &HashMap<AgentPath, ThreadId>,
     corrected_ids: &mut HashSet<String>,
 ) {
     let messages = session
         .input_queue
-        .extract_mailbox_communications(|mail| child_by_path.contains_key(&mail.author))
+        .extract_mailbox_communications(|mail| {
+            author_is_in_transaction_subtree(&mail.author, transaction_roots)
+        })
         .await;
     for message in messages {
         if message
@@ -741,7 +951,12 @@ async fn correct_intermediate_messages(
         {
             continue;
         }
-        let Some(thread_id) = child_by_path.get(&message.author).copied() else {
+        let Some(thread_id) = child_by_path.get(&message.author).copied().or_else(|| {
+            session
+                .services
+                .agent_control
+                .agent_id_for_path(&message.author)
+        }) else {
             continue;
         };
         let correction = InterAgentCommunication::new(
@@ -759,6 +974,20 @@ async fn correct_intermediate_messages(
             .send_inter_agent_communication(thread_id, correction, context)
             .await;
     }
+}
+
+fn author_is_in_transaction_subtree(author: &AgentPath, transaction_roots: &[AgentPath]) -> bool {
+    transaction_roots
+        .iter()
+        .any(|root| path_is_in_subtree(author, root))
+}
+
+fn path_is_in_subtree(candidate: &AgentPath, root: &AgentPath) -> bool {
+    candidate == root
+        || candidate
+            .as_str()
+            .strip_prefix(root.as_str())
+            .is_some_and(|suffix| suffix.starts_with('/'))
 }
 
 fn result_from_status(ordinal: usize, thread_id: ThreadId, status: AgentStatus) -> SpawnResult {

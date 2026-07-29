@@ -293,9 +293,12 @@ pub async fn inter_agent_communication(
     communication: InterAgentCommunication,
 ) {
     let trigger_turn = communication.trigger_turn;
+    let author = communication.author.clone();
     sess.input_queue
         .enqueue_mailbox_communication(communication)
         .await;
+    sess.input_queue
+        .complete_mailbox_submission(&sub_id, &author);
     crate::agent_communication::emit_agent_communication_receive(&sub_id);
     if trigger_turn {
         sess.maybe_start_turn_for_pending_work_with_sub_id(sub_id)

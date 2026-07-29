@@ -56,6 +56,7 @@ use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SessionConfiguredEvent;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
+use codex_protocol::protocol::Submission;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TurnAbortReason;
@@ -1167,6 +1168,29 @@ impl ThreadManagerState {
             log.push((thread_id, op.clone()));
         }
         thread.submit(op).await
+    }
+
+    pub(crate) async fn send_op_with_id(
+        &self,
+        thread_id: ThreadId,
+        submission_id: String,
+        op: Op,
+    ) -> CodexResult<String> {
+        let thread = self.get_thread(thread_id).await?;
+        if let Some(ops_log) = &self.ops_log
+            && let Ok(mut log) = ops_log.lock()
+        {
+            log.push((thread_id, op.clone()));
+        }
+        thread
+            .submit_with_id(Submission {
+                id: submission_id.clone(),
+                op,
+                client_user_message_id: None,
+                trace: None,
+            })
+            .await?;
+        Ok(submission_id)
     }
 
     /// Remove a thread from the manager by ID, returning it when present.
