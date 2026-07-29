@@ -107,10 +107,13 @@ impl ExperimentalFeaturesView {
             };
             let marker = if item.enabled { 'x' } else { ' ' };
             let name = match item.max_concurrent_threads_per_session {
-                Some(max_threads) => format!(
-                    "{prefix} [{marker}] {}  Max threads: {max_threads}",
-                    item.name
-                ),
+                Some(max_threads) => {
+                    let max_branches = max_threads.saturating_sub(1);
+                    format!(
+                        "{prefix} [{marker}] {}  Concurrent branch agents: {max_branches}",
+                        item.name
+                    )
+                }
                 None => format!("{prefix} [{marker}] {}", item.name),
             };
             rows.push(GenericDisplayRow {

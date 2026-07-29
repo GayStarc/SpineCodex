@@ -1,20 +1,21 @@
 ---
 source: tui/src/chatwidget/tests/popups_and_settings.rs
-assertion_line: 2901
 expression: popup
 ---
   Experimental features
   Changes are saved to config.toml and apply to new sessions.
 
-› [ ] JavaScript REPL              Enable a persistent Node-backed JavaScript
-                                   REPL for interactive website debugging and
-                                   other inline JavaScript execution
-                                   capabilities.
-  [x] Shell tool                   Allow the model to run shell commands.
-  [x] Spine spawn  Max threads: 4  Run differentiated Spine branches
-                                   concurrently and join their results. The
-                                   limit includes the parent thread. The
-                                   current session is unchanged; restart or
-                                   start a new session to apply.
+› [ ] JavaScript REPL                           Enable a persistent Node-
+                                                backed JavaScript REPL for
+                                                interactive website debugging
+                                                and other inline JavaScript
+                                                execution capabilities.
+  [x] Shell tool                                Allow the model to run shell
+                                                commands.
+  [x] Spine spawn  Concurrent branch agents: 3  Run differentiated Spine
+                                                branches concurrently and join
+                                                their results. Disabled by
+                                                default; changes apply to new
+                                                sessions.
 
   space toggle  ←/→ adjust  enter save for next session

@@ -2886,7 +2886,7 @@ async fn experimental_features_popup_snapshot() {
         ExperimentalFeatureItem {
             feature: Feature::SpineSpawn,
             name: "Spine spawn".to_string(),
-            description: "Run differentiated Spine branches concurrently and join their results. The limit includes the parent thread. The current session is unchanged; restart or start a new session to apply.".to_string(),
+            description: "Run differentiated Spine branches concurrently and join their results. Disabled by default; changes apply to new sessions.".to_string(),
             enabled: true,
             max_concurrent_threads_per_session: Some(4),
         },
@@ -2956,16 +2956,27 @@ async fn experimental_features_spine_spawn_capacity_adjusts_and_saves_on_exit() 
             name: "Spine spawn".to_string(),
             description: "Configure Spine spawn.".to_string(),
             enabled: true,
-            max_concurrent_threads_per_session: Some(4),
+            max_concurrent_threads_per_session: Some(6),
         }],
         chat.app_event_tx.clone(),
         crate::keymap::RuntimeKeymap::defaults().list,
     );
     chat.bottom_pane.show_view(Box::new(view));
 
+    let popup = render_bottom_popup(&chat, /*width*/ 80);
+    assert!(
+        popup.contains("Concurrent branch agents: 5"),
+        "expected persisted N=6 to render branch capacity B=5, got:\n{popup}"
+    );
+
     chat.handle_key_event(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
-    chat.handle_key_event(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
-    chat.handle_key_event(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+
+    let popup = render_bottom_popup(&chat, /*width*/ 80);
+    assert!(
+        popup.contains("Concurrent branch agents: 6"),
+        "expected one increment to render branch capacity B=6, got:\n{popup}"
+    );
+
     chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
     let event = std::iter::from_fn(|| rx.try_recv().ok())
@@ -2975,7 +2986,7 @@ async fn experimental_features_spine_spawn_capacity_adjusts_and_saves_on_exit() 
         event,
         AppEvent::UpdateFeatureFlags {
             updates,
-            spine_spawn_max_concurrent_threads_per_session: Some(5),
+            spine_spawn_max_concurrent_threads_per_session: Some(7),
         } if updates == vec![(Feature::SpineSpawn, true)]
     );
 }
@@ -2996,6 +3007,12 @@ async fn experimental_features_spine_spawn_capacity_stops_at_three_threads() {
         crate::keymap::RuntimeKeymap::defaults().list,
     );
     chat.bottom_pane.show_view(Box::new(view));
+
+    let popup = render_bottom_popup(&chat, /*width*/ 80);
+    assert!(
+        popup.contains("Concurrent branch agents: 2"),
+        "expected legacy N=1 to clamp to visible branch capacity B=2, got:\n{popup}"
+    );
 
     chat.handle_key_event(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
     chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -3042,6 +3059,14 @@ async fn experimental_popup_includes_active_spine_features_and_omits_removed_sta
     assert!(
         popup.contains("Spine spawn"),
         "expected Spine spawn to be shown in the experimental popup, got:\n{popup}"
+    );
+    assert!(
+        popup.contains("Concurrent branch agents: 3"),
+        "expected the default total N=4 to render branch capacity B=3, got:\n{popup}"
+    );
+    assert!(
+        !popup.contains("Max threads") && !popup.contains("includes the parent"),
+        "expected no internal total-thread terminology in the popup, got:\n{popup}"
     );
     assert!(
         !popup.contains("Spine status"),
