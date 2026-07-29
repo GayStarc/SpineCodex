@@ -882,6 +882,7 @@ pub(crate) enum AppEvent {
     /// Update feature flags and persist them to the top-level config.
     UpdateFeatureFlags {
         updates: Vec<(Feature, bool)>,
+        spine_spawn_max_concurrent_threads_per_session: Option<usize>,
     },
 
     /// Update memory settings and persist them to config.toml.

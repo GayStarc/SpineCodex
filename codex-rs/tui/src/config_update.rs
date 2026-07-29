@@ -35,6 +35,14 @@ pub(crate) fn replace_config_value(key_path: impl Into<String>, value: JsonValue
     }
 }
 
+pub(crate) fn upsert_config_value(key_path: impl Into<String>, value: JsonValue) -> ConfigEdit {
+    ConfigEdit {
+        key_path: key_path.into(),
+        value,
+        merge_strategy: MergeStrategy::Upsert,
+    }
+}
+
 pub(crate) fn clear_config_value(key_path: impl Into<String>) -> ConfigEdit {
     replace_config_value(key_path, JsonValue::Null)
 }
@@ -125,6 +133,19 @@ pub(crate) fn build_feature_enabled_edit(feature_key: &str, enabled: bool) -> Co
     } else {
         clear_config_value(key_path)
     }
+}
+
+pub(crate) fn build_spine_spawn_settings_edit(
+    enabled: bool,
+    max_concurrent_threads_per_session: usize,
+) -> ConfigEdit {
+    upsert_config_value(
+        "features.spine_spawn",
+        serde_json::json!({
+            "enabled": enabled,
+            "max_concurrent_threads_per_session": max_concurrent_threads_per_session,
+        }),
+    )
 }
 
 pub(crate) fn build_memory_settings_edits(

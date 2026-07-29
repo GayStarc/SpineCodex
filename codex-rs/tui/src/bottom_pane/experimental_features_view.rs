@@ -15,6 +15,7 @@ use crate::app_event_sender::AppEventSender;
 use crate::key_hint;
 use crate::key_hint::KeyBindingListExt;
 use crate::keymap::ListKeymap;
+use crate::keymap::primary_binding;
 use crate::render::Insets;
 use crate::render::RectExt as _;
 use crate::render::renderable::ColumnRenderable;
@@ -31,11 +32,14 @@ use super::selection_popup_common::GenericDisplayRow;
 use super::selection_popup_common::measure_rows_height;
 use super::selection_popup_common::render_rows;
 
+const MIN_SPINE_SPAWN_CONCURRENT_THREADS: usize = 3;
+
 pub(crate) struct ExperimentalFeatureItem {
     pub feature: Feature,
     pub name: String,
     pub description: String,
     pub enabled: bool,
+    pub max_concurrent_threads_per_session: Option<usize>,
 }
 
 pub(crate) struct ExperimentalFeaturesView {
@@ -50,15 +54,22 @@ pub(crate) struct ExperimentalFeaturesView {
 
 impl ExperimentalFeaturesView {
     pub(crate) fn new(
-        features: Vec<ExperimentalFeatureItem>,
+        mut features: Vec<ExperimentalFeatureItem>,
         app_event_tx: AppEventSender,
         keymap: ListKeymap,
     ) -> Self {
+        for item in &mut features {
+            if let Some(max_threads) = item.max_concurrent_threads_per_session.as_mut() {
+                *max_threads = (*max_threads).max(MIN_SPINE_SPAWN_CONCURRENT_THREADS);
+            }
+        }
+
         let mut header = ColumnRenderable::new();
         header.push(Line::from("Experimental features".bold()));
         header.push(Line::from(
-            "Toggle experimental features. Changes are saved to config.toml.".dim(),
+            "Changes are saved to config.toml and apply to new sessions.".dim(),
         ));
+        let footer_hint = experimental_popup_hint_line(&keymap);
 
         let mut view = Self {
             features,
@@ -66,7 +77,7 @@ impl ExperimentalFeaturesView {
             complete: false,
             app_event_tx,
             header: Box::new(header),
-            footer_hint: experimental_popup_hint_line(),
+            footer_hint,
             keymap,
         };
         view.initialize_selection();
@@ -95,7 +106,13 @@ impl ExperimentalFeaturesView {
                 ' '
             };
             let marker = if item.enabled { 'x' } else { ' ' };
-            let name = format!("{prefix} [{marker}] {}", item.name);
+            let name = match item.max_concurrent_threads_per_session {
+                Some(max_threads) => format!(
+                    "{prefix} [{marker}] {}  Max threads: {max_threads}",
+                    item.name
+                ),
+                None => format!("{prefix} [{marker}] {}", item.name),
+            };
             rows.push(GenericDisplayRow {
                 name,
                 description: Some(item.description.clone()),
@@ -158,6 +175,38 @@ impl ExperimentalFeaturesView {
         }
     }
 
+    fn decrement_selected_capacity(&mut self) {
+        let Some(selected_idx) = self.state.selected_idx else {
+            return;
+        };
+        let Some(max_threads) = self
+            .features
+            .get_mut(selected_idx)
+            .and_then(|item| item.max_concurrent_threads_per_session.as_mut())
+        else {
+            return;
+        };
+        if *max_threads > MIN_SPINE_SPAWN_CONCURRENT_THREADS {
+            *max_threads -= 1;
+        }
+    }
+
+    fn increment_selected_capacity(&mut self) {
+        let Some(selected_idx) = self.state.selected_idx else {
+            return;
+        };
+        let Some(max_threads) = self
+            .features
+            .get_mut(selected_idx)
+            .and_then(|item| item.max_concurrent_threads_per_session.as_mut())
+        else {
+            return;
+        };
+        if let Some(next) = max_threads.checked_add(1) {
+            *max_threads = next;
+        }
+    }
+
     fn rows_width(total_width: u16) -> u16 {
         total_width.saturating_sub(2)
     }
@@ -172,6 +221,12 @@ impl BottomPaneView for ExperimentalFeaturesView {
             _ if self.keymap.page_down.is_pressed(key_event) => self.page_down(),
             _ if self.keymap.jump_top.is_pressed(key_event) => self.jump_top(),
             _ if self.keymap.jump_bottom.is_pressed(key_event) => self.jump_bottom(),
+            _ if self.keymap.move_left.is_pressed(key_event) => {
+                self.decrement_selected_capacity();
+            }
+            _ if self.keymap.move_right.is_pressed(key_event) => {
+                self.increment_selected_capacity();
+            }
             KeyEvent {
                 code: KeyCode::Char(' '),
                 modifiers: KeyModifiers::NONE,
@@ -198,8 +253,16 @@ impl BottomPaneView for ExperimentalFeaturesView {
                 .iter()
                 .map(|item| (item.feature, item.enabled))
                 .collect();
-            self.app_event_tx
-                .send(AppEvent::UpdateFeatureFlags { updates });
+            let spine_spawn_max_concurrent_threads_per_session = self
+                .features
+                .iter()
+                .find(|item| item.feature == Feature::SpineSpawn)
+                .and_then(|item| item.max_concurrent_threads_per_session)
+                .map(|max_threads| max_threads.max(MIN_SPINE_SPAWN_CONCURRENT_THREADS));
+            self.app_event_tx.send(AppEvent::UpdateFeatureFlags {
+                updates,
+                spine_spawn_max_concurrent_threads_per_session,
+            });
         }
 
         self.complete = true;
@@ -282,12 +345,21 @@ impl Renderable for ExperimentalFeaturesView {
     }
 }
 
-fn experimental_popup_hint_line() -> Line<'static> {
+fn experimental_popup_hint_line(keymap: &ListKeymap) -> Line<'static> {
+    let move_left =
+        primary_binding(&keymap.move_left).unwrap_or_else(|| key_hint::plain(KeyCode::Left));
+    let move_right =
+        primary_binding(&keymap.move_right).unwrap_or_else(|| key_hint::plain(KeyCode::Right));
+    let accept = primary_binding(&keymap.accept).unwrap_or_else(|| key_hint::plain(KeyCode::Enter));
+
     Line::from(vec![
-        "Press ".into(),
         key_hint::plain(KeyCode::Char(' ')).into(),
-        " to select or ".into(),
-        key_hint::plain(KeyCode::Enter).into(),
-        " to save for next conversation".into(),
+        " toggle  ".into(),
+        move_left.into(),
+        "/".into(),
+        move_right.into(),
+        " adjust  ".into(),
+        accept.into(),
+        " save for next session".into(),
     ])
 }

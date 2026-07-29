@@ -95,12 +95,20 @@ impl ChatWidget {
             .iter()
             .filter_map(|spec| {
                 let name = spec.stage.experimental_menu_name()?;
-                let description = spec.stage.experimental_menu_description()?;
+                let description = if spec.id == Feature::SpineSpawn {
+                    "Run differentiated Spine branches concurrently and join their results. The \
+                     limit includes the parent thread. The current session is unchanged; restart \
+                     or start a new session to apply."
+                } else {
+                    spec.stage.experimental_menu_description()?
+                };
                 Some(ExperimentalFeatureItem {
                     feature: spec.id,
                     name: name.to_string(),
                     description: description.to_string(),
                     enabled: self.config.features.enabled(spec.id),
+                    max_concurrent_threads_per_session: (spec.id == Feature::SpineSpawn)
+                        .then_some(self.config.spine_spawn.max_concurrent_threads_per_session),
                 })
             })
             .collect();

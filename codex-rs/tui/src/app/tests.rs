@@ -3235,7 +3235,8 @@ async fn open_agent_picker_prompts_to_enable_multi_agent_when_disabled() -> Resu
 
     assert_matches!(
         app_event_rx.try_recv(),
-        Ok(AppEvent::UpdateFeatureFlags { updates }) if updates == vec![(Feature::Collab, true)]
+        Ok(AppEvent::UpdateFeatureFlags { updates, .. })
+            if updates == vec![(Feature::Collab, true)]
     );
     let cell = match app_event_rx.try_recv() {
         Ok(AppEvent::InsertHistoryCell(cell)) => cell,
@@ -3248,6 +3249,59 @@ async fn open_agent_picker_prompts_to_enable_multi_agent_when_disabled() -> Resu
         .collect::<Vec<_>>()
         .join("\n");
     assert!(rendered.contains("Subagents will be enabled in the next session."));
+    Ok(())
+}
+
+#[tokio::test]
+async fn update_spine_spawn_settings_persists_structured_static_config() -> Result<()> {
+    let (mut app, _app_event_rx, mut op_rx) = Box::pin(make_test_app_with_channels()).await;
+    let codex_home = tempdir()?;
+    app.config.codex_home = codex_home.path().to_path_buf().abs();
+    std::fs::write(
+        codex_home.path().join("config.toml"),
+        "[features]\nspine_spawn = true\n",
+    )?;
+    let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(&app.config)).await?;
+
+    Box::pin(app.update_feature_flags(
+        &mut app_server,
+        vec![(Feature::SpineSpawn, true)],
+        Some(10),
+    ))
+    .await;
+
+    assert_eq!(
+        app.config.spine_spawn.max_concurrent_threads_per_session,
+        10
+    );
+    assert_eq!(
+        app.chat_widget
+            .config_ref()
+            .spine_spawn
+            .max_concurrent_threads_per_session,
+        10
+    );
+    assert!(
+        op_rx.try_recv().is_err(),
+        "static SpineSpawn settings must not emit a current-session operation"
+    );
+
+    let config = std::fs::read_to_string(codex_home.path().join("config.toml"))?;
+    let config_value = toml::from_str::<TomlValue>(&config)?;
+    let spine_spawn = config_value
+        .as_table()
+        .and_then(|table| table.get("features"))
+        .and_then(TomlValue::as_table)
+        .and_then(|features| features.get("spine_spawn"))
+        .and_then(TomlValue::as_table)
+        .expect("SpineSpawn bool should be upgraded to a table");
+    assert_eq!(spine_spawn.get("enabled"), Some(&TomlValue::Boolean(true)));
+    assert_eq!(
+        spine_spawn.get("max_concurrent_threads_per_session"),
+        Some(&TomlValue::Integer(10))
+    );
+
+    app_server.shutdown().await?;
     Ok(())
 }
 
@@ -3468,8 +3522,12 @@ async fn update_feature_flags_enabling_guardian_selects_auto_review() -> Result<
     let auto_review = auto_review_mode();
     let mut app_server = start_config_write_test_app_server(&app).await?;
 
-    app.update_feature_flags(&mut app_server, vec![(Feature::GuardianApproval, true)])
-        .await;
+    app.update_feature_flags(
+        &mut app_server,
+        vec![(Feature::GuardianApproval, true)],
+        None,
+    )
+    .await;
 
     assert!(app.config.features.enabled(Feature::GuardianApproval));
     assert!(
@@ -3598,8 +3656,12 @@ async fn update_feature_flags_disabling_guardian_clears_review_policy_and_restor
         ))?;
     let mut app_server = start_config_write_test_app_server(&app).await?;
 
-    app.update_feature_flags(&mut app_server, vec![(Feature::GuardianApproval, false)])
-        .await;
+    app.update_feature_flags(
+        &mut app_server,
+        vec![(Feature::GuardianApproval, false)],
+        None,
+    )
+    .await;
 
     assert!(!app.config.features.enabled(Feature::GuardianApproval));
     assert!(
@@ -3676,8 +3738,12 @@ async fn update_feature_flags_enabling_guardian_overrides_explicit_manual_review
         .set_approvals_reviewer(ApprovalsReviewer::User);
     let mut app_server = start_config_write_test_app_server(&app).await?;
 
-    app.update_feature_flags(&mut app_server, vec![(Feature::GuardianApproval, true)])
-        .await;
+    app.update_feature_flags(
+        &mut app_server,
+        vec![(Feature::GuardianApproval, true)],
+        None,
+    )
+    .await;
 
     assert!(app.config.features.enabled(Feature::GuardianApproval));
     assert_eq!(
@@ -3750,8 +3816,12 @@ async fn update_feature_flags_disabling_guardian_clears_manual_review_policy_wit
         .set_approvals_reviewer(ApprovalsReviewer::User);
     let mut app_server = start_config_write_test_app_server(&app).await?;
 
-    app.update_feature_flags(&mut app_server, vec![(Feature::GuardianApproval, false)])
-        .await;
+    app.update_feature_flags(
+        &mut app_server,
+        vec![(Feature::GuardianApproval, false)],
+        None,
+    )
+    .await;
 
     assert!(!app.config.features.enabled(Feature::GuardianApproval));
     assert_eq!(app.config.approvals_reviewer, ApprovalsReviewer::User);

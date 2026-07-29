@@ -1608,8 +1608,13 @@ disabled_tools = [
     let mut next_config = load_latest_config_for_session(&session).await;
     next_config.model = Some("gpt-5.4".to_string());
     next_config.notify = Some(vec!["echo".to_string()]);
+    next_config.spine_spawn.max_concurrent_threads_per_session += 7;
     assert!(!original.features.enabled(Feature::SpineSpawn));
     assert!(next_config.features.enabled(Feature::SpineSpawn));
+    assert_ne!(
+        original.spine_spawn.max_concurrent_threads_per_session,
+        next_config.spine_spawn.max_concurrent_threads_per_session
+    );
     assert!(!original.features.enabled(Feature::SpineStatus));
     assert!(!next_config.features.enabled(Feature::SpineStatus));
 
@@ -1636,6 +1641,10 @@ disabled_tools = [
     assert_eq!(config.notify, original.notify);
     assert!(!config.features.enabled(Feature::SpineSpawn));
     assert!(!config.features.enabled(Feature::SpineStatus));
+    assert_eq!(
+        config.spine_spawn.max_concurrent_threads_per_session,
+        original.spine_spawn.max_concurrent_threads_per_session
+    );
     assert_eq!(
         config.tool_suggest.disabled_tools,
         vec![

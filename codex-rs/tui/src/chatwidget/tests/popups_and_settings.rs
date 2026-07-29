@@ -1157,6 +1157,7 @@ async fn plugins_popup_admin_disabled_installed_plugin_has_no_toggle_hint() {
     while rx.try_recv().is_ok() {}
     let before = render_bottom_popup(&chat, /*width*/ 120);
     chat.handle_key_event(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+    chat.handle_key_event(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
     let after = render_bottom_popup(&chat, /*width*/ 120);
     assert!(
         rx.try_recv().is_err(),
@@ -2873,12 +2874,21 @@ async fn experimental_features_popup_snapshot() {
             name: "JavaScript REPL".to_string(),
             description: "Enable a persistent Node-backed JavaScript REPL for interactive website debugging and other inline JavaScript execution capabilities.".to_string(),
             enabled: false,
+            max_concurrent_threads_per_session: None,
         },
         ExperimentalFeatureItem {
             feature: Feature::ShellTool,
             name: "Shell tool".to_string(),
             description: "Allow the model to run shell commands.".to_string(),
             enabled: true,
+            max_concurrent_threads_per_session: None,
+        },
+        ExperimentalFeatureItem {
+            feature: Feature::SpineSpawn,
+            name: "Spine spawn".to_string(),
+            description: "Run differentiated Spine branches concurrently and join their results. The limit includes the parent thread. The current session is unchanged; restart or start a new session to apply.".to_string(),
+            enabled: true,
+            max_concurrent_threads_per_session: Some(4),
         },
     ];
     let view = ExperimentalFeaturesView::new(
@@ -2903,6 +2913,7 @@ async fn experimental_features_toggle_saves_on_exit() {
             name: "JavaScript REPL".to_string(),
             description: "Enable a persistent Node-backed JavaScript REPL for interactive website debugging and other inline JavaScript execution capabilities.".to_string(),
             enabled: false,
+            max_concurrent_threads_per_session: None,
         }],
         chat.app_event_tx.clone(),
         crate::keymap::RuntimeKeymap::defaults().list,
@@ -2922,8 +2933,10 @@ async fn experimental_features_toggle_saves_on_exit() {
     while let Ok(event) = rx.try_recv() {
         if let AppEvent::UpdateFeatureFlags {
             updates: event_updates,
+            spine_spawn_max_concurrent_threads_per_session,
         } = event
         {
+            assert_eq!(spine_spawn_max_concurrent_threads_per_session, None);
             updates = Some(event_updates);
             break;
         }
@@ -2931,6 +2944,72 @@ async fn experimental_features_toggle_saves_on_exit() {
 
     let updates = updates.expect("expected UpdateFeatureFlags event");
     assert_eq!(updates, vec![(expected_feature, true)]);
+}
+
+#[tokio::test]
+async fn experimental_features_spine_spawn_capacity_adjusts_and_saves_on_exit() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    let view = ExperimentalFeaturesView::new(
+        vec![ExperimentalFeatureItem {
+            feature: Feature::SpineSpawn,
+            name: "Spine spawn".to_string(),
+            description: "Configure Spine spawn.".to_string(),
+            enabled: true,
+            max_concurrent_threads_per_session: Some(4),
+        }],
+        chat.app_event_tx.clone(),
+        crate::keymap::RuntimeKeymap::defaults().list,
+    );
+    chat.bottom_pane.show_view(Box::new(view));
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    chat.handle_key_event(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    chat.handle_key_event(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let event = std::iter::from_fn(|| rx.try_recv().ok())
+        .find(|event| matches!(event, AppEvent::UpdateFeatureFlags { .. }))
+        .expect("expected UpdateFeatureFlags event");
+    assert_matches!(
+        event,
+        AppEvent::UpdateFeatureFlags {
+            updates,
+            spine_spawn_max_concurrent_threads_per_session: Some(5),
+        } if updates == vec![(Feature::SpineSpawn, true)]
+    );
+}
+
+#[tokio::test]
+async fn experimental_features_spine_spawn_capacity_stops_at_three_threads() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    let view = ExperimentalFeaturesView::new(
+        vec![ExperimentalFeatureItem {
+            feature: Feature::SpineSpawn,
+            name: "Spine spawn".to_string(),
+            description: "Configure Spine spawn.".to_string(),
+            enabled: false,
+            max_concurrent_threads_per_session: Some(1),
+        }],
+        chat.app_event_tx.clone(),
+        crate::keymap::RuntimeKeymap::defaults().list,
+    );
+    chat.bottom_pane.show_view(Box::new(view));
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let event = std::iter::from_fn(|| rx.try_recv().ok())
+        .find(|event| matches!(event, AppEvent::UpdateFeatureFlags { .. }))
+        .expect("expected UpdateFeatureFlags event");
+    assert_matches!(
+        event,
+        AppEvent::UpdateFeatureFlags {
+            updates,
+            spine_spawn_max_concurrent_threads_per_session: Some(3),
+        } if updates == vec![(Feature::SpineSpawn, false)]
+    );
 }
 
 #[tokio::test]
@@ -2993,7 +3072,8 @@ async fn multi_agent_enable_prompt_updates_feature_and_emits_notice() {
 
     assert_matches!(
         rx.try_recv(),
-        Ok(AppEvent::UpdateFeatureFlags { updates }) if updates == vec![(Feature::Collab, true)]
+        Ok(AppEvent::UpdateFeatureFlags { updates, .. })
+            if updates == vec![(Feature::Collab, true)]
     );
     let cell = match rx.try_recv() {
         Ok(AppEvent::InsertHistoryCell(cell)) => cell,
@@ -3024,7 +3104,8 @@ async fn memories_enable_prompt_updates_feature_without_notice() {
 
     assert_matches!(
         rx.try_recv(),
-        Ok(AppEvent::UpdateFeatureFlags { updates }) if updates == vec![(Feature::MemoryTool, true)]
+        Ok(AppEvent::UpdateFeatureFlags { updates, .. })
+            if updates == vec![(Feature::MemoryTool, true)]
     );
     assert!(
         rx.try_recv().is_err(),
