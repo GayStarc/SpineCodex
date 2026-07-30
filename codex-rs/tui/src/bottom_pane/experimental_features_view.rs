@@ -7,6 +7,7 @@ use ratatui::layout::Layout;
 use ratatui::layout::Rect;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
+use ratatui::text::Span;
 use ratatui::widgets::Block;
 use ratatui::widgets::Widget;
 
@@ -48,7 +49,6 @@ pub(crate) struct ExperimentalFeaturesView {
     complete: bool,
     app_event_tx: AppEventSender,
     header: Box<dyn Renderable>,
-    footer_hint: Line<'static>,
     keymap: ListKeymap,
 }
 
@@ -69,7 +69,6 @@ impl ExperimentalFeaturesView {
         header.push(Line::from(
             "Changes are saved to config.toml and apply to new sessions.".dim(),
         ));
-        let footer_hint = experimental_popup_hint_line(&keymap);
 
         let mut view = Self {
             features,
@@ -77,7 +76,6 @@ impl ExperimentalFeaturesView {
             complete: false,
             app_event_tx,
             header: Box::new(header),
-            footer_hint,
             keymap,
         };
         view.initialize_selection();
@@ -94,6 +92,13 @@ impl ExperimentalFeaturesView {
 
     fn visible_len(&self) -> usize {
         self.features.len()
+    }
+
+    fn selected_capacity_is_adjustable(&self) -> bool {
+        self.state
+            .selected_idx
+            .and_then(|idx| self.features.get(idx))
+            .is_some_and(|item| item.max_concurrent_threads_per_session.is_some())
     }
 
     fn build_rows(&self) -> Vec<GenericDisplayRow> {
@@ -329,7 +334,9 @@ impl Renderable for ExperimentalFeaturesView {
             width: footer_area.width.saturating_sub(2),
             height: footer_area.height,
         };
-        self.footer_hint.clone().dim().render(hint_area, buf);
+        experimental_popup_hint_line(&self.keymap, self.selected_capacity_is_adjustable())
+            .dim()
+            .render(hint_area, buf);
     }
 
     fn desired_height(&self, width: u16) -> u16 {
@@ -348,21 +355,75 @@ impl Renderable for ExperimentalFeaturesView {
     }
 }
 
-fn experimental_popup_hint_line(keymap: &ListKeymap) -> Line<'static> {
-    let move_left =
-        primary_binding(&keymap.move_left).unwrap_or_else(|| key_hint::plain(KeyCode::Left));
-    let move_right =
-        primary_binding(&keymap.move_right).unwrap_or_else(|| key_hint::plain(KeyCode::Right));
+fn experimental_popup_hint_line(
+    keymap: &ListKeymap,
+    show_capacity_controls: bool,
+) -> Line<'static> {
     let accept = primary_binding(&keymap.accept).unwrap_or_else(|| key_hint::plain(KeyCode::Enter));
 
-    Line::from(vec![
+    let mut spans: Vec<Span<'static>> = vec![
         key_hint::plain(KeyCode::Char(' ')).into(),
         " toggle  ".into(),
-        move_left.into(),
-        "/".into(),
-        move_right.into(),
-        " adjust  ".into(),
-        accept.into(),
-        " save for next session".into(),
-    ])
+    ];
+    if show_capacity_controls
+        && let (Some(move_left), Some(move_right)) = (
+            primary_binding(&keymap.move_left),
+            primary_binding(&keymap.move_right),
+        )
+    {
+        spans.extend([
+            move_left.into(),
+            "/".into(),
+            move_right.into(),
+            " branch agents  ".into(),
+        ]);
+    }
+    spans.extend([accept.into(), " save for next session".into()]);
+    Line::from(spans)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn line_text(line: Line<'_>) -> String {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
+    }
+
+    #[test]
+    fn capacity_hint_uses_configured_horizontal_bindings() {
+        let mut keymap = crate::keymap::RuntimeKeymap::defaults().list;
+        keymap.move_left = vec![key_hint::plain(KeyCode::Char('h'))];
+        keymap.move_right = vec![key_hint::plain(KeyCode::Char('l'))];
+
+        let hint = line_text(experimental_popup_hint_line(&keymap, true));
+
+        assert!(
+            hint.contains("h/l branch agents"),
+            "expected configured horizontal bindings in hint, got {hint:?}"
+        );
+    }
+
+    #[test]
+    fn capacity_hint_requires_both_horizontal_bindings() {
+        let mut keymap = crate::keymap::RuntimeKeymap::defaults().list;
+        keymap.move_left.clear();
+        let missing_left = line_text(experimental_popup_hint_line(&keymap, true));
+
+        keymap = crate::keymap::RuntimeKeymap::defaults().list;
+        keymap.move_right.clear();
+        let missing_right = line_text(experimental_popup_hint_line(&keymap, true));
+
+        assert!(
+            !missing_left.contains("branch agents"),
+            "expected no capacity hint without a left binding, got {missing_left:?}"
+        );
+        assert!(
+            !missing_right.contains("branch agents"),
+            "expected no capacity hint without a right binding, got {missing_right:?}"
+        );
+    }
 }

@@ -2886,7 +2886,7 @@ async fn experimental_features_popup_snapshot() {
         ExperimentalFeatureItem {
             feature: Feature::SpineSpawn,
             name: "Spine spawn".to_string(),
-            description: "Run differentiated Spine branches concurrently and join their results. Disabled by default; changes apply to new sessions.".to_string(),
+            description: "Run differentiated Spine branches concurrently and join their results. Select this row to adjust the number of concurrent branch agents with the configured left/right controls. Disabled by default; changes apply to new sessions.".to_string(),
             enabled: true,
             max_concurrent_threads_per_session: Some(4),
         },
@@ -2967,6 +2967,10 @@ async fn experimental_features_spine_spawn_capacity_adjusts_and_saves_on_exit() 
     assert!(
         popup.contains("Concurrent branch agents: 5"),
         "expected persisted N=6 to render branch capacity B=5, got:\n{popup}"
+    );
+    assert!(
+        popup.contains("←/→ branch agents"),
+        "expected selected Spine spawn controls to explain capacity adjustment, got:\n{popup}"
     );
 
     chat.handle_key_event(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));

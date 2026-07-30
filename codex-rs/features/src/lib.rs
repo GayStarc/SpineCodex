@@ -1293,7 +1293,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         key: "spine_spawn",
         stage: Stage::Experimental {
             name: "Spine spawn",
-            menu_description: "Run differentiated Spine branches concurrently and join their results. Disabled by default; changes apply to new sessions.",
+            menu_description: "Run differentiated Spine branches concurrently and join their results. Select this row to adjust the number of concurrent branch agents with the configured left/right controls. Disabled by default; changes apply to new sessions.",
             announcement: "NEW: Spine spawn can be enabled in /experimental.",
         },
         default_enabled: false,
