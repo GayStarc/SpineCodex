@@ -2973,6 +2973,12 @@ async fn experimental_features_spine_spawn_capacity_adjusts_and_saves_on_exit() 
         "expected selected Spine spawn controls to explain capacity adjustment, got:\n{popup}"
     );
 
+    let narrow_popup = render_bottom_popup(&chat, /*width*/ 60);
+    assert!(
+        narrow_popup.contains("←/→ branch agents  enter save"),
+        "expected the capacity controls and compact save hint to fit at width 60, got:\n{narrow_popup}"
+    );
+
     chat.handle_key_event(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
 
     let popup = render_bottom_popup(&chat, /*width*/ 80);

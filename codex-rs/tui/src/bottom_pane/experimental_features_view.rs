@@ -334,9 +334,13 @@ impl Renderable for ExperimentalFeaturesView {
             width: footer_area.width.saturating_sub(2),
             height: footer_area.height,
         };
-        experimental_popup_hint_line(&self.keymap, self.selected_capacity_is_adjustable())
-            .dim()
-            .render(hint_area, buf);
+        experimental_popup_hint_line(
+            &self.keymap,
+            self.selected_capacity_is_adjustable(),
+            hint_area.width,
+        )
+        .dim()
+        .render(hint_area, buf);
     }
 
     fn desired_height(&self, width: u16) -> u16 {
@@ -358,27 +362,57 @@ impl Renderable for ExperimentalFeaturesView {
 fn experimental_popup_hint_line(
     keymap: &ListKeymap,
     show_capacity_controls: bool,
+    available_width: u16,
 ) -> Line<'static> {
     let accept = primary_binding(&keymap.accept).unwrap_or_else(|| key_hint::plain(KeyCode::Enter));
+    let toggle: Vec<Span<'static>> =
+        vec![key_hint::plain(KeyCode::Char(' ')).into(), " toggle".into()];
+    let save: Vec<Span<'static>> = vec![accept.into(), " save".into()];
+    let save_for_next_session: Vec<Span<'static>> =
+        vec![accept.into(), " save for next session".into()];
+    let mut candidates = Vec::new();
 
-    let mut spans: Vec<Span<'static>> = vec![
-        key_hint::plain(KeyCode::Char(' ')).into(),
-        " toggle  ".into(),
-    ];
     if show_capacity_controls
         && let (Some(move_left), Some(move_right)) = (
             primary_binding(&keymap.move_left),
             primary_binding(&keymap.move_right),
         )
     {
-        spans.extend([
-            move_left.into(),
-            "/".into(),
-            move_right.into(),
-            " branch agents  ".into(),
+        let binding_pair: Vec<Span<'static>> =
+            vec![move_left.into(), "/".into(), move_right.into()];
+        let mut capacity = binding_pair.clone();
+        capacity.push(" branch agents".into());
+
+        candidates.extend([
+            join_hint_groups(&[&toggle, &capacity, &save_for_next_session]),
+            join_hint_groups(&[&toggle, &capacity, &save]),
+            join_hint_groups(&[&capacity, &save]),
+            Line::from(capacity),
+            Line::from(binding_pair),
         ]);
     }
-    spans.extend([accept.into(), " save for next session".into()]);
+
+    candidates.extend([
+        join_hint_groups(&[&toggle, &save_for_next_session]),
+        join_hint_groups(&[&toggle, &save]),
+        Line::from(toggle),
+        Line::from(save),
+        Line::default(),
+    ]);
+    candidates
+        .into_iter()
+        .find(|hint| hint.width() <= usize::from(available_width))
+        .unwrap_or_default()
+}
+
+fn join_hint_groups(groups: &[&[Span<'static>]]) -> Line<'static> {
+    let mut spans = Vec::new();
+    for group in groups {
+        if !spans.is_empty() {
+            spans.push("  ".into());
+        }
+        spans.extend_from_slice(group);
+    }
     Line::from(spans)
 }
 
@@ -399,7 +433,7 @@ mod tests {
         keymap.move_left = vec![key_hint::plain(KeyCode::Char('h'))];
         keymap.move_right = vec![key_hint::plain(KeyCode::Char('l'))];
 
-        let hint = line_text(experimental_popup_hint_line(&keymap, true));
+        let hint = line_text(experimental_popup_hint_line(&keymap, true, u16::MAX));
 
         assert!(
             hint.contains("h/l branch agents"),
@@ -411,11 +445,11 @@ mod tests {
     fn capacity_hint_requires_both_horizontal_bindings() {
         let mut keymap = crate::keymap::RuntimeKeymap::defaults().list;
         keymap.move_left.clear();
-        let missing_left = line_text(experimental_popup_hint_line(&keymap, true));
+        let missing_left = line_text(experimental_popup_hint_line(&keymap, true, u16::MAX));
 
         keymap = crate::keymap::RuntimeKeymap::defaults().list;
         keymap.move_right.clear();
-        let missing_right = line_text(experimental_popup_hint_line(&keymap, true));
+        let missing_right = line_text(experimental_popup_hint_line(&keymap, true, u16::MAX));
 
         assert!(
             !missing_left.contains("branch agents"),
@@ -424,6 +458,61 @@ mod tests {
         assert!(
             !missing_right.contains("branch agents"),
             "expected no capacity hint without a right binding, got {missing_right:?}"
+        );
+    }
+
+    #[test]
+    fn experimental_hint_compacts_at_sixty_columns() {
+        let hint =
+            experimental_popup_hint_line(&crate::keymap::RuntimeKeymap::defaults().list, true, 58);
+        let hint_text = line_text(hint.clone());
+
+        assert!(
+            hint.width() <= 58,
+            "expected hint to fit, got {hint_text:?}"
+        );
+        assert!(
+            hint_text.contains("branch agents"),
+            "expected compact hint to retain the capacity control, got {hint_text:?}"
+        );
+        assert!(
+            hint_text.ends_with("enter save"),
+            "expected compact save label, got {hint_text:?}"
+        );
+    }
+
+    #[test]
+    fn experimental_hint_never_exceeds_available_width() {
+        let mut keymaps = vec![crate::keymap::RuntimeKeymap::defaults().list];
+        let mut modified = crate::keymap::RuntimeKeymap::defaults().list;
+        modified.move_left = vec![key_hint::ctrl_alt(KeyCode::Char('h'))];
+        modified.move_right = vec![key_hint::ctrl_alt(KeyCode::Char('l'))];
+        keymaps.push(modified);
+
+        for keymap in keymaps {
+            for available_width in 0..=80 {
+                let hint = experimental_popup_hint_line(&keymap, true, available_width);
+                assert!(
+                    hint.width() <= usize::from(available_width),
+                    "hint width {} exceeded available width {available_width}: {:?}",
+                    hint.width(),
+                    line_text(hint)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn experimental_hint_prioritizes_capacity_bindings_at_tiny_widths() {
+        let keymap = crate::keymap::RuntimeKeymap::defaults().list;
+
+        assert_eq!(
+            line_text(experimental_popup_hint_line(&keymap, true, 3)),
+            "←/→"
+        );
+        assert!(
+            line_text(experimental_popup_hint_line(&keymap, true, 2)).is_empty(),
+            "expected no partial or misleading binding at width 2"
         );
     }
 }
