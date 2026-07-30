@@ -88,6 +88,7 @@ clap = { workspace = true, features = ["derive"] }
 futures = { workspace = true }
 flate2 = { workspace = true }
 image = { workspace = true, features = ["png"] }
+libc = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 tempfile = { workspace = true }

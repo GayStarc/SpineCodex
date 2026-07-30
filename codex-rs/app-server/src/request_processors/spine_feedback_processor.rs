@@ -1,11 +1,13 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fs::File;
+use std::fs::OpenOptions;
 use std::io;
 use std::io::BufRead;
 use std::io::BufReader;
 use std::io::Cursor;
 use std::io::Write;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -18,6 +20,7 @@ use codex_app_server_protocol::SpineFeedbackScreenshot;
 use codex_app_server_protocol::SpineFeedbackUploadParams;
 use codex_app_server_protocol::SpineFeedbackUploadResponse;
 use codex_core::RolloutDebugRedactor;
+use codex_core::RolloutDebugRedactorError;
 use codex_core::StateDbHandle;
 use codex_core::ThreadManager;
 use codex_core::config::Config;
@@ -31,7 +34,14 @@ use codex_feedback::upload_spine_feedback;
 use codex_protocol::ThreadId;
 use flate2::Compression;
 use flate2::GzBuilder;
+use image::DynamicImage;
+use image::ImageDecoder;
+use image::ImageEncoder;
 use image::ImageFormat;
+use image::ImageReader;
+use image::Limits;
+use image::RgbaImage;
+use image::codecs::png::PngEncoder;
 use serde::Serialize;
 use serde_json::Value;
 use thiserror::Error;
@@ -49,6 +59,7 @@ const MAX_SCREENSHOT_BYTES: usize = 5 * 1024 * 1024;
 const MAX_SCREENSHOT_TOTAL_BYTES: usize = 10 * 1024 * 1024;
 const MAX_SCREENSHOT_SIDE: u32 = 8192;
 const MAX_SCREENSHOT_PIXELS: u64 = 16_000_000;
+const MAX_SCREENSHOT_DECODE_ALLOC_BYTES: u64 = MAX_SCREENSHOT_PIXELS * 8;
 const MAX_SCREENSHOT_BASE64_BYTES: usize = ((MAX_SCREENSHOT_BYTES + 2) / 3) * 4 + 4;
 const MAX_SOURCE_LINE_BYTES: usize = 8 * 1024 * 1024;
 const ROLLOUT_READER_CAPACITY: usize = 64 * 1024;
@@ -245,14 +256,36 @@ async fn capture_rollout_sources(
 }
 
 async fn capture_path(path: PathBuf) -> CapturedSource {
-    match tokio::fs::metadata(&path).await {
-        Ok(metadata) if metadata.is_file() => CapturedSource::Ready {
-            path,
-            captured_bytes: metadata.len(),
-        },
-        Ok(_) => CapturedSource::Unreadable,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => CapturedSource::Missing,
-        Err(_) => CapturedSource::Unreadable,
+    match tokio::task::spawn_blocking(move || open_rollout_source(&path)).await {
+        Ok(source) => source,
+        Err(_) => CapturedSource::Unavailable,
+    }
+}
+
+fn open_rollout_source(path: &Path) -> CapturedSource {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+
+        options.custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW);
+    }
+
+    let file = match options.open(path) {
+        Ok(file) => file,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return CapturedSource::Missing,
+        Err(_) => return CapturedSource::Unreadable,
+    };
+    let Ok(metadata) = file.metadata() else {
+        return CapturedSource::Unreadable;
+    };
+    if !metadata.is_file() {
+        return CapturedSource::Unreadable;
+    }
+    CapturedSource::Ready {
+        file,
+        captured_bytes: metadata.len(),
     }
 }
 
@@ -264,7 +297,7 @@ struct CapturedThread {
 
 #[derive(Debug)]
 enum CapturedSource {
-    Ready { path: PathBuf, captured_bytes: u64 },
+    Ready { file: File, captured_bytes: u64 },
     Missing,
     FlushFailed,
     Unavailable,
@@ -317,23 +350,19 @@ struct RolloutDebugThreadRecord {
 
 fn build_rollout_debug_attachment(
     root_thread_id: ThreadId,
-    mut captures: Vec<CapturedThread>,
+    captures: Vec<CapturedThread>,
     parent_thread_ids: HashMap<ThreadId, ThreadId>,
     output_limit: usize,
     source_line_limit: usize,
 ) -> Result<Vec<u8>, BundleBuildError> {
-    preflight_rollout_sources(&mut captures);
-
     let mut redactor = RolloutDebugRedactor::default();
-    let local_thread_ids = captures
-        .iter()
-        .map(|capture| {
-            (
-                capture.thread_id,
-                redactor.register_thread_id(&capture.thread_id.to_string()),
-            )
-        })
-        .collect::<HashMap<_, _>>();
+    let mut local_thread_ids = HashMap::with_capacity(captures.len());
+    for capture in &captures {
+        let local_id = redactor
+            .register_thread_id(&capture.thread_id.to_string())
+            .map_err(BundleBuildError::Redaction)?;
+        local_thread_ids.insert(capture.thread_id, local_id);
+    }
     let root_thread_local_id = local_thread_ids[&root_thread_id];
     let manifest_threads = captures
         .iter()
@@ -366,13 +395,12 @@ fn build_rollout_debug_attachment(
 
     for capture in captures {
         let CapturedSource::Ready {
-            path,
+            file,
             captured_bytes,
         } = capture.source
         else {
             continue;
         };
-        let file = File::open(path).map_err(BundleBuildError::SourceRead)?;
         let mut reader = BufReader::with_capacity(ROLLOUT_READER_CAPACITY, file);
         let mut remaining = captured_bytes;
         let mut ordinal = 0_u64;
@@ -381,9 +409,9 @@ fn build_rollout_debug_attachment(
                 .map_err(BundleBuildError::SourceRead)?
         {
             let item = match line {
-                BoundedSourceLine::Retained(line) => {
-                    redactor.redact_json_line_to_value(line.as_slice())
-                }
+                BoundedSourceLine::Retained(line) => redactor
+                    .redact_json_line_to_value(line.as_slice())
+                    .map_err(BundleBuildError::Redaction)?,
                 BoundedSourceLine::Oversized => RolloutDebugRedactor::oversized_value(),
             };
             let record = RolloutDebugThreadRecord {
@@ -413,25 +441,6 @@ fn build_rollout_debug_attachment(
         }
     })?;
     Ok(capped.into_inner())
-}
-
-fn preflight_rollout_sources(captures: &mut [CapturedThread]) {
-    for capture in captures {
-        let replacement = match &capture.source {
-            CapturedSource::Ready { path, .. } => match File::open(path) {
-                Ok(_) => None,
-                Err(err) if err.kind() == io::ErrorKind::NotFound => Some(CapturedSource::Missing),
-                Err(_) => Some(CapturedSource::Unreadable),
-            },
-            CapturedSource::Missing
-            | CapturedSource::FlushFailed
-            | CapturedSource::Unavailable
-            | CapturedSource::Unreadable => None,
-        };
-        if let Some(replacement) = replacement {
-            capture.source = replacement;
-        }
-    }
 }
 
 fn manifest_parent(
@@ -602,6 +611,8 @@ enum BundleBuildError {
     Encoding(#[source] io::Error),
     #[error("failed to serialize rollout debug record")]
     Serialization(#[source] serde_json::Error),
+    #[error("rollout debug redaction state limit exceeded")]
+    Redaction(#[source] RolloutDebugRedactorError),
 }
 
 fn map_bundle_error(error: BundleBuildError) -> JSONRPCErrorError {
@@ -609,7 +620,8 @@ fn map_bundle_error(error: BundleBuildError) -> JSONRPCErrorError {
         BundleBuildError::AttachmentTooLarge { .. } => invalid_request(error.to_string()),
         BundleBuildError::SourceRead(_)
         | BundleBuildError::Encoding(_)
-        | BundleBuildError::Serialization(_) => internal_error(error.to_string()),
+        | BundleBuildError::Serialization(_)
+        | BundleBuildError::Redaction(_) => internal_error(error.to_string()),
     }
 }
 
@@ -638,24 +650,8 @@ fn normalize_screenshots(
             return Err(format!("screenshot {} is not a PNG image", index + 1));
         }
 
-        let dimensions =
-            image::ImageReader::with_format(Cursor::new(input.as_slice()), ImageFormat::Png)
-                .into_dimensions()
-                .map_err(|_| format!("screenshot {} has invalid PNG dimensions", index + 1))?;
-        validate_screenshot_dimensions(index, dimensions)?;
-        let image = image::load_from_memory_with_format(&input, ImageFormat::Png)
-            .map_err(|_| format!("screenshot {} is not a valid PNG image", index + 1))?;
-        let mut normalized = Cursor::new(Vec::new());
-        image
-            .write_to(&mut normalized, ImageFormat::Png)
-            .map_err(|_| format!("screenshot {} could not be normalized", index + 1))?;
-        let normalized = normalized.into_inner();
-        if normalized.len() > MAX_SCREENSHOT_BYTES {
-            return Err(format!(
-                "normalized screenshot {} exceeds {MAX_SCREENSHOT_BYTES} bytes",
-                index + 1
-            ));
-        }
+        let image = decode_screenshot_png(index, &input)?;
+        let normalized = encode_screenshot_png(index, &image.into_rgba8(), MAX_SCREENSHOT_BYTES)?;
         total_bytes = total_bytes
             .checked_add(normalized.len())
             .ok_or_else(|| "screenshot byte count overflowed".to_string())?;
@@ -672,6 +668,53 @@ fn normalize_screenshots(
         });
     }
     Ok(attachments)
+}
+
+fn screenshot_decode_limits() -> Limits {
+    let mut limits = Limits::default();
+    limits.max_image_width = Some(MAX_SCREENSHOT_SIDE);
+    limits.max_image_height = Some(MAX_SCREENSHOT_SIDE);
+    limits.max_alloc = Some(MAX_SCREENSHOT_DECODE_ALLOC_BYTES);
+    limits
+}
+
+fn decode_screenshot_png(index: usize, input: &[u8]) -> Result<DynamicImage, String> {
+    let mut reader = ImageReader::with_format(Cursor::new(input), ImageFormat::Png);
+    reader.limits(screenshot_decode_limits());
+    let mut decoder = reader
+        .into_decoder()
+        .map_err(|_| format!("screenshot {} is not a valid PNG image", index + 1))?;
+    let dimensions = decoder.dimensions();
+    validate_screenshot_dimensions(index, dimensions)?;
+
+    let mut remaining_limits = screenshot_decode_limits();
+    remaining_limits
+        .reserve(decoder.total_bytes())
+        .map_err(|_| format!("screenshot {} requires too much decode memory", index + 1))?;
+    decoder
+        .set_limits(remaining_limits)
+        .map_err(|_| format!("screenshot {} exceeds decode limits", index + 1))?;
+    DynamicImage::from_decoder(decoder)
+        .map_err(|_| format!("screenshot {} is not a valid PNG image", index + 1))
+}
+
+fn encode_screenshot_png(index: usize, image: &RgbaImage, limit: usize) -> Result<Vec<u8>, String> {
+    let exceeded = Arc::new(AtomicBool::new(false));
+    let mut output = CappedWriter::new(limit, Arc::clone(&exceeded));
+    let encode_result = PngEncoder::new(&mut output).write_image(
+        image.as_raw(),
+        image.width(),
+        image.height(),
+        image::ExtendedColorType::Rgba8,
+    );
+    if exceeded.load(Ordering::Relaxed) {
+        return Err(format!(
+            "normalized screenshot {} exceeds {limit} bytes",
+            index + 1
+        ));
+    }
+    encode_result.map_err(|_| format!("screenshot {} could not be normalized", index + 1))?;
+    Ok(output.into_inner())
 }
 
 fn validate_screenshot_dimensions(index: usize, (width, height): (u32, u32)) -> Result<(), String> {
@@ -731,9 +774,9 @@ mod tests {
     fn write_source(tempdir: &TempDir, name: &str, bytes: &[u8]) -> CapturedSource {
         let path = tempdir.path().join(name);
         std::fs::write(&path, bytes).expect("write source");
-        CapturedSource::Ready {
-            path,
-            captured_bytes: u64::try_from(bytes.len()).expect("source length fits"),
+        match open_rollout_source(&path) {
+            source @ CapturedSource::Ready { .. } => source,
+            source => panic!("expected ready source, got {source:?}"),
         }
     }
 
@@ -769,7 +812,7 @@ mod tests {
                 source: CapturedSource::Missing,
             });
         }
-        let parents = (1..10)
+        let mut parents = (1..10)
             .map(|index| {
                 let parent = if index == 1 {
                     root
@@ -779,6 +822,8 @@ mod tests {
                 (thread_id(index), parent)
             })
             .collect::<HashMap<_, _>>();
+        let late_child = thread_id(10);
+        parents.insert(late_child, root);
 
         let first = build_rollout_debug_attachment(root, captures, parents, 1024 * 1024, 512)
             .expect("build attachment");
@@ -788,6 +833,7 @@ mod tests {
         for index in 0..10 {
             assert!(!decompressed.contains(&thread_id(index).to_string()));
         }
+        assert!(!decompressed.contains(&late_child.to_string()));
 
         assert_eq!(lines[0]["record_type"], "manifest");
         assert_eq!(lines[0]["thread_count"], 10);
@@ -799,6 +845,108 @@ mod tests {
         assert_eq!(lines[2]["item"]["record_type"], "malformed_redacted");
         assert_eq!(lines[3]["ordinal"], 2);
         assert_eq!(lines[3]["item"]["record_type"], "oversized_redacted");
+    }
+
+    #[test]
+    fn captured_handle_excludes_appended_suffix_and_path_replacement() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let root = thread_id(0);
+        let source_path = tempdir.path().join("captured.jsonl");
+        let moved_path = tempdir.path().join("captured-original.jsonl");
+        let original = b"{\"timestamp\":\"x\"}\n";
+        std::fs::write(&source_path, original).expect("write original source");
+        let source = open_rollout_source(&source_path);
+
+        std::fs::rename(&source_path, &moved_path).expect("move captured inode");
+        OpenOptions::new()
+            .append(true)
+            .open(&moved_path)
+            .expect("open original inode for append")
+            .write_all(
+                format!(
+                    "{{\"timestamp\":\"x\",\"type\":\"future\",\"payload\":{{\"secret\":\"{SECRET}\"}}}}\n"
+                )
+                .as_bytes(),
+            )
+            .expect("append after capture boundary");
+        std::fs::write(
+            &source_path,
+            b"{\"timestamp\":\"x\",\"type\":\"future\",\"payload\":{}}\n",
+        )
+        .expect("write replacement inode");
+
+        let bytes = build_rollout_debug_attachment(
+            root,
+            vec![CapturedThread {
+                thread_id: root,
+                source,
+            }],
+            HashMap::new(),
+            1024 * 1024,
+            1024,
+        )
+        .expect("build from captured handle");
+        let lines = decode_lines(&bytes);
+        let encoded = serde_json::to_string(&lines).expect("serialize output");
+
+        assert_eq!(lines.len(), 2);
+        assert_eq!(
+            lines[0]["threads"][0]["source"]["captured_bytes"],
+            original.len()
+        );
+        assert_eq!(lines[1]["ordinal"], 0);
+        assert_eq!(lines[1]["item"]["record_type"], "malformed_redacted");
+        assert!(!encoded.contains(SECRET));
+    }
+
+    #[test]
+    fn rollout_source_requires_an_opened_regular_file() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        assert!(matches!(
+            open_rollout_source(tempdir.path()),
+            CapturedSource::Unreadable
+        ));
+        assert!(matches!(
+            open_rollout_source(&tempdir.path().join("missing.jsonl")),
+            CapturedSource::Missing
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rollout_source_rejects_symlink_and_fifo_without_blocking() {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+        use std::os::unix::fs::symlink;
+        use std::time::Duration;
+        use std::time::Instant;
+
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let target = tempdir.path().join("target.jsonl");
+        let link = tempdir.path().join("link.jsonl");
+        std::fs::write(&target, b"{}\n").expect("write symlink target");
+        symlink(&target, &link).expect("create symlink");
+        assert!(matches!(
+            open_rollout_source(&link),
+            CapturedSource::Unreadable
+        ));
+
+        let fifo = tempdir.path().join("rollout.fifo");
+        let fifo_path =
+            CString::new(fifo.as_os_str().as_bytes()).expect("fifo path contains no nul");
+        // SAFETY: `fifo_path` is a valid, nul-terminated path and `mkfifo`
+        // does not retain the pointer after returning.
+        let result = unsafe { libc::mkfifo(fifo_path.as_ptr(), 0o600) };
+        assert_eq!(result, 0);
+        let started = Instant::now();
+        assert!(matches!(
+            open_rollout_source(&fifo),
+            CapturedSource::Unreadable
+        ));
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "FIFO open must not block"
+        );
     }
 
     #[test]
@@ -925,6 +1073,19 @@ mod tests {
         assert!(validate_screenshot_dimensions(0, (MAX_SCREENSHOT_SIDE + 1, 1)).is_err());
         assert!(validate_screenshot_dimensions(0, (4001, 4000)).is_err());
         assert!(validate_screenshot_dimensions(0, (4000, 4000)).is_ok());
+        assert!(
+            normalize_screenshots(vec![SpineFeedbackScreenshot {
+                png_base64: BASE64_STANDARD.encode(png(MAX_SCREENSHOT_SIDE + 1, 1)),
+            }])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn screenshot_png_encoding_stops_at_the_configured_limit() {
+        let image = ImageBuffer::from_pixel(2, 2, Rgba([1, 2, 3, 255]));
+        let error = encode_screenshot_png(0, &image, 1).expect_err("tiny cap must stop encoding");
+        assert!(error.contains("exceeds 1 bytes"));
     }
 
     #[test]
@@ -966,9 +1127,18 @@ mod tests {
     #[test]
     fn redactor_facade_preserves_package_local_thread_equality() {
         let mut redactor = RolloutDebugRedactor::default();
-        let first = redactor.register_thread_id("raw-thread-a");
-        let second = redactor.register_thread_id("raw-thread-b");
-        assert_eq!(first, redactor.register_thread_id("raw-thread-a"));
+        let first = redactor
+            .register_thread_id("raw-thread-a")
+            .expect("register first thread");
+        let second = redactor
+            .register_thread_id("raw-thread-b")
+            .expect("register second thread");
+        assert_eq!(
+            first,
+            redactor
+                .register_thread_id("raw-thread-a")
+                .expect("reuse first thread")
+        );
         assert_ne!(first, second);
     }
 

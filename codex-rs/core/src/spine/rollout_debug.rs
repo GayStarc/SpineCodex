@@ -20,6 +20,7 @@ use codex_spine_core::TrimRequest;
 use serde::Serialize;
 use serde_json::Map;
 use serde_json::Value;
+use thiserror::Error;
 
 use crate::tools::code_mode::is_exec_tool_name;
 use crate::tools::code_mode::spine_bridge::CODE_MODE_SPINE_CARRIER_MARKER;
@@ -637,24 +638,82 @@ struct DebugCallState {
     spawn_request: Option<SpawnRequestSignature>,
 }
 
+// These limits bound only package-local diagnostic equality/pairing state.
+// They are deliberately above the accepted 35,612-record corpus while keeping
+// adversarially unique identifiers and unmatched calls finite.
+const DEFAULT_MAX_TRACKED_ID_BYTES: usize = 8 * 1024 * 1024;
+const DEFAULT_MAX_TRACKED_ID_ENTRIES: usize = 131_072;
+const DEFAULT_MAX_PENDING_CALLS: usize = 32_768;
+
+#[derive(Clone, Copy, Debug)]
+struct RedactorLimits {
+    max_tracked_id_bytes: usize,
+    max_tracked_id_entries: usize,
+    max_pending_calls: usize,
+}
+
+impl Default for RedactorLimits {
+    fn default() -> Self {
+        Self {
+            max_tracked_id_bytes: DEFAULT_MAX_TRACKED_ID_BYTES,
+            max_tracked_id_entries: DEFAULT_MAX_TRACKED_ID_ENTRIES,
+            max_pending_calls: DEFAULT_MAX_PENDING_CALLS,
+        }
+    }
+}
+
+/// The diagnostic package cannot be built without exceeding its bounded local state.
+#[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
+pub enum RolloutDebugRedactorError {
+    #[error("rollout debug redactor state limit exceeded")]
+    ResourceLimitExceeded,
+}
+
 /// Stateful only for package-local identifier equality and request/output pairing.
 /// Given the same record order, its output is deterministic.
-#[derive(Default)]
 pub struct RolloutDebugRedactor {
     ids: BTreeMap<IdNamespace, BTreeMap<String, u64>>,
-    calls: BTreeMap<String, DebugCallState>,
+    calls: BTreeMap<u64, DebugCallState>,
+    tracked_id_bytes: usize,
+    tracked_id_entries: usize,
+    limits: RedactorLimits,
+    resource_limit_exceeded: bool,
+}
+
+impl Default for RolloutDebugRedactor {
+    fn default() -> Self {
+        Self {
+            ids: BTreeMap::new(),
+            calls: BTreeMap::new(),
+            tracked_id_bytes: 0,
+            tracked_id_entries: 0,
+            limits: RedactorLimits::default(),
+            resource_limit_exceeded: false,
+        }
+    }
 }
 
 impl RolloutDebugRedactor {
     /// Reserve the package-local thread identifier used by the bundle manifest.
-    pub fn register_thread_id(&mut self, thread_id: &str) -> u64 {
-        self.local_id(IdNamespace::Thread, thread_id)
+    pub fn register_thread_id(
+        &mut self,
+        thread_id: &str,
+    ) -> Result<u64, RolloutDebugRedactorError> {
+        self.ensure_within_limits()?;
+        let local_id = self.local_id(IdNamespace::Thread, thread_id);
+        self.ensure_within_limits()?;
+        Ok(local_id)
     }
 
     /// Redact one native JSONL record into a non-replayable JSON value.
-    pub fn redact_json_line_to_value(&mut self, line: &[u8]) -> Value {
-        serde_json::to_value(self.redact_json_line(line))
-            .expect("rollout debug records must serialize")
+    pub fn redact_json_line_to_value(
+        &mut self,
+        line: &[u8],
+    ) -> Result<Value, RolloutDebugRedactorError> {
+        self.ensure_within_limits()?;
+        let record = self.redact_json_line(line);
+        self.ensure_within_limits()?;
+        Ok(serde_json::to_value(record).expect("rollout debug records must serialize"))
     }
 
     /// Return the positional placeholder for a source line that exceeded the
@@ -662,6 +721,34 @@ impl RolloutDebugRedactor {
     pub fn oversized_value() -> Value {
         serde_json::to_value(DebugRolloutRecord::oversized())
             .expect("rollout debug placeholders must serialize")
+    }
+
+    #[cfg(test)]
+    fn with_limits(
+        max_tracked_id_bytes: usize,
+        max_tracked_id_entries: usize,
+        max_pending_calls: usize,
+    ) -> Self {
+        Self {
+            limits: RedactorLimits {
+                max_tracked_id_bytes,
+                max_tracked_id_entries,
+                max_pending_calls,
+            },
+            ..Self::default()
+        }
+    }
+
+    fn ensure_within_limits(&self) -> Result<(), RolloutDebugRedactorError> {
+        if self.resource_limit_exceeded {
+            Err(RolloutDebugRedactorError::ResourceLimitExceeded)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn mark_resource_limit_exceeded(&mut self) {
+        self.resource_limit_exceeded = true;
     }
 
     pub(crate) fn redact_json_line(&mut self, line: &[u8]) -> DebugRolloutRecord {
@@ -894,10 +981,11 @@ impl RolloutDebugRedactor {
             } => {
                 let tool = classify_tool(namespace.as_deref(), &name);
                 let debug_arguments = self.redact_tool_arguments(tool, &arguments);
-                self.remember_call(&call_id, tool, &arguments);
+                let local_call_id = self.local_id(IdNamespace::Call, &call_id);
+                self.remember_call(local_call_id, tool, &arguments);
                 DebugResponseItem::FunctionCall {
                     id: self.optional_local_id(IdNamespace::Item, id.as_deref()),
-                    call_id: self.local_id(IdNamespace::Call, &call_id),
+                    call_id: local_call_id,
                     tool,
                     arguments: debug_arguments,
                     turn_id: self.turn_id(internal_chat_message_metadata_passthrough.as_ref()),
@@ -923,12 +1011,13 @@ impl RolloutDebugRedactor {
                 output,
                 internal_chat_message_metadata_passthrough,
             } => {
-                let state = self.calls.get(&call_id).copied();
+                let local_call_id = self.local_id(IdNamespace::Call, &call_id);
+                let state = self.calls.remove(&local_call_id);
                 let debug_output =
                     self.redact_tool_output(state, None, &output.body, raw_output_value(raw));
                 DebugResponseItem::FunctionCallOutput {
                     id: self.optional_local_id(IdNamespace::Item, id.as_deref()),
-                    call_id: self.local_id(IdNamespace::Call, &call_id),
+                    call_id: local_call_id,
                     output: debug_output,
                     turn_id: self.turn_id(internal_chat_message_metadata_passthrough.as_ref()),
                 }
@@ -944,10 +1033,11 @@ impl RolloutDebugRedactor {
             } => {
                 let tool = classify_tool(namespace.as_deref(), &name);
                 let debug_arguments = self.redact_tool_arguments(tool, &input);
-                self.remember_call(&call_id, tool, &input);
+                let local_call_id = self.local_id(IdNamespace::Call, &call_id);
+                self.remember_call(local_call_id, tool, &input);
                 DebugResponseItem::CustomToolCall {
                     id: self.optional_local_id(IdNamespace::Item, id.as_deref()),
-                    call_id: self.local_id(IdNamespace::Call, &call_id),
+                    call_id: local_call_id,
                     tool,
                     status_present: status.is_some(),
                     arguments: debug_arguments,
@@ -961,7 +1051,8 @@ impl RolloutDebugRedactor {
                 output,
                 internal_chat_message_metadata_passthrough,
             } => {
-                let state = self.calls.get(&call_id).copied();
+                let local_call_id = self.local_id(IdNamespace::Call, &call_id);
+                let state = self.calls.remove(&local_call_id);
                 let output_name = match name.as_deref() {
                     None => DebugOutputName::Absent,
                     Some(CODE_MODE_SPINE_CARRIER_MARKER) => DebugOutputName::CodeModeCarrier,
@@ -975,7 +1066,7 @@ impl RolloutDebugRedactor {
                 );
                 DebugResponseItem::CustomToolCallOutput {
                     id: self.optional_local_id(IdNamespace::Item, id.as_deref()),
-                    call_id: self.local_id(IdNamespace::Call, &call_id),
+                    call_id: local_call_id,
                     output_name,
                     output: debug_output,
                     turn_id: self.turn_id(internal_chat_message_metadata_passthrough.as_ref()),
@@ -1038,15 +1129,21 @@ impl RolloutDebugRedactor {
         }
     }
 
-    fn remember_call(&mut self, call_id: &str, tool: DebugToolKind, arguments: &str) {
+    fn remember_call(&mut self, local_call_id: u64, tool: DebugToolKind, arguments: &str) {
         let spawn_request = (tool == DebugToolKind::SpineSpawn)
             .then(|| super::spawn::parse_tasks(arguments).ok())
             .flatten()
             .map(|tasks| SpawnRequestSignature {
                 task_count: tasks.len(),
             });
+        if !self.calls.contains_key(&local_call_id)
+            && self.calls.len() >= self.limits.max_pending_calls
+        {
+            self.mark_resource_limit_exceeded();
+            return;
+        }
         self.calls.insert(
-            call_id.to_string(),
+            local_call_id,
             DebugCallState {
                 tool,
                 spawn_request,
@@ -1473,12 +1570,33 @@ impl RolloutDebugRedactor {
     }
 
     fn local_id(&mut self, namespace: IdNamespace, value: &str) -> u64 {
-        let ids = self.ids.entry(namespace).or_default();
-        if let Some(id) = ids.get(value) {
-            return *id;
+        if let Some(id) = self
+            .ids
+            .get(&namespace)
+            .and_then(|ids| ids.get(value))
+            .copied()
+        {
+            return id;
         }
+        let Some(next_entry_count) = self.tracked_id_entries.checked_add(1) else {
+            self.mark_resource_limit_exceeded();
+            return 0;
+        };
+        let Some(next_byte_count) = self.tracked_id_bytes.checked_add(value.len()) else {
+            self.mark_resource_limit_exceeded();
+            return 0;
+        };
+        if next_entry_count > self.limits.max_tracked_id_entries
+            || next_byte_count > self.limits.max_tracked_id_bytes
+        {
+            self.mark_resource_limit_exceeded();
+            return 0;
+        }
+        let ids = self.ids.entry(namespace).or_default();
         let id = u64::try_from(ids.len()).unwrap_or(u64::MAX);
         ids.insert(value.to_string(), id);
+        self.tracked_id_entries = next_entry_count;
+        self.tracked_id_bytes = next_byte_count;
         id
     }
 }

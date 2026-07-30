@@ -2032,6 +2032,7 @@ dependencies = [
  "futures",
  "hmac 0.12.1",
  "image",
+ "libc",
  "opentelemetry",
  "opentelemetry_sdk",
  "pretty_assertions",

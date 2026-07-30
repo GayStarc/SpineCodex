@@ -176,6 +176,7 @@ pub use rollout::read_head_for_summary;
 pub use rollout::read_session_meta_line;
 pub use rollout::rollout_date_parts;
 pub use spine::rollout_debug::RolloutDebugRedactor;
+pub use spine::rollout_debug::RolloutDebugRedactorError;
 mod function_tool;
 pub(crate) mod spine;
 mod state;

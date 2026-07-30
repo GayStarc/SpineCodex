@@ -5,6 +5,7 @@ use serde_json::json;
 
 use super::DebugRolloutRecord;
 use super::RolloutDebugRedactor;
+use super::RolloutDebugRedactorError;
 
 const SECRET: &str = "private-seed-7c84f24b";
 
@@ -18,6 +19,14 @@ fn line(item_type: &str, payload: Value) -> Value {
 
 fn redact(redactor: &mut RolloutDebugRedactor, value: Value) -> Value {
     serde_json::to_value(redactor.redact_value(value)).expect("debug record serializes")
+}
+
+fn redact_public(
+    redactor: &mut RolloutDebugRedactor,
+    value: Value,
+) -> Result<Value, RolloutDebugRedactorError> {
+    let line = serde_json::to_vec(&value).expect("rollout line serializes");
+    redactor.redact_json_line_to_value(&line)
 }
 
 fn assert_secret_absent(value: &Value) {
@@ -169,13 +178,30 @@ fn direct_control_shapes_preserve_invalidity_and_exact_success() {
             }),
         ),
     );
+    let _ = redact(
+        &mut redactor,
+        line(
+            "response_item",
+            json!({
+                "type": "function_call",
+                "namespace": "spine",
+                "name": "next",
+                "arguments": serde_json::to_string(&json!({
+                    "summary": " ",
+                    "memory": SECRET,
+                    "unexpected": SECRET
+                })).expect("arguments serialize"),
+                "call_id": format!("{SECRET}-near-miss-call")
+            }),
+        ),
+    );
     let near_miss = redact(
         &mut redactor,
         line(
             "response_item",
             json!({
                 "type": "function_call_output",
-                "call_id": format!("{SECRET}-call"),
+                "call_id": format!("{SECRET}-near-miss-call"),
                 "output": " Spine next accepted. "
             }),
         ),
@@ -616,4 +642,71 @@ fn compact_replacement_is_recursively_redacted_and_not_replayable() {
         json!(["output_text"])
     );
     assert!(serde_json::from_value::<RolloutLine>(output).is_err());
+}
+
+#[test]
+fn identifier_state_limits_fail_closed_without_double_counting() {
+    let mut entry_limited = RolloutDebugRedactor::with_limits(1024, 1, 8);
+    assert_eq!(entry_limited.register_thread_id("thread-a"), Ok(0));
+    assert_eq!(entry_limited.register_thread_id("thread-a"), Ok(0));
+    assert_eq!(
+        entry_limited.register_thread_id("thread-b"),
+        Err(RolloutDebugRedactorError::ResourceLimitExceeded)
+    );
+    assert_eq!(
+        entry_limited.register_thread_id("thread-a"),
+        Err(RolloutDebugRedactorError::ResourceLimitExceeded)
+    );
+
+    let mut byte_limited = RolloutDebugRedactor::with_limits(8, 8, 8);
+    assert_eq!(byte_limited.register_thread_id("12345678"), Ok(0));
+    assert_eq!(
+        byte_limited.register_thread_id("9"),
+        Err(RolloutDebugRedactorError::ResourceLimitExceeded)
+    );
+}
+
+#[test]
+fn pending_call_limit_fails_closed_and_completed_output_releases_slot() {
+    let function_call = |call_id: &str| {
+        line(
+            "response_item",
+            json!({
+                "type": "function_call",
+                "namespace": "spine",
+                "name": "open",
+                "arguments": serde_json::to_string(&json!({"summary": SECRET}))
+                    .expect("arguments serialize"),
+                "call_id": call_id
+            }),
+        )
+    };
+    let function_output = |call_id: &str| {
+        line(
+            "response_item",
+            json!({
+                "type": "function_call_output",
+                "call_id": call_id,
+                "output": "Spine open accepted."
+            }),
+        )
+    };
+
+    let mut pending_limited = RolloutDebugRedactor::with_limits(4096, 16, 1);
+    let first =
+        redact_public(&mut pending_limited, function_call("private-call-a")).expect("first call");
+    assert_secret_absent(&first);
+    assert_eq!(
+        redact_public(&mut pending_limited, function_call("private-call-b")),
+        Err(RolloutDebugRedactorError::ResourceLimitExceeded)
+    );
+
+    let mut reusable = RolloutDebugRedactor::with_limits(4096, 16, 1);
+    redact_public(&mut reusable, function_call("private-call-a")).expect("first call");
+    let output =
+        redact_public(&mut reusable, function_output("private-call-a")).expect("first output");
+    assert_secret_absent(&output);
+    let second =
+        redact_public(&mut reusable, function_call("private-call-b")).expect("released slot");
+    assert_secret_absent(&second);
 }
