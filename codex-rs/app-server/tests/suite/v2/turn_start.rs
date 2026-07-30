@@ -51,8 +51,6 @@ use codex_app_server_protocol::ThreadLoadedListResponse;
 use codex_app_server_protocol::ThreadSource;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
-use codex_app_server_protocol::ThreadSubagentSteerParams;
-use codex_app_server_protocol::ThreadSubagentSteerResponse;
 use codex_app_server_protocol::TurnCompletedNotification;
 use codex_app_server_protocol::TurnEnvironmentParams;
 use codex_app_server_protocol::TurnItemsView;
@@ -3718,20 +3716,10 @@ async fn direct_input_to_multi_agent_v2_subagent_is_rejected() -> Result<()> {
     const CHILD_PROMPT: &str = "child: do work";
     const PARENT_PROMPT: &str = "spawn a child and continue";
     const SPAWN_CALL_ID: &str = "spawn-call-direct-input-rejection";
-    const STEER_SENTINEL: &str = "SUBAGENT_STEER_SENTINEL";
     const ERROR_MESSAGE: &str =
         "direct app-server input is not allowed for multi-agent v2 sub-agents";
 
     let server = responses::start_mock_server().await;
-    let working_directory = TempDir::new()?;
-    #[cfg(target_os = "windows")]
-    let child_sleep_command = vec![
-        "powershell".to_string(),
-        "-Command".to_string(),
-        "Start-Sleep -Seconds 5".to_string(),
-    ];
-    #[cfg(not(target_os = "windows"))]
-    let child_sleep_command = vec!["sleep".to_string(), "5".to_string()];
     let spawn_args = serde_json::to_string(&json!({
         "message": CHILD_PROMPT,
         "task_name": "worker",
@@ -3749,31 +3737,6 @@ async fn direct_input_to_multi_agent_v2_subagent_is_rejected() -> Result<()> {
             ),
             responses::ev_completed("resp-parent-1"),
         ]),
-    )
-    .await;
-    let _child_turn = responses::mount_sse_once_match(
-        &server,
-        |req: &wiremock::Request| {
-            body_contains(req, CHILD_PROMPT) && !body_contains(req, SPAWN_CALL_ID)
-        },
-        create_shell_command_sse_response(
-            child_sleep_command,
-            Some(working_directory.path()),
-            Some(10_000),
-            "call-child-sleep",
-        )?,
-    )
-    .await;
-    let _child_follow_up = responses::mount_sse_once_match(
-        &server,
-        |req: &wiremock::Request| body_contains(req, "call-child-sleep"),
-        create_final_assistant_message_sse_response("child done")?,
-    )
-    .await;
-    let _parent_follow_up = responses::mount_sse_once_match(
-        &server,
-        |req: &wiremock::Request| body_contains(req, SPAWN_CALL_ID),
-        create_final_assistant_message_sse_response("parent done")?,
     )
     .await;
     let codex_home = TempDir::new()?;
@@ -3803,27 +3766,6 @@ async fn direct_input_to_multi_agent_v2_subagent_is_rejected() -> Result<()> {
     )
     .await??;
     let ThreadStartResponse { thread, .. } = to_response::<ThreadStartResponse>(thread_resp)?;
-
-    let root_subagent_steer_req = mcp
-        .send_thread_subagent_steer_request(ThreadSubagentSteerParams {
-            thread_id: thread.id.clone(),
-            client_user_message_id: None,
-            input: vec![V2UserInput::Text {
-                text: "must reject root".to_string(),
-                text_elements: Vec::new(),
-            }],
-            expected_turn_id: "any-active-turn".to_string(),
-        })
-        .await?;
-    let root_subagent_steer_error: JSONRPCError = timeout(
-        DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_error_message(RequestId::Integer(root_subagent_steer_req)),
-    )
-    .await??;
-    assert_eq!(
-        root_subagent_steer_error.error.message,
-        "thread/subagent/steer requires a task-path thread-spawn sub-agent"
-    );
 
     let turn_req = mcp
         .send_turn_start_request(TurnStartParams {
@@ -3863,66 +3805,6 @@ async fn direct_input_to_multi_agent_v2_subagent_is_rejected() -> Result<()> {
     })
     .await??;
 
-    let child_turn_id = timeout(DEFAULT_READ_TIMEOUT, async {
-        loop {
-            let notification = mcp
-                .read_stream_until_notification_message("turn/started")
-                .await?;
-            let started: TurnStartedNotification =
-                serde_json::from_value(notification.params.expect("turn/started params"))?;
-            if started.thread_id == child_thread_id {
-                return Ok::<String, anyhow::Error>(started.turn.id);
-            }
-        }
-    })
-    .await??;
-
-    let subagent_steer_req = mcp
-        .send_thread_subagent_steer_request(ThreadSubagentSteerParams {
-            thread_id: child_thread_id.clone(),
-            client_user_message_id: Some("client-subagent-steer".to_string()),
-            input: vec![V2UserInput::Text {
-                text: STEER_SENTINEL.to_string(),
-                text_elements: Vec::new(),
-            }],
-            expected_turn_id: child_turn_id.clone(),
-        })
-        .await?;
-    let subagent_steer_resp: JSONRPCResponse = timeout(
-        DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_response_message(RequestId::Integer(subagent_steer_req)),
-    )
-    .await??;
-    let subagent_steer: ThreadSubagentSteerResponse = to_response(subagent_steer_resp)?;
-    assert_eq!(subagent_steer.turn_id, child_turn_id);
-
-    timeout(DEFAULT_READ_TIMEOUT, async {
-        loop {
-            let notification = mcp
-                .read_stream_until_notification_message("item/started")
-                .await?;
-            let started: ItemStartedNotification =
-                serde_json::from_value(notification.params.expect("item/started params"))?;
-            let ThreadItem::UserMessage {
-                client_id, content, ..
-            } = started.item
-            else {
-                continue;
-            };
-            if client_id.as_deref() == Some("client-subagent-steer") {
-                assert_eq!(
-                    content,
-                    vec![V2UserInput::Text {
-                        text: STEER_SENTINEL.to_string(),
-                        text_elements: Vec::new(),
-                    }]
-                );
-                return Ok::<(), anyhow::Error>(());
-            }
-        }
-    })
-    .await??;
-
     let direct_turn_req = mcp
         .send_turn_start_request(TurnStartParams {
             thread_id: child_thread_id.clone(),
@@ -3951,7 +3833,7 @@ async fn direct_input_to_multi_agent_v2_subagent_is_rejected() -> Result<()> {
             }],
             responsesapi_client_metadata: None,
             additional_context: None,
-            expected_turn_id: child_turn_id,
+            expected_turn_id: "any-active-turn".to_string(),
         })
         .await?;
     let direct_steer_error: JSONRPCError = timeout(

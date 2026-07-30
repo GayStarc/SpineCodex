@@ -131,15 +131,6 @@ impl App {
         store.active_turn_id().map(ToOwned::to_owned)
     }
 
-    pub(super) fn is_path_backed_subagent_thread(&self, thread_id: ThreadId) -> bool {
-        self.primary_thread_id != Some(thread_id)
-            && self
-                .agent_navigation
-                .get(&thread_id)
-                .and_then(|entry| entry.agent_path.as_deref())
-                .is_some_and(|path| !path.trim().is_empty())
-    }
-
     pub(super) fn thread_label(&self, thread_id: ThreadId) -> String {
         let is_primary = self.primary_thread_id == Some(thread_id);
         let fallback_label = if is_primary {
@@ -584,41 +575,20 @@ impl App {
                 collaboration_mode,
                 personality,
             } => {
-                let is_path_backed_subagent = self.is_path_backed_subagent_thread(thread_id);
                 let mut should_start_turn = true;
                 if let Some(turn_id) = self.active_turn_id_for_thread(thread_id).await {
                     let mut steer_turn_id = turn_id;
                     let mut retried_after_turn_mismatch = false;
                     loop {
-                        let steer_result = if is_path_backed_subagent {
-                            app_server
-                                .thread_subagent_steer(
-                                    thread_id,
-                                    steer_turn_id.clone(),
-                                    items.to_vec(),
-                                )
-                                .await
-                                .map(|response| response.turn_id)
-                        } else {
-                            app_server
-                                .turn_steer(thread_id, steer_turn_id.clone(), items.to_vec())
-                                .await
-                                .map(|response| response.turn_id)
-                        };
-                        match steer_result {
+                        match app_server
+                            .turn_steer(thread_id, steer_turn_id.clone(), items.to_vec())
+                            .await
+                        {
                             Ok(_) => return Ok(true),
                             Err(error) => {
                                 if let Some(turn_error) =
                                     active_turn_not_steerable_turn_error(&error)
                                 {
-                                    if is_path_backed_subagent {
-                                        self.chat_widget.restore_pending_steer_to_composer();
-                                        self.chat_widget.add_error_message(format!(
-                                            "This subagent cannot accept guidance right now: {}",
-                                            turn_error.message
-                                        ));
-                                        return Ok(true);
-                                    }
                                     if !self.chat_widget.enqueue_rejected_steer() {
                                         self.chat_widget.add_error_message(turn_error.message);
                                     }
@@ -631,14 +601,6 @@ impl App {
                                         {
                                             let mut store = channel.store.lock().await;
                                             store.clear_active_turn_id();
-                                        }
-                                        if is_path_backed_subagent {
-                                            self.chat_widget.restore_pending_steer_to_composer();
-                                            self.chat_widget.add_error_message(
-                                                "This subagent is no longer running. Its transcript is still available."
-                                                    .to_string(),
-                                            );
-                                            return Ok(true);
                                         }
                                         should_start_turn = true;
                                         break;
@@ -670,36 +632,13 @@ impl App {
                                             let mut store = channel.store.lock().await;
                                             store.active_turn_id = Some(actual_turn_id);
                                         }
-                                        if is_path_backed_subagent {
-                                            self.chat_widget.restore_pending_steer_to_composer();
-                                            self.chat_widget.add_error_message(
-                                                "The subagent turn changed before the guidance could be delivered. Try again if it is still running."
-                                                    .to_string(),
-                                            );
-                                            return Ok(true);
-                                        }
                                         return Err(error.into());
-                                    }
-                                    None if is_path_backed_subagent => {
-                                        self.chat_widget.restore_pending_steer_to_composer();
-                                        self.chat_widget.add_error_message(format!(
-                                            "Unable to guide this subagent: {error}"
-                                        ));
-                                        return Ok(true);
                                     }
                                     None => return Err(error.into()),
                                 }
                             }
                         }
                     }
-                }
-                if is_path_backed_subagent && should_start_turn {
-                    self.chat_widget.restore_pending_steer_to_composer();
-                    self.chat_widget.add_error_message(
-                        "This subagent is not running. Its transcript is available for review."
-                            .to_string(),
-                    );
-                    return Ok(true);
                 }
                 if should_start_turn {
                     let config = self.chat_widget.config_ref();

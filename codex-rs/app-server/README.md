@@ -164,7 +164,6 @@ Example with notification opt-out:
 - `thread/unarchive` — move an archived rollout file back into the sessions directory; returns the restored `thread` on success and emits `thread/unarchived`.
 - `thread/compact/start` — trigger conversation history compaction for a thread; returns `{}` immediately while progress streams through standard turn/item notifications.
 - `thread/shellCommand` — run a user-initiated `!` shell command against a thread; this runs unsandboxed with full access rather than inheriting the thread sandbox policy. Returns `{}` immediately while progress streams through standard turn/item notifications and any active turn receives the formatted output in its message stream.
-- `thread/subagent/steer` — experimental; append user guidance to the active regular turn of a task-path thread-spawn subagent, including native V2 and Spine Spawn branches. This method cannot start a turn or change thread settings, and rejects root, idle, closed, pathless, and other subagent kinds.
 - `thread/backgroundTerminals/clean` — terminate all running background terminals for a thread (experimental; requires `capabilities.experimentalApi`); returns `{}` when the cleanup request is accepted.
 - `thread/backgroundTerminals/list` — list running background terminals for a loaded thread (experimental; requires `capabilities.experimentalApi`); returns `data` with the running terminal ids.
 - `thread/backgroundTerminals/terminate` — terminate one running background terminal by app-server `processId` (experimental; requires `capabilities.experimentalApi`); returns whether a process was terminated.
@@ -990,28 +989,6 @@ not emit `turn/started` and does not accept thread settings overrides.
 `expectedTurnId` is required. If there is no active turn, `expectedTurnId` does not match the
 active turn, or the active turn kind does not accept same-turn steering (for example review or
 manual compaction), the request fails with an `invalid request` error.
-
-### Example: Guide an active subagent
-
-Use experimental `thread/subagent/steer` when the user has selected a running
-task-path thread-spawn subagent. It accepts only same-turn input and does not
-depend on the child thread's model-visible multi-agent tool-surface version.
-The generic direct-input restriction on `turn/start` and `turn/steer` remains
-unchanged for MultiAgentV2 subagents.
-
-```json
-{ "method": "thread/subagent/steer", "id": 33, "params": {
-    "threadId": "thr_child",
-    "clientUserMessageId": "client_msg_125",
-    "input": [ { "type": "text", "text": "Report the checkpoint, then continue." } ],
-    "expectedTurnId": "turn_child_456"
-} }
-{ "id": 33, "result": { "turnId": "turn_child_456" } }
-```
-
-The request fails if the target is not a task-path thread-spawn subagent or if
-its expected active turn no longer exists or has changed. It never starts a
-replacement turn.
 
 ### Example: Request a code review
 

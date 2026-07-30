@@ -189,7 +189,6 @@ impl ChatWidget {
             #[cfg(test)]
             pet_image_support_override: None,
             thread_id: None,
-            steer_only_user_input: false,
             last_spine_tree_snapshot: None,
             live_spine_tree_cell: None,
             dismissed_plan_mode_nudge_scopes: HashSet::new(),

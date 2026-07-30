@@ -1,36 +1,26 @@
-//! Bounded, best-effort subagent activity previews.
-//!
-//! The native `/subagents` picker uses these previews for its selected row. The legacy history
-//! cell remains test-only so production navigation has a single interactive presentation.
+//! Bounded, best-effort previews for the v2 `/agent` status output.
 
 use super::ThreadEventStore;
-#[cfg(test)]
 use crate::history_cell::HistoryCell;
-#[cfg(test)]
 use crate::history_cell::plain_lines;
 use crate::multi_agents::AgentActivityPathDisplay;
 use crate::multi_agents::AgentActivityPreview;
-#[cfg(test)]
 use ratatui::style::Stylize;
 use ratatui::text::Line;
 
-#[cfg(test)]
 const AGENT_STATUS_PREVIEW_INDENT: u16 = 4;
 
-#[cfg(test)]
 #[derive(Debug)]
 pub(super) struct AgentStatusHistoryCell {
     entries: Vec<AgentStatusThreadPreview>,
 }
 
-#[cfg(test)]
 impl AgentStatusHistoryCell {
     pub(super) fn new(entries: Vec<AgentStatusThreadPreview>) -> Self {
         Self { entries }
     }
 }
 
-#[cfg(test)]
 impl HistoryCell for AgentStatusHistoryCell {
     fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
         let mut lines: Vec<Line<'static>> = vec![
@@ -66,21 +56,25 @@ impl HistoryCell for AgentStatusHistoryCell {
 
 #[derive(Debug)]
 pub(super) struct AgentStatusThreadPreview {
-    #[cfg(test)]
     agent_path: String,
     activity: AgentActivityPreview,
 }
 
 impl AgentStatusThreadPreview {
-    pub(super) fn from_store(_agent_path: String, store: &ThreadEventStore) -> Self {
+    pub(super) fn from_store(agent_path: String, store: &ThreadEventStore) -> Self {
         Self {
-            #[cfg(test)]
-            agent_path: _agent_path,
+            agent_path,
             activity: store.agent_activity_preview(AgentActivityPathDisplay::Show),
         }
     }
 
-    #[cfg(test)]
+    pub(super) fn empty(agent_path: String) -> Self {
+        Self {
+            agent_path,
+            activity: AgentActivityPreview::default(),
+        }
+    }
+
     fn title_line(&self) -> Line<'static> {
         vec!["  • ".dim(), format!("`{}`", self.agent_path).cyan()].into()
     }
@@ -88,16 +82,8 @@ impl AgentStatusThreadPreview {
     fn preview_lines(&self, width: u16) -> Vec<Line<'static>> {
         self.activity.lines(width)
     }
-
-    pub(super) fn activity_summary(&self, width: u16) -> String {
-        self.preview_lines(width)
-            .first()
-            .map(ToString::to_string)
-            .unwrap_or_else(|| "No recent activity yet.".to_string())
-    }
 }
 
-#[cfg(test)]
 fn indent_preview_line(mut line: Line<'static>) -> Line<'static> {
     line.spans.insert(0, "    ".into());
     line

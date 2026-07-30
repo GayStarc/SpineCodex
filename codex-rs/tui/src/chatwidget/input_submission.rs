@@ -145,8 +145,7 @@ impl ChatWidget {
             mention_bindings,
         } = user_message;
 
-        let render_in_history =
-            !self.turn_lifecycle.agent_turn_running && !self.steer_only_user_input;
+        let render_in_history = !self.turn_lifecycle.agent_turn_running;
         let mut items: Vec<UserInput> = Vec::new();
 
         // Special-case: "!cmd" executes a local shell command instead of sending to the model.

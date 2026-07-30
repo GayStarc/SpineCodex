@@ -65,68 +65,45 @@ impl App {
             return;
         }
 
-        let ordered_threads: Vec<_> = self
+        let mut initial_selected_idx = None;
+        let items: Vec<SelectionItem> = self
             .agent_navigation
             .ordered_threads()
             .into_iter()
-            .map(|(thread_id, entry)| (thread_id, entry.clone()))
+            .enumerate()
+            .map(|(idx, (thread_id, entry))| {
+                if self.active_thread_id == Some(thread_id) {
+                    initial_selected_idx = Some(idx);
+                }
+                let id = thread_id;
+                let is_primary = self.primary_thread_id == Some(thread_id);
+                let name = format_agent_picker_item_name(
+                    entry.agent_nickname.as_deref(),
+                    entry.agent_role.as_deref(),
+                    is_primary,
+                );
+                let uuid = thread_id.to_string();
+                let description = entry
+                    .agent_path
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|path| !path.is_empty())
+                    .unwrap_or(&uuid)
+                    .to_string();
+                SelectionItem {
+                    name: name.clone(),
+                    name_prefix_spans: agent_picker_status_dot_spans(entry.is_closed),
+                    description: Some(description.clone()),
+                    is_current: self.active_thread_id == Some(thread_id),
+                    actions: vec![Box::new(move |tx| {
+                        tx.send(AppEvent::SelectAgentThread(id));
+                    })],
+                    dismiss_on_select: true,
+                    search_value: Some(format!("{name} {description} {uuid}")),
+                    ..Default::default()
+                }
+            })
             .collect();
-        let mut initial_selected_idx = None;
-        let mut items = Vec::with_capacity(ordered_threads.len());
-        for (idx, (thread_id, entry)) in ordered_threads.into_iter().enumerate() {
-            if self.active_thread_id == Some(thread_id) {
-                initial_selected_idx = Some(idx);
-            }
-            let id = thread_id;
-            let is_primary = self.primary_thread_id == Some(thread_id);
-            let name = format_agent_picker_item_name(
-                entry.agent_nickname.as_deref(),
-                entry.agent_role.as_deref(),
-                is_primary,
-            );
-            let uuid = thread_id.to_string();
-            let agent_path = entry
-                .agent_path
-                .as_deref()
-                .map(str::trim)
-                .filter(|agent_path| !agent_path.is_empty());
-            let description = agent_path.unwrap_or(&uuid).to_string();
-            let selected_description = if let Some(agent_path) = agent_path {
-                let status = if entry.is_closed {
-                    "Closed"
-                } else if entry.is_running {
-                    "Running"
-                } else {
-                    "Idle"
-                };
-                let activity = if let Some(channel) = self.thread_event_channels.get(&thread_id) {
-                    let store = channel.store.lock().await;
-                    super::agent_status_feed::AgentStatusThreadPreview::from_store(
-                        agent_path.to_string(),
-                        &store,
-                    )
-                    .activity_summary(/*width*/ 72)
-                } else {
-                    "No recent activity yet.".to_string()
-                };
-                Some(format!("{status} · {description} · {activity}"))
-            } else {
-                None
-            };
-            items.push(SelectionItem {
-                name: name.clone(),
-                name_prefix_spans: agent_picker_status_dot_spans(entry.is_closed),
-                description: Some(description.clone()),
-                selected_description,
-                is_current: self.active_thread_id == Some(thread_id),
-                actions: vec![Box::new(move |tx| {
-                    tx.send(AppEvent::SelectAgentThread(id));
-                })],
-                dismiss_on_select: true,
-                search_value: Some(format!("{name} {description} {uuid}")),
-                ..Default::default()
-            });
-        }
 
         self.chat_widget.show_selection_view(SelectionViewParams {
             title: Some("Subagents".to_string()),
@@ -343,10 +320,6 @@ impl App {
             );
         }
         let selected_thread_id = chat_widget.thread_id();
-        chat_widget.set_steer_only_user_input(
-            selected_thread_id
-                .is_some_and(|thread_id| self.is_path_backed_subagent_thread(thread_id)),
-        );
         self.chat_widget = chat_widget;
         if selected_thread_id.is_some() {
             self.refresh_spine_tree_view_for_chat_widget();
@@ -448,15 +421,11 @@ impl App {
             self.config.clone(),
             /*initial_user_message*/ None,
         );
-        let steer_only_user_input = self.is_path_backed_subagent_thread(thread_id);
         self.replace_chat_widget(ChatWidget::new_with_app_event(init));
-        self.chat_widget
-            .set_steer_only_user_input(steer_only_user_input);
 
         self.reset_for_thread_switch(tui)?;
         self.replay_thread_snapshot(snapshot, !is_replay_only);
         if is_replay_only {
-            self.chat_widget.settle_replay_only_thread_input_state();
             let message = if attached_replay_only {
                 format!(
                     "Agent thread {thread_id} could not be resumed live. Replaying saved transcript."

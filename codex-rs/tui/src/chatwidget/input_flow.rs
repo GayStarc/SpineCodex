@@ -232,27 +232,4 @@ impl ChatWidget {
             )
             .collect()
     }
-
-    #[cfg(test)]
-    pub(crate) fn user_turn_pending_start_for_test(&self) -> bool {
-        self.input_queue.user_turn_pending_start
-    }
-
-    #[cfg(test)]
-    pub(crate) fn pending_steer_count_for_test(&self) -> usize {
-        self.input_queue.pending_steers.len()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn pending_steer_text_for_test(&self) -> Option<&str> {
-        self.input_queue
-            .pending_steers
-            .front()
-            .map(|pending| pending.user_message.text.as_str())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn steer_only_user_input_for_test(&self) -> bool {
-        self.steer_only_user_input
-    }
 }
