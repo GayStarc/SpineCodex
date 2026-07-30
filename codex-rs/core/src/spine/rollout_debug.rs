@@ -640,12 +640,30 @@ struct DebugCallState {
 /// Stateful only for package-local identifier equality and request/output pairing.
 /// Given the same record order, its output is deterministic.
 #[derive(Default)]
-pub(crate) struct RolloutDebugRedactor {
+pub struct RolloutDebugRedactor {
     ids: BTreeMap<IdNamespace, BTreeMap<String, u64>>,
     calls: BTreeMap<String, DebugCallState>,
 }
 
 impl RolloutDebugRedactor {
+    /// Reserve the package-local thread identifier used by the bundle manifest.
+    pub fn register_thread_id(&mut self, thread_id: &str) -> u64 {
+        self.local_id(IdNamespace::Thread, thread_id)
+    }
+
+    /// Redact one native JSONL record into a non-replayable JSON value.
+    pub fn redact_json_line_to_value(&mut self, line: &[u8]) -> Value {
+        serde_json::to_value(self.redact_json_line(line))
+            .expect("rollout debug records must serialize")
+    }
+
+    /// Return the positional placeholder for a source line that exceeded the
+    /// collector's retained-byte bound.
+    pub fn oversized_value() -> Value {
+        serde_json::to_value(DebugRolloutRecord::oversized())
+            .expect("rollout debug placeholders must serialize")
+    }
+
     pub(crate) fn redact_json_line(&mut self, line: &[u8]) -> DebugRolloutRecord {
         let Ok(raw) = serde_json::from_slice::<Value>(line) else {
             return DebugRolloutRecord::MalformedRedacted {

@@ -1419,6 +1419,9 @@ impl MessageProcessor {
             ClientRequest::FeedbackUpload { params, .. } => {
                 self.feedback_processor.feedback_upload(params).await
             }
+            ClientRequest::SpineFeedbackUpload { params, .. } => {
+                self.feedback_processor.spine_feedback_upload(params).await
+            }
         };
 
         match result {

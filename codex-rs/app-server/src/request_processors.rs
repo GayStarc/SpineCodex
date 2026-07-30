@@ -514,6 +514,7 @@ mod plugins;
 mod process_exec_processor;
 mod remote_control_processor;
 mod search;
+mod spine_feedback_processor;
 mod thread_processor;
 mod token_usage_replay;
 mod turn_processor;

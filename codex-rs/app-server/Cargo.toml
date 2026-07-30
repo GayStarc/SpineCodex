@@ -86,6 +86,8 @@ codex-utils-path-uri = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 futures = { workspace = true }
+flate2 = { workspace = true }
+image = { workspace = true, features = ["png"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
@@ -119,7 +121,6 @@ base64 = { workspace = true }
 codex-model-provider-info = { workspace = true }
 codex-utils-cargo-bin = { workspace = true }
 core_test_support = { workspace = true }
-flate2 = { workspace = true }
 hmac = { workspace = true }
 opentelemetry = { workspace = true }
 opentelemetry_sdk = { workspace = true }

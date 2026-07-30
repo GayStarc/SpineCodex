@@ -1976,6 +1976,30 @@
           "type": "object"
         },
         {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
+                "feedback/spineUpload"
+              ],
+              "title": "Feedback/spineUploadRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/SpineFeedbackUploadParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Feedback/spineUploadRequest",
+          "type": "object"
+        },
+        {
           "description": "Execute a standalone command (argv vector) under the server's sandbox.",
           "properties": {
             "id": {
@@ -16976,6 +17000,56 @@
           "resetsAt",
           "used"
         ],
+        "type": "object"
+      },
+      "SpineFeedbackScreenshot": {
+        "properties": {
+          "pngBase64": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "pngBase64"
+        ],
+        "type": "object"
+      },
+      "SpineFeedbackUploadParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "screenshots": {
+            "default": [],
+            "items": {
+              "$ref": "#/definitions/v2/SpineFeedbackScreenshot"
+            },
+            "type": "array"
+          },
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "threadId"
+        ],
+        "title": "SpineFeedbackUploadParams",
+        "type": "object"
+      },
+      "SpineFeedbackUploadResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "reportId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "reportId"
+        ],
+        "title": "SpineFeedbackUploadResponse",
         "type": "object"
       },
       "SpineNodeContextPressure": {

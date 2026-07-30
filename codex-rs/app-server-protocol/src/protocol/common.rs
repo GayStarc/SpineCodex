@@ -1053,6 +1053,12 @@ client_request_definitions! {
         response: v2::FeedbackUploadResponse,
     },
 
+    SpineFeedbackUpload => "feedback/spineUpload" {
+        params: v2::SpineFeedbackUploadParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::SpineFeedbackUploadResponse,
+    },
+
     /// Execute a standalone command (argv vector) under the server's sandbox.
     OneOffCommandExec => "command/exec" {
         params: v2::CommandExecParams,
