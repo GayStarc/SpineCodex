@@ -1851,6 +1851,33 @@ impl Session {
             ));
     }
 
+    pub(crate) async fn record_spawn_failure(
+        &self,
+        diagnostic: String,
+        salvaged_memory: Option<String>,
+    ) {
+        if !self
+            .services
+            .agent_control
+            .suppresses_parent_completion_notification(self.thread_id)
+        {
+            return;
+        }
+        let mut record = self.spawn_failure_record.lock().await;
+        if record.is_none() {
+            *record = Some(crate::spine::spawn_salvage::SpawnFailureRecord {
+                diagnostic,
+                salvaged_memory,
+            });
+        }
+    }
+
+    pub(crate) async fn take_spawn_failure_record(
+        &self,
+    ) -> Option<crate::spine::spawn_salvage::SpawnFailureRecord> {
+        self.spawn_failure_record.lock().await.take()
+    }
+
     /// Persist the event to rollout and send it to clients.
     pub(crate) async fn send_event(&self, turn_context: &TurnContext, msg: EventMsg) {
         let legacy_source = msg.clone();

@@ -291,6 +291,67 @@ fn test_session_telemetry() -> SessionTelemetry {
     )
 }
 
+#[tokio::test]
+async fn salvage_tool_choice_keeps_request_prefix_and_cache_key() {
+    let thread_id = ThreadId::new();
+    let client = test_model_client_with_thread_id(thread_id, SessionSource::Cli)
+        .with_prompt_cache_key_override(Some("shared-cache-key".to_string()));
+    let prompt = Prompt {
+        input: vec![ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: "branch progress".to_string(),
+            }],
+            phase: None,
+            internal_chat_message_metadata_passthrough: None,
+        }],
+        base_instructions: BaseInstructions {
+            text: "base".to_string(),
+        },
+        ..Default::default()
+    };
+    let model_info = test_model_info();
+    let responses_metadata = test_responses_metadata_for_client(
+        &client,
+        Some("turn-1"),
+        format!("{thread_id}:0"),
+        None,
+        TestCodexResponsesRequestKind::Turn,
+    );
+    let setup = client.current_client_setup().await.expect("client setup");
+    let normal = client
+        .build_responses_request(
+            &setup.api_provider,
+            &prompt,
+            &model_info,
+            None,
+            codex_protocol::config_types::ReasoningSummary::Auto,
+            None,
+            &responses_metadata,
+        )
+        .expect("normal request");
+    let salvage = client
+        .build_responses_request_with_tool_choice(
+            &setup.api_provider,
+            &prompt,
+            &model_info,
+            None,
+            codex_protocol::config_types::ReasoningSummary::Auto,
+            None,
+            &responses_metadata,
+            "none",
+        )
+        .expect("salvage request");
+
+    assert_eq!(normal.input, salvage.input);
+    assert_eq!(normal.instructions, salvage.instructions);
+    assert_eq!(normal.tools, salvage.tools);
+    assert_eq!(normal.prompt_cache_key, salvage.prompt_cache_key);
+    assert_eq!(normal.tool_choice, "auto");
+    assert_eq!(salvage.tool_choice, "none");
+}
+
 #[test]
 fn ultra_reasoning_uses_max_for_requests() {
     assert_eq!(

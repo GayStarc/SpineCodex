@@ -38,6 +38,7 @@ use serde_json::json;
 use std::time::Duration;
 use tokio::time::Instant;
 use tokio::time::sleep;
+use wiremock::ResponseTemplate;
 
 const SPAWN_NAMESPACE: &str = "spine";
 const SPAWN_TOOL: &str = "spawn";
@@ -563,6 +564,148 @@ async fn spawn_starts_batch_concurrently_and_orders_reverse_completion_impl() ->
             "provider_cache_hit_claim": false,
         })
     );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn failed_child_salvage_preserves_memory_and_cache_key() -> Result<()> {
+    let server = start_mock_server().await;
+    let parent_prompt = "run a spawn batch with failure salvage";
+    mount_sse_once_match(
+        &server,
+        move |request: &wiremock::Request| {
+            body_contains(request, parent_prompt) && !body_contains(request, BRANCH_PROMPT_MARKER)
+        },
+        sse(vec![
+            ev_response_created("salvage-parent-response"),
+            ev_function_call_with_namespace(
+                SPAWN_CALL_ID,
+                SPAWN_NAMESPACE,
+                SPAWN_TOOL,
+                &spawn_args("salvage-first-child-marker", "salvage-second-child-marker"),
+            ),
+            ev_completed("salvage-parent-response"),
+        ]),
+    )
+    .await;
+    mount_response_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            child_task_marker(request, "salvage-first-child-marker")
+                && !body_contains(request, "failure-diagnostic")
+        },
+        ResponseTemplate::new(503).set_body_json(json!({
+            "error": {
+                "code": "server_is_overloaded",
+                "message": "selected model is at capacity"
+            }
+        })),
+    )
+    .await;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            child_task_marker(request, "salvage-first-child-marker")
+                && body_contains(request, "failure-diagnostic")
+        },
+        sse(vec![
+            ev_response_created("salvage-memory-response"),
+            ev_assistant_message(
+                "salvage-memory-message",
+                "confirmed progress survived the upstream failure",
+            ),
+            ev_completed("salvage-memory-response"),
+        ]),
+    )
+    .await;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| child_task_marker(request, "salvage-second-child-marker"),
+        sse(vec![
+            ev_response_created("salvage-second-response"),
+            ev_assistant_message("salvage-second-message", "second child completed"),
+            ev_completed("salvage-second-response"),
+        ]),
+    )
+    .await;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            !body_contains(request, BRANCH_PROMPT_MARKER)
+                && body_contains(request, "confirmed progress survived the upstream failure")
+                && body_contains(request, "child errored")
+        },
+        sse(vec![
+            ev_response_created("salvage-parent-followup"),
+            ev_assistant_message("salvage-parent-final", "failure salvage observed"),
+            ev_completed("salvage-parent-followup"),
+        ]),
+    )
+    .await;
+
+    let test = spine_builder().build(&server).await?;
+    test.submit_turn(parent_prompt).await?;
+
+    let requests = server.received_requests().await.unwrap_or_default();
+    let failed_requests = requests
+        .iter()
+        .filter(|request| {
+            child_task_marker(request, "salvage-first-child-marker")
+                && !body_contains(request, "failure-diagnostic")
+        })
+        .collect::<Vec<_>>();
+    let salvage_requests = requests
+        .iter()
+        .filter(|request| {
+            child_task_marker(request, "salvage-first-child-marker")
+                && body_contains(request, "failure-diagnostic")
+        })
+        .collect::<Vec<_>>();
+    let second_child_requests = requests
+        .iter()
+        .filter(|request| child_task_marker(request, "salvage-second-child-marker"))
+        .collect::<Vec<_>>();
+    let parent_followup_requests = requests
+        .iter()
+        .filter(|request| {
+            !body_contains(request, BRANCH_PROMPT_MARKER)
+                && body_contains(request, "confirmed progress survived the upstream failure")
+                && body_contains(request, "child errored")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(failed_requests.len(), 1);
+    assert_eq!(salvage_requests.len(), 1);
+    assert_eq!(second_child_requests.len(), 1);
+    assert_eq!(parent_followup_requests.len(), 1);
+
+    let failed_request = failed_requests[0];
+    let salvage_request = salvage_requests[0];
+    let failed_body: Value =
+        serde_json::from_slice(&decoded_body(failed_request).expect("failed request body"))?;
+    let salvage_body: Value =
+        serde_json::from_slice(&decoded_body(salvage_request).expect("salvage request body"))?;
+    assert_eq!(
+        failed_body["prompt_cache_key"], salvage_body["prompt_cache_key"],
+        "salvage must retain the failed child cache key"
+    );
+    assert_eq!(salvage_body["tool_choice"], "none");
+    assert_eq!(failed_body["instructions"], salvage_body["instructions"]);
+    assert_eq!(failed_body["tools"], salvage_body["tools"]);
+    let failed_input = failed_body["input"].as_array().expect("failed input array");
+    let salvage_input = salvage_body["input"]
+        .as_array()
+        .expect("salvage input array");
+    assert_eq!(
+        &salvage_input[..failed_input.len()],
+        failed_input.as_slice(),
+        "salvage must preserve the failed request input as an exact prefix"
+    );
+    assert_eq!(salvage_input.len(), failed_input.len() + 1);
+    assert_eq!(
+        salvage_input.last().and_then(|item| item["role"].as_str()),
+        Some("developer")
+    );
+
     Ok(())
 }
 

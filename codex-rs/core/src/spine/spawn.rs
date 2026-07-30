@@ -566,7 +566,8 @@ async fn execute_batch_transaction(
         let thread_id = *thread_id;
         async move {
             let status = wait_for_terminal(&control, thread_id).await;
-            let result = result_from_status(ordinal, thread_id, status);
+            let failure_record = control.take_spawn_failure_record(thread_id).await;
+            let result = result_from_status(ordinal, thread_id, status, failure_record);
             let event = {
                 let mut statuses = progress_statuses.lock().await;
                 statuses[ordinal] = result_status(&result);
@@ -623,7 +624,17 @@ async fn execute_batch_transaction(
             for (ordinal, thread_id, _) in &live {
                 let status = session.services.agent_control.get_status(*thread_id).await;
                 if is_spawn_terminal(&status) {
-                    results[*ordinal] = Some(result_from_status(*ordinal, *thread_id, status));
+                    let failure_record = session
+                        .services
+                        .agent_control
+                        .take_spawn_failure_record(*thread_id)
+                        .await;
+                    results[*ordinal] = Some(result_from_status(
+                        *ordinal,
+                        *thread_id,
+                        status,
+                        failure_record,
+                    ));
                 }
             }
             true
@@ -896,7 +907,7 @@ fn normalized_progress_status(
     status: AgentStatus,
 ) -> AgentStatus {
     if is_spawn_terminal(&status) {
-        result_status(&result_from_status(ordinal, thread_id, status))
+        result_status(&result_from_status(ordinal, thread_id, status, None))
     } else {
         status
     }
@@ -1063,7 +1074,23 @@ fn path_is_in_subtree(candidate: &AgentPath, root: &AgentPath) -> bool {
             .is_some_and(|suffix| suffix.starts_with('/'))
 }
 
-fn result_from_status(ordinal: usize, thread_id: ThreadId, status: AgentStatus) -> SpawnResult {
+fn result_from_status(
+    ordinal: usize,
+    thread_id: ThreadId,
+    status: AgentStatus,
+    failure_record: Option<crate::spine::spawn_salvage::SpawnFailureRecord>,
+) -> SpawnResult {
+    if let Some(record) = failure_record {
+        let diagnostic = format!("child errored: {}", record.diagnostic);
+        return SpawnResult {
+            ordinal: ordinal as u32,
+            outcome: SpawnOutcome::Errored,
+            memory_body: record.salvaged_memory.unwrap_or_else(|| diagnostic.clone()),
+            diagnostic: Some(diagnostic),
+            execution_ref: Some(thread_id.to_string()),
+        };
+    }
+
     match status {
         AgentStatus::Completed(Some(memory)) if !memory.trim().is_empty() => SpawnResult {
             ordinal: ordinal as u32,
