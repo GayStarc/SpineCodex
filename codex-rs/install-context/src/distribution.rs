@@ -17,6 +17,7 @@ pub const GITHUB_ISSUE_TEMPLATE_URL: &str =
     "https://github.com/GhabiX/SpineCodex/issues/new?template=3-cli.yml";
 pub const ANNOUNCEMENT_TIP_URL: &str =
     "https://raw.githubusercontent.com/GhabiX/SpineCodex/main/announcement_tip.toml";
+pub const SPINE_FEEDBACK_SENTRY_DSN: &str = "https://bcddd0c5bf278698fd2772e0939054c5@o4511822106525696.ingest.de.sentry.io/4511822112030800";
 pub const VERSION_CACHE_FILENAME: &str = "spine-codex-version.json";
 
 pub fn supports_automatic_update(method: &InstallMethod) -> bool {

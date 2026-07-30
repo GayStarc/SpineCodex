@@ -3081,11 +3081,14 @@ name = "codex-feedback"
 version = "0.2.1"
 dependencies = [
  "anyhow",
+ "codex-install-context",
  "codex-login",
  "codex-protocol",
  "mime_guess",
  "pretty_assertions",
+ "reqwest 0.12.28",
  "sentry",
+ "serde_json",
  "tracing",
  "tracing-subscriber",
 ]
