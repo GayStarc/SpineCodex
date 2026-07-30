@@ -29,30 +29,77 @@ use spine_core::SpawnReceipt;
 use spine_core::SpineCompiler;
 #[cfg(test)]
 use spine_core::SpineConfig;
+use spine_core::SpineOperationFact;
 use spine_core::SpineProjection;
 use spine_core::ToolCallGroup;
 use spine_core::ToolOutcome;
 use spine_core::ToolUse;
+use spine_core::ToolValidation;
 use spine_core::TrimEdit;
 use spine_core::TrimProjection;
 #[cfg(test)]
 use spine_core::TrimRequest;
+use spine_core::ValidatedTransition;
 
 pub(crate) mod config;
 pub(crate) mod context_handler;
+pub(crate) mod context_plan;
+#[cfg(test)]
+#[path = "context_plan_tests.rs"]
+mod context_plan_tests;
+pub(crate) mod coordinator;
+#[cfg(test)]
+#[path = "coordinator_tests.rs"]
+mod coordinator_tests;
+pub(crate) mod legacy_rollout;
 pub(crate) mod memory_projection;
 pub(crate) mod observer;
-pub(crate) mod pressure;
+#[cfg(test)]
+#[path = "persistence_baseline_tests.rs"]
+mod persistence_baseline_tests;
+#[cfg(test)]
+mod pressure;
 pub(crate) mod rollout_debug;
 pub(crate) mod session_config;
 pub(crate) mod session_observer;
 pub(crate) mod session_runtime;
 pub(crate) mod spawn;
 pub(crate) mod spawn_salvage;
-pub(crate) mod status;
 pub(crate) mod tool_response;
 
 pub(crate) const TOOL_RESULT_CLEARED_MESSAGE: &str = spine_core::TRIM_SNIPPED_BODY;
+
+pub(crate) fn replace_context_if_changed(history: &mut ContextManager, items: Vec<ResponseItem>) {
+    if history.raw_items() != items {
+        history.replace(items);
+    }
+}
+
+pub(crate) fn validated_control_fact(
+    tool: spine_core::SpineTool,
+    arguments: &str,
+) -> Result<SpineOperationFact, spine_core::ToolValidationError> {
+    match spine_core::validate_tool(tool, arguments)? {
+        ToolValidation::Transition(ValidatedTransition::Open { summary }) => {
+            Ok(SpineOperationFact::Open { summary })
+        }
+        ToolValidation::Transition(ValidatedTransition::Close { memory }) => {
+            Ok(SpineOperationFact::Close { memory })
+        }
+        ToolValidation::Transition(ValidatedTransition::Next { summary, memory }) => {
+            Ok(SpineOperationFact::Next {
+                closed_memory: memory,
+                next_summary: summary,
+            })
+        }
+        ToolValidation::Transition(
+            ValidatedTransition::Trim(_) | ValidatedTransition::Spawn { .. },
+        )
+        | ToolValidation::Ordinary => Err(spine_core::ToolValidationError::UnknownTool(
+            tool.qualified_name(),
+        )),
+    }
+}
 
 pub(crate) fn canonical_projected_item(
     history: &ContextManager,
@@ -262,6 +309,30 @@ pub(crate) fn effective_rollout(rollout: &[RolloutItem]) -> Vec<(usize, &Rollout
     effective_rollout_from_source(&source)
 }
 
+pub(crate) fn is_canonical_rollout(
+    rollout: &[RolloutItem],
+) -> Result<bool, coordinator::CoordinatorError> {
+    Ok(matches!(
+        coordinator::replay_mode(&effective_rollout(rollout))?,
+        coordinator::ReplayMode::Canonical { .. }
+    ))
+}
+
+pub(crate) fn trim_uncommitted_canonical_fork_source(items: &mut Vec<RolloutItem>) {
+    while items.last().is_some_and(|item| {
+        matches!(
+            item,
+            RolloutItem::ResponseItem(ResponseItem::Reasoning { .. })
+        ) || matches!(
+            item,
+            RolloutItem::ResponseItem(ResponseItem::Message { role, .. })
+                if role == "assistant"
+        )
+    }) {
+        items.pop();
+    }
+}
+
 pub(crate) fn effective_rollout_from_source<'a>(
     source: &[(usize, &'a RolloutItem)],
 ) -> Vec<(usize, &'a RolloutItem)> {
@@ -323,7 +394,12 @@ pub(crate) fn effective_rollout_from_source<'a>(
             continue;
         }
         if is_spine_source_item(item)
-            || matches!(item, RolloutItem::EventMsg(EventMsg::TokenCount(_)))
+            || matches!(
+                item,
+                RolloutItem::EventMsg(EventMsg::TokenCount(_))
+                    | RolloutItem::SpineSamplingStarted(_)
+                    | RolloutItem::SpineTransition(_)
+            )
         {
             effective.push((response_ordinal, item));
         }
@@ -401,7 +477,9 @@ fn lex_rollout(effective: &[(usize, &RolloutItem)], spawn_enabled: bool) -> Vec<
             | RolloutItem::InterAgentCommunicationMetadata { .. }
             | RolloutItem::TurnContext(_)
             | RolloutItem::WorldState(_)
-            | RolloutItem::EventMsg(_) => {}
+            | RolloutItem::EventMsg(_)
+            | RolloutItem::SpineSamplingStarted(_)
+            | RolloutItem::SpineTransition(_) => {}
         }
         index += 1;
     }
@@ -439,14 +517,17 @@ fn completed_tool_group(
 
     let mut last_group_index = cursor.saturating_sub(1);
     while let Some((raw_index, RolloutItem::ResponseItem(item))) = effective.get(cursor).copied() {
-        let Some((call_id, output)) = normalized_tool_response(item) else {
+        let Some(response) = normalized_tool_response(item) else {
             break;
         };
-        let Some(call) = calls.iter_mut().find(|call| call.call_id == call_id) else {
+        let Some(call) = calls
+            .iter_mut()
+            .find(|call| call.call_id == response.call_id)
+        else {
             break;
         };
-        call.outcome = Some(classify_tool_outcome(call, output, spawn_enabled));
-        call.output = Some(output.body.to_text().unwrap_or_default());
+        call.outcome = Some(classify_tool_outcome(call, response.output, spawn_enabled));
+        call.output = Some(response.output.body.to_text().unwrap_or_default());
         call.output_boundary = Some(RawBoundary(raw_index as u64));
         last_group_index = cursor;
         cursor += 1;
@@ -488,6 +569,7 @@ fn normalized_tool_request(item: &ResponseItem) -> Option<ToolUse> {
         call_id: call_id.clone(),
         name: qualified_tool_name(namespace, name),
         arguments: arguments.clone(),
+        call_ordinal: None,
         outcome: None,
         output: None,
         output_boundary: None,
@@ -496,16 +578,21 @@ fn normalized_tool_request(item: &ResponseItem) -> Option<ToolUse> {
 
 fn normalized_tool_response(
     item: &ResponseItem,
-) -> Option<(&str, &codex_protocol::models::FunctionCallOutputPayload)> {
+) -> Option<NormalizedToolResponse<'_>> {
     match item {
         ResponseItem::FunctionCallOutput {
             call_id, output, ..
-        }
-        | ResponseItem::CustomToolCallOutput {
+        } => Some(NormalizedToolResponse { call_id, output }),
+        ResponseItem::CustomToolCallOutput {
             call_id, output, ..
-        } => Some((call_id, output)),
+        } => Some(NormalizedToolResponse { call_id, output }),
         _ => None,
     }
+}
+
+struct NormalizedToolResponse<'a> {
+    call_id: &'a str,
+    output: &'a codex_protocol::models::FunctionCallOutputPayload,
 }
 
 fn classify_tool_outcome(
@@ -514,9 +601,6 @@ fn classify_tool_outcome(
     spawn_enabled: bool,
 ) -> ToolOutcome {
     if call.name == "spine.spawn" {
-        if output.success == Some(false) {
-            return ToolOutcome::Failed;
-        }
         return if spawn_enabled && is_valid_spawn_success_carrier(call, &output.body) {
             ToolOutcome::Succeeded
         } else {
@@ -572,6 +656,9 @@ fn message_from_response_item(raw_index: usize, item: &ResponseItem) -> Message 
                 .collect::<Vec<_>>()
                 .join("\n"),
         ),
+        // Spine MODIFIED: Give native reasoning a persistence-stable semantic identity.
+        // Reason: Reasoning remains an assistant group prefix, while its optional native fields are not replay-stable.
+        ResponseItem::Reasoning { .. } => (MessageRole::Assistant, String::new()),
         _ => (
             MessageRole::Assistant,
             serde_json::to_string(item).unwrap_or_default(),

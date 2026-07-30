@@ -1,5 +1,7 @@
 use crate::ContextEdit;
 use crate::ContextItem;
+use crate::ExecutedSpineFact;
+use crate::ExecutionOrigin;
 use crate::MemorySlot;
 use crate::Message;
 use crate::MessageRole;
@@ -13,6 +15,7 @@ use crate::RawSpan;
 use crate::RolloutEvent;
 use crate::SpawnReceipt;
 use crate::SpawnTask;
+use crate::SpineOperationFact;
 use crate::SpineProjection;
 use crate::ToolCallGroup;
 use crate::ToolOutcome;
@@ -68,6 +71,66 @@ impl TrimReducer {
             apply_trim_request(&mut self.projection, &self.active, &request);
         }
         expire_trim_candidates(&mut self.projection, &mut self.active);
+        for call in group
+            .calls
+            .iter()
+            .filter(|call| !call.name.starts_with("spine."))
+        {
+            let (Some(boundary), Some(body)) = (call.output_boundary, call.output.as_deref())
+            else {
+                continue;
+            };
+            if body.len() <= self.threshold_bytes {
+                continue;
+            }
+            let trim_id = format!("trim_{}", boundary.0);
+            self.projection.edits.insert(
+                boundary,
+                (
+                    call.call_id.clone(),
+                    TrimEdit::Tagged {
+                        trim_id,
+                        body: body.to_string(),
+                        eligible: true,
+                    },
+                ),
+            );
+            self.active.push(boundary);
+        }
+    }
+
+    pub(crate) fn apply_sampling_group(
+        &mut self,
+        group: &ToolCallGroup,
+        trims: &[(RawBoundary, &ExecutedSpineFact)],
+    ) -> Result<(), TypedTransitionError> {
+        for (boundary, fact) in trims {
+            let SpineOperationFact::Trim {
+                target,
+                validated_edit,
+                ..
+            } = &fact.operation
+            else {
+                return Err(TypedTransitionError::NonTrimFactInTrimSet);
+            };
+            if !self.active.contains(boundary) {
+                return Err(TypedTransitionError::InactiveTrimTarget(*boundary));
+            }
+            let Some((call_id, edit)) = self.projection.edits.get_mut(boundary) else {
+                return Err(TypedTransitionError::InactiveTrimTarget(*boundary));
+            };
+            if call_id != &target.call_id {
+                return Err(TypedTransitionError::TrimTargetMismatch);
+            }
+            *edit = validated_edit.clone();
+        }
+
+        expire_trim_candidates(&mut self.projection, &mut self.active);
+        self.observe_trim_candidates(group);
+        Ok(())
+    }
+
+    fn observe_trim_candidates(&mut self, group: &ToolCallGroup) {
         for call in group
             .calls
             .iter()
@@ -213,6 +276,103 @@ impl SpineReducer {
             context_edit: ContextEdit::between(&before, &projection.visible_context),
             projection,
         }
+    }
+
+    pub(crate) fn apply_source(&mut self, event: RolloutEvent) -> ProjectionDelta {
+        let before = self.projection().visible_context;
+        self.last_boundary = Some(event.boundary());
+        self.settled_spawn_call_ids.clear();
+        match event {
+            RolloutEvent::Message(message) => self.apply_message(message),
+            RolloutEvent::ToolCall(group) => {
+                self.push_cursor_entry(NodeEntry::Leaf(ContextItem::ToolCall(group)));
+            }
+            RolloutEvent::Opaque { boundary } => {
+                self.push_cursor_entry(NodeEntry::Leaf(ContextItem::Native {
+                    source: crate::NativeItemRef::Rollout { ordinal: boundary },
+                }));
+            }
+            RolloutEvent::Synthetic { item, .. } => {
+                self.push_cursor_entry(NodeEntry::Leaf(item));
+            }
+            RolloutEvent::Compact {
+                boundary,
+                replacement_history,
+            } => self.apply_compact(boundary, replacement_history),
+        }
+        let projection = self.projection();
+        ProjectionDelta {
+            context_edit: ContextEdit::between(&before, &projection.visible_context),
+            projection,
+        }
+    }
+
+    pub(crate) fn apply_sampling_group(
+        &mut self,
+        group: ToolCallGroup,
+        facts: &[&ExecutedSpineFact],
+    ) -> Result<ProjectionDelta, TypedTransitionError> {
+        let before = self.projection().visible_context;
+        self.last_boundary = Some(group.end);
+        self.settled_spawn_call_ids.clear();
+
+        let mut structural = facts.iter().filter(|fact| {
+            matches!(
+                fact.operation,
+                SpineOperationFact::Open { .. }
+                    | SpineOperationFact::Close { .. }
+                    | SpineOperationFact::Next { .. }
+                    | SpineOperationFact::Spawn { .. }
+            )
+        });
+        let first = structural.next();
+        if structural.next().is_some() {
+            return Err(TypedTransitionError::MultipleStructuralFacts);
+        }
+
+        match first.map(|fact| &fact.operation) {
+            Some(SpineOperationFact::Open { summary }) => {
+                self.open(group, summary.clone());
+            }
+            Some(SpineOperationFact::Close { memory }) => {
+                if self.cursor_kind() != NodeKind::Task {
+                    return Err(TypedTransitionError::TaskCursorRequired("close"));
+                }
+                self.close(group, memory.clone());
+            }
+            Some(SpineOperationFact::Next {
+                closed_memory,
+                next_summary,
+            }) => {
+                if self.cursor_kind() != NodeKind::Task {
+                    return Err(TypedTransitionError::TaskCursorRequired("next"));
+                }
+                self.next(group, next_summary.clone(), closed_memory.clone());
+            }
+            Some(SpineOperationFact::Spawn {
+                tasks,
+                terminal_results,
+            }) => {
+                let receipt = SpawnReceipt {
+                    schema: crate::SPINE_SPAWN_RESULT_SCHEMA.to_string(),
+                    results: terminal_results.clone(),
+                };
+                if let Some(fact) = first {
+                    self.settled_spawn_call_ids
+                        .push(origin_call_id(&fact.origin).to_string());
+                }
+                self.spawn(group, vec![(tasks.clone(), receipt)]);
+            }
+            Some(SpineOperationFact::Trim { .. }) | None => {
+                self.push_cursor_entry(NodeEntry::Leaf(ContextItem::ToolCall(group)));
+            }
+        }
+
+        let projection = self.projection();
+        Ok(ProjectionDelta {
+            context_edit: ContextEdit::between(&before, &projection.visible_context),
+            projection,
+        })
     }
 
     pub(crate) fn projection(&self) -> SpineProjection {
@@ -543,6 +703,22 @@ impl SpineReducer {
     }
 }
 
+fn origin_call_id(origin: &ExecutionOrigin) -> &str {
+    match origin {
+        ExecutionOrigin::Direct { call_id } => call_id,
+        ExecutionOrigin::CodeMode { outer_call_id, .. } => outer_call_id,
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum TypedTransitionError {
+    MultipleStructuralFacts,
+    TaskCursorRequired(&'static str),
+    NonTrimFactInTrimSet,
+    InactiveTrimTarget(RawBoundary),
+    TrimTargetMismatch,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct OpenArgs {
@@ -658,6 +834,14 @@ pub(crate) fn derive_trim_projection(
         reducer.apply(event);
     }
     reducer.projection
+}
+
+fn expire_trim_candidates(projection: &mut TrimProjection, active: &mut Vec<RawBoundary>) {
+    for boundary in active.drain(..) {
+        if let Some((_, TrimEdit::Tagged { eligible, .. })) = projection.edits.get_mut(&boundary) {
+            *eligible = false;
+        }
+    }
 }
 
 fn apply_trim_request(

@@ -38,19 +38,28 @@ fn success_carriers_round_trip_through_persisted_payloads() {
 }
 
 #[test]
-fn explicit_success_metadata_takes_precedence_over_carrier() {
+fn transient_success_metadata_does_not_change_persisted_classification() {
     let mut payload = produced_payload(SpineToolResponse::Open);
     payload.success = Some(false);
     assert_eq!(
         SpineToolResponse::outcome("spine.open", &payload),
-        ToolOutcome::Failed
+        ToolOutcome::Succeeded
     );
 
     payload.success = Some(true);
     payload.body = FunctionCallOutputBody::Text("not a carrier".to_string());
     assert_eq!(
         SpineToolResponse::outcome("spine.open", &payload),
-        ToolOutcome::Succeeded
+        ToolOutcome::Unknown
+    );
+
+    let ordinary = FunctionCallOutputPayload {
+        body: FunctionCallOutputBody::Text("ordinary output".to_string()),
+        success: Some(true),
+    };
+    assert_eq!(
+        SpineToolResponse::outcome("exec", &ordinary),
+        ToolOutcome::Unknown
     );
 }
 

@@ -26,6 +26,7 @@ use crate::session::time_reminder::CurrentTimeReminderState;
 use crate::session_startup_prewarm::SessionStartupPrewarmHandle;
 // Spine MODIFIED: Import the observer and runtime halves of the private Spine adapter.
 // Reason: SessionState owns their lifetime beside the authoritative ContextManager.
+use crate::spine::coordinator::SharedSpineCoordinator;
 use crate::spine::observer::CodexSpineObserverHandler;
 use crate::spine::session_runtime::SessionSpineRuntime;
 use codex_protocol::protocol::RateLimitSnapshot;
@@ -85,6 +86,7 @@ impl SessionState {
             // Spine MODIFIED: Use a no-op observer for lightweight constructors.
             // Reason: Production bootstrap injects the channel-backed observer explicitly.
             CodexSpineObserverHandler::default(),
+            std::sync::Arc::new(std::sync::Mutex::new(None)),
         )
     }
 
@@ -94,11 +96,13 @@ impl SessionState {
         // Spine MODIFIED: Accept the session-scoped effect handler during state construction.
         // Reason: SDK transitions publish through Host-owned event and filesystem adapters.
         observer: CodexSpineObserverHandler,
+        spine_coordinator: SharedSpineCoordinator,
     ) -> Self {
         let history = ContextManager::new();
         // Spine MODIFIED: Instantiate the feature-gated runtime from immutable session config.
         // Reason: Disabled sessions retain base behavior through a None adapter.
-        let spine_runtime = SessionSpineRuntime::new(&session_configuration, observer);
+        let spine_runtime =
+            SessionSpineRuntime::new(&session_configuration, observer, spine_coordinator);
         Self {
             session_configuration,
             history,
@@ -126,8 +130,8 @@ impl SessionState {
         I: IntoIterator,
         I::Item: std::ops::Deref<Target = ResponseItem>,
     {
-        // Spine MODIFIED: Compile exactly the native items accepted by this append operation.
-        // Reason: Live JIT recognizes user and tool events once, after history has been filled.
+        // Spine MODIFIED: During Sampling, forward exactly the native items accepted by history.
+        // Reason: The SDK observes append-only source here; context changes wait for PostSampling.
         let start = self.history.raw_items().len();
         self.history.record_items(items, policy);
         if let Some(spine) = &mut self.spine_runtime {
@@ -253,21 +257,8 @@ impl SessionState {
         if let Some(spine) = &mut self.spine_runtime {
             spine.replace_last_turn_images(placeholder, self.history.history_version());
         }
+        self.mark_projected_usage_stale();
         true
-    }
-
-    #[cfg(test)]
-    fn spine_tree_update(&self) -> Option<codex_protocol::protocol::SpineTreeUpdateEvent> {
-        self.spine_runtime.as_ref()?.tree_update()
-    }
-
-    // Spine MODIFIED: Delegate tool validation to the session's current SDK projection.
-    // Reason: Handlers need read-only decisions without exposing runtime state or parser details.
-    pub(crate) fn validate_spine_control(&self, tool: spine_core::SpineTool) -> Result<(), String> {
-        self.spine_runtime
-            .as_ref()
-            .ok_or_else(|| "Spine is not enabled for this session".to_string())?
-            .validate_control(tool)
     }
 
     pub(crate) fn validate_spine_trim(
@@ -282,12 +273,21 @@ impl SessionState {
         spine.validate_trim(current_call_id, request)
     }
 
-    pub(crate) fn replace_last_turn_images(&mut self, placeholder: &str) -> bool {
-        let replaced = self.history.replace_last_turn_images(placeholder);
-        if replaced {
-            self.mark_projected_usage_stale();
-        }
-        replaced
+    pub(crate) fn validate_spine_control(&self, tool: spine_core::SpineTool) -> Result<(), String> {
+        self.spine_runtime
+            .as_ref()
+            .ok_or_else(|| "Spine is not enabled for this session".to_string())?
+            .validate_control(tool)
+    }
+
+    pub(crate) fn validate_spine_trim_request(
+        &self,
+        request: &spine_core::TrimRequest,
+    ) -> Result<(), String> {
+        self.spine_runtime
+            .as_ref()
+            .ok_or_else(|| "Spine trim runtime is unavailable".to_string())?
+            .validate_trim_request(request)
     }
     pub(crate) fn set_token_info(&mut self, info: Option<TokenUsageInfo>) {
         self.history.set_token_info(info);

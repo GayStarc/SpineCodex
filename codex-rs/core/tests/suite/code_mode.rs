@@ -3027,7 +3027,7 @@ image(out);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn spine_code_mode_carrier_prepares_view_image_webp_output() -> Result<()> {
+async fn spine_code_mode_native_output_prepares_view_image_webp() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;

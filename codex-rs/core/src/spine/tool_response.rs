@@ -32,22 +32,16 @@ impl SpineToolResponse {
     }
 
     pub(crate) fn outcome(tool_name: &str, payload: &FunctionCallOutputPayload) -> ToolOutcome {
-        match payload.success {
-            Some(true) => ToolOutcome::Succeeded,
-            Some(false) => ToolOutcome::Failed,
-            None => {
-                let Some(tool) = Self::from_qualified_name(tool_name) else {
-                    return ToolOutcome::Unknown;
-                };
-                if matches!(
-                    &payload.body,
-                    FunctionCallOutputBody::Text(body) if body == &tool.success_carrier()
-                ) {
-                    ToolOutcome::Succeeded
-                } else {
-                    ToolOutcome::Unknown
-                }
-            }
+        let Some(tool) = Self::from_qualified_name(tool_name) else {
+            return ToolOutcome::Unknown;
+        };
+        if matches!(
+            &payload.body,
+            FunctionCallOutputBody::Text(body) if body == &tool.success_carrier()
+        ) {
+            ToolOutcome::Succeeded
+        } else {
+            ToolOutcome::Unknown
         }
     }
 
@@ -80,7 +74,7 @@ impl SpineToolResponse {
         }
     }
 
-    fn success_carrier(self) -> String {
+    pub(crate) fn success_carrier(self) -> String {
         let tool = match self {
             Self::Open => SpineTool::Open,
             Self::Close => SpineTool::Close,

@@ -3,6 +3,8 @@ use super::materialize_context;
 use super::message_from_response_item;
 use super::normalized_tool_request;
 use super::normalized_tool_response;
+use crate::context::ContextualUserFragment;
+use crate::context::TurnAborted;
 use crate::context_manager::ContextManager;
 use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::ResponseItem;
@@ -142,6 +144,13 @@ impl SpineContextEventHandler for CodexContextHandler {
     ) -> Result<Self::PreparedContext, Self::Error> {
         let source = history.raw_items().to_vec();
         let mut items = source.clone();
+        for (offset, staged) in self.staged_cells.values().enumerate() {
+            let index = self.history_size.saturating_add(offset);
+            let item = items.get_mut(index).ok_or_else(|| {
+                CodexContextError(format!("staged context source {index} is out of bounds"))
+            })?;
+            *item = staged.clone();
+        }
         for event in events {
             match event {
                 ContextEvent::Tag { index, label } => {
@@ -262,32 +271,55 @@ pub(crate) fn response_item_to_char(
     pending_calls: &mut HashMap<String, ToolUse>,
     spawn_enabled: bool,
 ) -> SpineChar {
+    response_item_to_char_and_source(item, boundary, pending_calls, spawn_enabled).0
+}
+
+pub(crate) fn response_item_to_char_and_source(
+    item: &ResponseItem,
+    boundary: RawBoundary,
+    pending_calls: &mut HashMap<String, ToolUse>,
+    spawn_enabled: bool,
+) -> (SpineChar, ResponseItem) {
+    if is_turn_aborted_item(item) {
+        pending_calls.clear();
+        return (
+            SpineChar::TurnAborted(message_from_response_item(boundary.0 as usize, item)),
+            item.clone(),
+        );
+    }
     if let Some(request) = normalized_tool_request(item) {
         pending_calls.insert(request.call_id.clone(), request.clone());
-        return SpineChar::ToolRequest(ToolRequestChar {
-            boundary,
-            call_id: request.call_id,
-            name: request.name,
-            arguments: request.arguments,
-        });
+        return (
+            SpineChar::ToolRequest(ToolRequestChar {
+                boundary,
+                call_id: request.call_id,
+                name: request.name,
+                arguments: request.arguments,
+            }),
+            item.clone(),
+        );
     }
-    if let Some((call_id, output)) = normalized_tool_response(item) {
-        let Some(call) = pending_calls.remove(call_id) else {
-            return SpineChar::Opaque { boundary };
+    if let Some(response) = normalized_tool_response(item) {
+        let Some(call) = pending_calls.remove(response.call_id) else {
+            return (SpineChar::Opaque { boundary }, item.clone());
         };
-        return SpineChar::ToolResponse(ToolResponseChar {
-            boundary,
-            call_id: call_id.to_string(),
-            outcome: classify_tool_outcome(&call, output, spawn_enabled),
-            output: output.body.to_text().unwrap_or_default(),
-        });
+        return (
+            SpineChar::ToolResponse(ToolResponseChar {
+                boundary,
+                call_id: response.call_id.to_string(),
+                outcome: classify_tool_outcome(&call, response.output, spawn_enabled),
+                output: response.output.body.to_text().unwrap_or_default(),
+            }),
+            item.clone(),
+        );
     }
-    match item {
+    let character = match item {
         ResponseItem::Message { .. } | ResponseItem::Reasoning { .. } => {
             SpineChar::Message(message_from_response_item(boundary.0 as usize, item))
         }
         _ => SpineChar::Opaque { boundary },
-    }
+    };
+    (character, item.clone())
 }
 
 fn response_item_matches_char(
@@ -298,6 +330,9 @@ fn response_item_matches_char(
     match response_item_to_char(item, boundary, &mut HashMap::new(), false) {
         SpineChar::Message(message) => {
             matches!(character, SpineChar::Message(expected) if message == *expected)
+        }
+        SpineChar::TurnAborted(message) => {
+            matches!(character, SpineChar::TurnAborted(expected) if message == *expected)
         }
         SpineChar::ToolRequest(request) => {
             matches!(character, SpineChar::ToolRequest(expected) if request == *expected)
@@ -312,7 +347,19 @@ fn response_item_matches_char(
     }
 }
 
-fn apply_label(item: &mut ResponseItem, label: &ContextLabel) {
+fn is_turn_aborted_item(item: &ResponseItem) -> bool {
+    let ResponseItem::Message { content, .. } = item else {
+        return false;
+    };
+    content.iter().any(|content| {
+        let codex_protocol::models::ContentItem::InputText { text } = content else {
+            return false;
+        };
+        TurnAborted::matches_text(text)
+    })
+}
+
+pub(super) fn apply_label(item: &mut ResponseItem, label: &ContextLabel) {
     match label {
         ContextLabel::UserAnchor(anchor) => {
             crate::context::SpineUserAnchor::new(*anchor).apply(item);

@@ -4017,15 +4017,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "codex-spine-core"
-version = "0.2.2"
-dependencies = [
- "pretty_assertions",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "codex-state"
 version = "0.2.2"
 dependencies = [
@@ -12745,6 +12736,8 @@ dependencies = [
  "pretty_assertions",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
  "toml 0.9.11+spec-1.1.0",
 ]
 

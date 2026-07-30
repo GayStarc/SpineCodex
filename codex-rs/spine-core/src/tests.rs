@@ -1035,7 +1035,7 @@ fn host_unreachable_multiple_spawn_annotations_are_total_and_ordered() {
     };
     let RolloutEvent::ToolCall(second) = spawn(
         3,
-        tasks.clone(),
+        tasks,
         vec![
             spawn_result(0, SpawnOutcome::Completed, "second call task 0"),
             spawn_result(1, SpawnOutcome::Completed, "second call task 1"),
@@ -1065,7 +1065,7 @@ fn spawn_mixed_with_spine_control_does_not_import_children() {
     let tasks = spawn_tasks();
     let RolloutEvent::ToolCall(mut group) = spawn(
         1,
-        tasks.clone(),
+        tasks,
         vec![
             spawn_result(0, SpawnOutcome::Completed, "one"),
             spawn_result(1, SpawnOutcome::Completed, "two"),
@@ -1314,6 +1314,128 @@ fn structural_node_ids_are_deterministic_under_replay() {
     let second = SpineReducer::derive(&events);
     assert_eq!(first.nodes, second.nodes);
     assert_eq!(first.cursor.to_string(), "1.2.1");
+}
+
+#[test]
+fn spine_prompt_contract_covers_defaults_overrides_and_required_values() {
+    let defaults: toml::Value = toml::from_str(DEFAULT_CONFIG_TOML).unwrap();
+    let prompt = defaults
+        .get("prompt")
+        .and_then(toml::Value::as_table)
+        .unwrap();
+    let names = [
+        "jit",
+        "node",
+        "spawn",
+        "spawn_explicit_request_only",
+        "spawn_proactive",
+        "trim",
+    ];
+    assert_eq!(prompt.keys().map(String::as_str).collect::<Vec<_>>(), names);
+    assert!(!prompt["jit"].as_str().unwrap().trim().is_empty());
+    assert!(!prompt["node"].as_str().unwrap().trim().is_empty());
+    assert_eq!(prompt["trim"].as_str(), Some(""));
+    assert_eq!(prompt["spawn"].as_str(), Some(""));
+    assert!(
+        !prompt["spawn_explicit_request_only"]
+            .as_str()
+            .unwrap()
+            .trim()
+            .is_empty()
+    );
+    assert!(
+        !prompt["spawn_proactive"]
+            .as_str()
+            .unwrap()
+            .trim()
+            .is_empty()
+    );
+
+    let source = r#"
+schema_version = 1
+[limits]
+trim_threshold_bytes = 10000
+[prompt]
+jit = "jit override"
+node = "node override"
+trim = "trim override"
+spawn = "spawn override"
+spawn_explicit_request_only = "explicit override"
+spawn_proactive = "proactive override"
+[tools.open]
+description = "open"
+[tools.close]
+description = "close"
+[tools.next]
+description = "next"
+[tools.trim]
+description = "trim"
+[tools.spawn]
+description = "spawn"
+"#;
+    let config = SpineConfig::parse_toml(source)
+        .unwrap()
+        .with_features([Feature::Jit, Feature::Trim, Feature::Spawn])
+        .unwrap();
+    assert_eq!(config.prompt(Feature::Jit), "jit override");
+    assert_eq!(config.prompt(Feature::Trim), "trim override");
+    assert_eq!(config.prompt(Feature::Spawn), "spawn override");
+    assert_eq!(config.node_prompt(), Some("node override"));
+    assert_eq!(
+        config.spawn_prompt(SpawnPromptMode::ExplicitRequestOnly),
+        Some("explicit override")
+    );
+    assert_eq!(
+        config.spawn_prompt(SpawnPromptMode::Proactive),
+        Some("proactive override")
+    );
+
+    let missing = source.replace("jit = \"jit override\"\n", "");
+    assert!(matches!(
+        SpineConfig::parse_toml(&missing)
+            .unwrap()
+            .with_feature(Feature::Jit),
+        Err(InitError::MissingPrompt(Feature::Jit))
+    ));
+    let missing = source.replace("node = \"node override\"\n", "");
+    assert!(matches!(
+        SpineConfig::parse_toml(&missing)
+            .unwrap()
+            .with_feature(Feature::Jit),
+        Err(InitError::MissingPrompt(Feature::Jit))
+    ));
+    for (name, value) in [
+        ("spawn_explicit_request_only", "explicit"),
+        ("spawn_proactive", "proactive"),
+    ] {
+        let missing = source.replace(&format!("{name} = \"{value} override\"\n"), "");
+        assert!(matches!(
+            SpineConfig::parse_toml(&missing)
+                .unwrap()
+                .with_features([Feature::Jit, Feature::Spawn]),
+            Err(InitError::MissingPrompt(Feature::Spawn))
+        ));
+    }
+    for name in ["trim", "spawn"] {
+        let missing = source.replace(&format!("{name} = \"{name} override\"\n"), "");
+        assert!(
+            SpineConfig::parse_toml(&missing)
+                .unwrap()
+                .with_features([Feature::Jit, Feature::Trim, Feature::Spawn])
+                .is_ok()
+        );
+    }
+    let exact = source.replace("node override", &"x".repeat(1024));
+    assert!(SpineConfig::parse_toml(&exact).is_ok());
+    let oversized = source.replace("node override", &"x".repeat(1025));
+    assert!(matches!(
+        SpineConfig::parse_toml(&oversized),
+        Err(ConfigError::PromptTooLong {
+            name: "node",
+            max: 1024,
+            actual: 1025,
+        })
+    ));
 }
 
 #[test]

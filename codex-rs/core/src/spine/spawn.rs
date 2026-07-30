@@ -7,6 +7,7 @@ use crate::agent_communication::AgentCommunicationContext;
 use crate::agent_communication::AgentCommunicationKind;
 use crate::session::MailboxSubmissionCancellation;
 use crate::session::session::Session;
+use crate::session::step_context::StepContext;
 use crate::session::turn_context::TurnContext;
 use crate::tools::handlers::multi_agents_common::build_agent_spawn_config;
 use crate::tools::handlers::multi_agents_common::thread_spawn_source;
@@ -14,7 +15,6 @@ use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErr;
 use codex_protocol::protocol::InterAgentCommunication;
-use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SpineSpawnProgressEvent;
 use codex_protocol::protocol::SpineSpawnTaskProgress;
 use codex_protocol::user_input::UserInput;
@@ -31,6 +31,7 @@ use std::fmt::Display;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::time::Duration;
+use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
 const CORRECTION_MESSAGE: &str = concat!(
@@ -56,29 +57,139 @@ pub(crate) struct SpawnBatchCall {
 }
 
 #[derive(Default)]
-pub(crate) struct SpawnBatchCoordinator {
-    completed: HashMap<String, Result<SpawnReceipt, String>>,
+pub(crate) struct SpineSpawnGroup {
+    state: StdMutex<SpineSpawnGroupState>,
+    changed: Notify,
+}
+
+impl std::fmt::Debug for SpineSpawnGroup {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SpineSpawnGroup")
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Default)]
+struct SpineSpawnGroupState {
+    calls: Vec<RegisteredCall>,
+    finished: bool,
 }
 
 #[derive(Clone)]
+struct RegisteredCall {
+    call_id: String,
+    name: String,
+    arguments: String,
+}
+
+impl SpineSpawnGroup {
+    pub(crate) fn register(&self, call_id: &str, name: &str, arguments: &str) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.calls.iter().any(|call| call.call_id == call_id) {
+            return;
+        }
+        state.calls.push(RegisteredCall {
+            call_id: call_id.to_string(),
+            name: name.to_string(),
+            arguments: arguments.to_string(),
+        });
+    }
+
+    pub(crate) fn finish(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.finished = true;
+        self.changed.notify_waiters();
+    }
+
+    async fn spawn_call(
+        &self,
+        call_id: &str,
+        cancellation_token: &CancellationToken,
+    ) -> Result<SpawnBatchCall, String> {
+        let calls = loop {
+            let notified = self.changed.notified();
+            if let Some(calls) = {
+                let state = self
+                    .state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                state.finished.then(|| state.calls.clone())
+            } {
+                break calls;
+            }
+            tokio::select! {
+                _ = notified => {}
+                _ = cancellation_token.cancelled() => {
+                    return Err("spine.spawn was cancelled before response-group admission".to_string());
+                }
+            }
+        };
+
+        if calls.iter().any(|call| {
+            matches!(
+                call.name.as_str(),
+                "spine.open" | "spine.close" | "spine.next"
+            )
+        }) {
+            return Err(
+                "spine.spawn cannot be mixed with spine.open, spine.close, or spine.next"
+                    .to_string(),
+            );
+        }
+        let spawn_calls = calls
+            .iter()
+            .filter(|call| call.name == "spine.spawn")
+            .collect::<Vec<_>>();
+        if spawn_calls.len() > 1 {
+            return Err("spine.spawn may be called at most once in one model response".to_string());
+        }
+        let Some(call) = spawn_calls
+            .into_iter()
+            .find(|candidate| candidate.call_id == call_id)
+        else {
+            return Err(format!(
+                "spine.spawn call `{call_id}` is missing from its response group"
+            ));
+        };
+        Ok(SpawnBatchCall {
+            call_id: call.call_id.clone(),
+            fork_parent_call_id: call.call_id.clone(),
+            tasks: parse_tasks(&call.arguments)?,
+        })
+    }
+}
+
+#[derive(Clone, Default)]
 pub(crate) struct SpawnLifecycle {
     shared: Arc<SpawnLifecycleShared>,
 }
 
+#[derive(Default)]
 struct SpawnLifecycleShared {
     state: StdMutex<SpawnLifecycleState>,
+    changed: Notify,
 }
 
 #[derive(Default)]
 struct SpawnLifecycleState {
-    next_transaction_id: u64,
-    active_transactions: HashMap<u64, Option<MailboxSubmissionCancellation>>,
+    active_transaction: Option<ActiveSpawnTransaction>,
     abort_barriers: usize,
+}
+
+struct ActiveSpawnTransaction {
+    cancellation_token: CancellationToken,
+    mailbox_cancellation: Option<MailboxSubmissionCancellation>,
 }
 
 pub(crate) struct SpawnTransactionGuard {
     shared: Arc<SpawnLifecycleShared>,
-    transaction_id: u64,
 }
 
 pub(crate) struct SpawnAbortBarrier {
@@ -86,37 +197,30 @@ pub(crate) struct SpawnAbortBarrier {
     had_active_transactions: bool,
 }
 
-impl Default for SpawnLifecycle {
-    fn default() -> Self {
-        Self {
-            shared: Arc::new(SpawnLifecycleShared {
-                state: StdMutex::new(SpawnLifecycleState::default()),
-            }),
-        }
-    }
-}
-
 impl SpawnLifecycle {
-    pub(crate) fn try_enter(&self) -> Option<SpawnTransactionGuard> {
+    pub(crate) fn try_enter(
+        &self,
+        cancellation_token: CancellationToken,
+    ) -> Option<SpawnTransactionGuard> {
         let mut state = self
             .shared
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state.abort_barriers > 0 || !state.active_transactions.is_empty() {
+        if state.abort_barriers > 0 || state.active_transaction.is_some() {
             return None;
         }
-        let transaction_id = state.next_transaction_id;
-        state.next_transaction_id = state.next_transaction_id.wrapping_add(1);
-        state.active_transactions.insert(transaction_id, None);
+        state.active_transaction = Some(ActiveSpawnTransaction {
+            cancellation_token,
+            mailbox_cancellation: None,
+        });
         Some(SpawnTransactionGuard {
             shared: Arc::clone(&self.shared),
-            transaction_id,
         })
     }
 
     pub(crate) fn begin_abort(&self) -> SpawnAbortBarrier {
-        let (had_active_transactions, mailbox_cancellations) = {
+        let (had_active_transaction, active_transaction) = {
             let mut state = self
                 .shared
                 .state
@@ -124,20 +228,24 @@ impl SpawnLifecycle {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             state.abort_barriers += 1;
             (
-                !state.active_transactions.is_empty(),
-                state
-                    .active_transactions
-                    .values()
-                    .filter_map(Clone::clone)
-                    .collect::<Vec<_>>(),
+                state.active_transaction.is_some(),
+                state.active_transaction.as_ref().map(|transaction| {
+                    (
+                        transaction.cancellation_token.clone(),
+                        transaction.mailbox_cancellation.clone(),
+                    )
+                }),
             )
         };
-        for cancellation in mailbox_cancellations {
-            cancellation.activate();
+        if let Some((cancellation_token, mailbox_cancellation)) = active_transaction {
+            cancellation_token.cancel();
+            if let Some(cancellation) = mailbox_cancellation {
+                cancellation.activate();
+            }
         }
         SpawnAbortBarrier {
             shared: Arc::clone(&self.shared),
-            had_active_transactions,
+            had_active_transactions: had_active_transaction,
         }
     }
 }
@@ -145,6 +253,23 @@ impl SpawnLifecycle {
 impl SpawnAbortBarrier {
     pub(crate) fn had_active_transactions(&self) -> bool {
         self.had_active_transactions
+    }
+
+    pub(crate) async fn wait_for_quiescence(&self) {
+        loop {
+            let changed = self.shared.changed.notified();
+            let is_quiescent = self
+                .shared
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .active_transaction
+                .is_none();
+            if is_quiescent {
+                return;
+            }
+            changed.await;
+        }
     }
 }
 
@@ -155,7 +280,9 @@ impl Drop for SpawnTransactionGuard {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.active_transactions.remove(&self.transaction_id);
+        state.active_transaction.take();
+        drop(state);
+        self.shared.changed.notify_waiters();
     }
 }
 
@@ -168,8 +295,8 @@ impl SpawnTransactionGuard {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let should_activate = state.abort_barriers > 0;
-            if let Some(slot) = state.active_transactions.get_mut(&self.transaction_id) {
-                *slot = Some(cancellation.clone());
+            if let Some(transaction) = state.active_transaction.as_mut() {
+                transaction.mailbox_cancellation = Some(cancellation.clone());
             }
             should_activate
         };
@@ -221,141 +348,48 @@ pub(crate) fn parse_tasks(arguments: &str) -> Result<Vec<SpawnTask>, String> {
     Ok(tasks)
 }
 
-pub(crate) fn encode_receipt(receipt: &SpawnReceipt) -> Result<String, serde_json::Error> {
-    serde_json::to_string(receipt)
-}
-
-pub(crate) fn decode_receipt(body: &str) -> Result<SpawnReceipt, serde_json::Error> {
-    serde_json::from_str(body)
-}
-
-pub(crate) fn calls_in_response_group(
-    rollout: &[RolloutItem],
-    call_id: &str,
-) -> Result<Vec<SpawnBatchCall>, String> {
-    let effective = super::effective_rollout(rollout);
-    let mut index = 0;
-    while index < effective.len() {
-        let Some((group, consumed)) = super::completed_tool_group(&effective, index, true) else {
-            index += 1;
-            continue;
-        };
-        if group.calls.iter().any(|call| call.call_id == call_id) {
-            if group.calls.iter().any(|call| {
-                matches!(
-                    call.name.as_str(),
-                    "spine.open" | "spine.close" | "spine.next"
-                )
-            }) {
-                return Err(
-                    "spine.spawn cannot be mixed with spine.open, spine.close, or spine.next"
-                        .to_string(),
-                );
-            }
-
-            let spawn_calls = group
-                .calls
-                .iter()
-                .filter(|call| call.name == "spine.spawn")
-                .collect::<Vec<_>>();
-            if spawn_calls.len() > 1 {
-                return Err(
-                    "spine.spawn may be called at most once in one model response".to_string(),
-                );
-            }
-
-            let mut calls = Vec::new();
-            for call in spawn_calls {
-                match parse_tasks(&call.arguments) {
-                    Ok(tasks) => calls.push(SpawnBatchCall {
-                        call_id: call.call_id.clone(),
-                        fork_parent_call_id: call.call_id.clone(),
-                        tasks,
-                    }),
-                    Err(error) if call.call_id == call_id => return Err(error),
-                    Err(_) => {}
-                }
-            }
-            if calls.iter().any(|call| call.call_id == call_id) {
-                return Ok(calls);
-            }
-            return Err(format!(
-                "spine.spawn call `{call_id}` is missing valid tasks from its response group"
-            ));
-        }
-        index += consumed;
-    }
-    Err(format!(
-        "spine.spawn call `{call_id}` is missing from the current rollout"
-    ))
+pub(crate) enum SpawnExecutionScope {
+    ResponseGroup(Arc<StepContext>),
+    Isolated { fork_parent_call_id: String },
 }
 
 pub(crate) async fn execute(
     session: Arc<Session>,
     turn: Arc<TurnContext>,
+    scope: SpawnExecutionScope,
     call_id: String,
     cancellation_token: CancellationToken,
     tasks: Vec<SpawnTask>,
 ) -> Result<SpawnReceipt, String> {
-    let mut coordinator = session.spine_spawn_batch_coordinator.lock().await;
-    if let Some(result) = coordinator.completed.remove(&call_id) {
-        return result;
+    let max_tasks = turn.config.effective_spine_spawn_max_threads();
+    if tasks.len() > max_tasks {
+        return Err(format!("spine.spawn accepts at most {max_tasks} tasks"));
     }
-
-    let calls = session
-        .spine_spawn_calls_in_response_group(&call_id)
-        .await?;
-    let Some(current) = calls.iter().find(|call| call.call_id == call_id) else {
-        return Err(format!(
-            "spine.spawn call `{call_id}` is missing from its response group"
-        ));
+    let call = match scope {
+        SpawnExecutionScope::ResponseGroup(step_context) => {
+            let call = step_context
+                .spine_spawn_group
+                .spawn_call(&call_id, &cancellation_token)
+                .await?;
+            if call.tasks != tasks {
+                return Err(format!(
+                    "spine.spawn call `{call_id}` arguments changed during group admission"
+                ));
+            }
+            call
+        }
+        SpawnExecutionScope::Isolated {
+            fork_parent_call_id,
+        } => SpawnBatchCall {
+            call_id: call_id.clone(),
+            fork_parent_call_id,
+            tasks,
+        },
     };
-    if current.tasks != tasks {
-        return Err(format!(
-            "spine.spawn call `{call_id}` arguments changed during group admission"
-        ));
-    }
-
-    let batch_result = execute_batch(Arc::clone(&session), turn, cancellation_token, &calls).await;
-    match batch_result {
-        Ok(receipts) => coordinator.completed.extend(
-            receipts
-                .into_iter()
-                .map(|(call_id, receipt)| (call_id, Ok(receipt))),
-        ),
-        Err(error) => coordinator.completed.extend(
-            calls
-                .iter()
-                .map(|call| (call.call_id.clone(), Err(error.clone()))),
-        ),
-    }
-    coordinator.completed.remove(&call_id).unwrap_or_else(|| {
-        Err(format!(
-            "spine.spawn batch did not produce a result for call `{call_id}`"
-        ))
-    })
-}
-
-pub(crate) async fn execute_nested(
-    session: Arc<Session>,
-    turn: Arc<TurnContext>,
-    outer_exec_call_id: String,
-    invocation_ordinal: u64,
-    cancellation_token: CancellationToken,
-    tasks: Vec<SpawnTask>,
-) -> Result<SpawnReceipt, String> {
-    let call_id = format!("{outer_exec_call_id}:spine:{invocation_ordinal}");
-    let calls = [SpawnBatchCall {
-        call_id: call_id.clone(),
-        fork_parent_call_id: outer_exec_call_id,
-        tasks,
-    }];
-    execute_batch(session, turn, cancellation_token, &calls)
+    execute_batch(session, turn, cancellation_token, &[call])
         .await?
         .remove(&call_id)
-        .ok_or_else(|| {
-            format!("nested spine.spawn batch did not produce a result for call `{call_id}`")
-        })
+        .ok_or_else(|| format!("spine.spawn batch did not produce a result for call `{call_id}`"))
 }
 
 async fn execute_batch(
@@ -381,9 +415,12 @@ async fn execute_batch_transaction(
     cancellation_token: CancellationToken,
     calls: Vec<SpawnBatchCall>,
 ) -> Result<HashMap<String, SpawnReceipt>, String> {
-    let transaction_guard = session.spine_spawn_lifecycle.try_enter().ok_or_else(|| {
-        "spine.spawn cannot start while another transaction is active or aborting".to_string()
-    })?;
+    let transaction_guard = session
+        .spine_spawn_lifecycle
+        .try_enter(cancellation_token.clone())
+        .ok_or_else(|| {
+            "spine.spawn cannot start while another transaction is active or aborting".to_string()
+        })?;
     let calls = calls.as_slice();
     if cancellation_token.is_cancelled() {
         return Err("spine.spawn was cancelled before child creation".to_string());
@@ -435,7 +472,7 @@ async fn execute_batch_transaction(
         }
     }
 
-    let prepared = match session
+    let prepared: Vec<crate::agent::control::PreparedAgentSpawn> = match session
         .services
         .agent_control
         .prepare_agent_spawn_batch(config, requests)
@@ -549,18 +586,18 @@ async fn execute_batch_transaction(
     }
     let progress_statuses = Arc::new(tokio::sync::Mutex::new(progress_statuses));
     for call_ordinal in 0..progress_calls.len() {
-        session
-            .emit_spine_spawn_progress(
-                turn.as_ref(),
-                batch_progress_event(
-                    progress_calls.as_ref(),
-                    call_ordinal,
-                    progress_thread_ids.as_ref(),
-                    progress_paths.as_ref(),
-                    &progress_statuses.lock().await,
-                ),
-            )
-            .await;
+        crate::spine::session_observer::emit_spawn_progress(
+            &session,
+            turn.as_ref(),
+            batch_progress_event(
+                progress_calls.as_ref(),
+                call_ordinal,
+                progress_thread_ids.as_ref(),
+                progress_paths.as_ref(),
+                &progress_statuses.lock().await,
+            ),
+        )
+        .await;
     }
     let waits = live.iter().map(|(ordinal, thread_id, _)| {
         let control = session.services.agent_control.clone();
@@ -588,8 +625,7 @@ async fn execute_batch_transaction(
                     &statuses,
                 )
             };
-            session
-                .emit_spine_spawn_progress(turn.as_ref(), event)
+            crate::spine::session_observer::emit_spawn_progress(&session, turn.as_ref(), event)
                 .await;
             (ordinal, result)
         }
@@ -701,8 +737,7 @@ async fn execute_batch_transaction(
                 .collect::<Vec<_>>()
         };
         for event in events {
-            session
-                .emit_spine_spawn_progress(turn.as_ref(), event)
+            crate::spine::session_observer::emit_spawn_progress(&session, turn.as_ref(), event)
                 .await;
         }
     }
@@ -959,7 +994,7 @@ fn classify_start_results<E: Display>(
 fn transaction_task_name(call_id: &str, ordinal: usize) -> String {
     let fragment = call_id
         .chars()
-        .filter(|character| character.is_ascii_alphanumeric())
+        .filter(char::is_ascii_alphanumeric)
         .map(|character| character.to_ascii_lowercase())
         .take(20)
         .collect::<String>();

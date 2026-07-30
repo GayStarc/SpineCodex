@@ -15,8 +15,7 @@ use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::RolloutLine;
 use codex_protocol::protocol::TokenUsage;
-use codex_spine_core::SpawnTask;
-use codex_spine_core::TrimRequest;
+use serde::Deserialize;
 use serde::Serialize;
 use serde::de::DeserializeSeed;
 use serde::de::IgnoredAny;
@@ -25,12 +24,77 @@ use serde::de::SeqAccess;
 use serde::de::Visitor;
 use serde_json::Map;
 use serde_json::Value;
+use spine_core::SpawnTask;
+use spine_core::TrimRequest;
 use thiserror::Error;
 
 use crate::tools::code_mode::is_exec_tool_name;
-use crate::tools::code_mode::spine_bridge::CODE_MODE_SPINE_CARRIER_MARKER;
-use crate::tools::code_mode::spine_bridge::NestedSpineToolName;
-use crate::tools::code_mode::spine_bridge::decode_marked_body;
+
+const CODE_MODE_SPINE_CARRIER_MARKER: &str = "spine.code_mode.output.v1";
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum NestedSpineToolName {
+    Open,
+    Close,
+    Next,
+    Trim,
+    Spawn,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LegacyNestedOutput {
+    success: bool,
+    body: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LegacyNestedCall {
+    runtime_call_id: String,
+    invocation_ordinal: u64,
+    name: NestedSpineToolName,
+    arguments: String,
+    output: LegacyNestedOutput,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LegacyCodeModeCarrier {
+    schema: String,
+    visible_body: FunctionCallOutputBody,
+    outer_success: Option<bool>,
+    cell_id: String,
+    nested_spine_calls: Vec<LegacyNestedCall>,
+}
+
+fn decode_marked_body(
+    output_name: Option<&str>,
+    body: &FunctionCallOutputBody,
+) -> Result<Option<LegacyCodeModeCarrier>, String> {
+    if output_name != Some(CODE_MODE_SPINE_CARRIER_MARKER) {
+        return Ok(None);
+    }
+    let FunctionCallOutputBody::Text(body) = body else {
+        return Err("marked Code Mode Spine carrier must have a text body".to_string());
+    };
+    let carrier: LegacyCodeModeCarrier = serde_json::from_str(body)
+        .map_err(|error| format!("malformed Code Mode Spine carrier: {error}"))?;
+    if carrier.schema != CODE_MODE_SPINE_CARRIER_MARKER || carrier.cell_id.is_empty() {
+        return Err("invalid Code Mode Spine carrier metadata".to_string());
+    }
+    let mut previous_ordinal = None;
+    for call in &carrier.nested_spine_calls {
+        if call.runtime_call_id.is_empty()
+            || previous_ordinal.is_some_and(|previous| call.invocation_ordinal <= previous)
+        {
+            return Err("invalid Code Mode Spine carrier call ordering".to_string());
+        }
+        previous_ordinal = Some(call.invocation_ordinal);
+    }
+    Ok(Some(carrier))
+}
 
 /// A non-replayable, content-erased observation of one native rollout record.
 ///
@@ -1091,6 +1155,11 @@ impl RolloutDebugRedactor {
             RolloutItem::EventMsg(event) => DebugRolloutRecord::Event {
                 event: redact_event(event),
             },
+            RolloutItem::SpineSamplingStarted(_) | RolloutItem::SpineTransition(_) => {
+                DebugRolloutRecord::UnknownRedacted {
+                    scope: DebugPlaceholderScope::TopLevel,
+                }
+            }
         }
     }
 
@@ -1732,7 +1801,7 @@ impl RolloutDebugRedactor {
         let valid_for_request = parsed
             .as_ref()
             .and_then(|value| {
-                serde_json::from_value::<codex_spine_core::SpawnReceipt>(value.clone()).ok()
+                serde_json::from_value::<spine_core::SpawnReceipt>(value.clone()).ok()
             })
             .zip(request)
             .is_some_and(|(receipt, request)| {
@@ -1742,13 +1811,13 @@ impl RolloutDebugRedactor {
                         prompt: "redacted".to_string(),
                     })
                     .collect::<Vec<_>>();
-                codex_spine_core::SpawnReceipt::validate_for(&receipt, &tasks).is_ok()
+                spine_core::SpawnReceipt::validate_for(&receipt, &tasks).is_ok()
             });
         DebugSpawnReceiptShape {
             object,
             schema: schema_shape(
                 field(fields, "schema"),
-                codex_spine_core::SPINE_SPAWN_RESULT_SCHEMA,
+                spine_core::SPINE_SPAWN_RESULT_SCHEMA,
             ),
             results,
             unknown_fields: has_unknown_fields(fields, &["schema", "results"]),
@@ -2112,16 +2181,16 @@ fn is_exact_control_success(tool: DebugToolKind, body: &FunctionCallOutputBody) 
     };
     match tool {
         DebugToolKind::SpineOpen => {
-            super::tool_response::SpineToolResponse::Open.is_success_carrier(body)
+            body == &super::tool_response::SpineToolResponse::Open.success_carrier()
         }
         DebugToolKind::SpineClose => {
-            super::tool_response::SpineToolResponse::Close.is_success_carrier(body)
+            body == &super::tool_response::SpineToolResponse::Close.success_carrier()
         }
         DebugToolKind::SpineNext => {
-            super::tool_response::SpineToolResponse::Next.is_success_carrier(body)
+            body == &super::tool_response::SpineToolResponse::Next.success_carrier()
         }
         DebugToolKind::SpineTrim => {
-            super::tool_response::SpineToolResponse::Trim.is_success_carrier(body)
+            body == &super::tool_response::SpineToolResponse::Trim.success_carrier()
         }
         DebugToolKind::SpineSpawn
         | DebugToolKind::CodeMode

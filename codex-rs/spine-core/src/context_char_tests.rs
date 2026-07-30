@@ -10,6 +10,14 @@ fn message(boundary: u64, role: MessageRole, content: &str) -> SpineChar {
     })
 }
 
+fn turn_aborted(boundary: u64) -> SpineChar {
+    SpineChar::TurnAborted(Message {
+        boundary: RawBoundary(boundary),
+        role: MessageRole::ContextualUser,
+        content: "<turn_aborted>interrupted</turn_aborted>".to_string(),
+    })
+}
+
 fn request(boundary: u64, call_id: &str, name: &str) -> SpineChar {
     SpineChar::ToolRequest(ToolRequestChar {
         boundary: RawBoundary(boundary),
@@ -81,6 +89,7 @@ fn assistant_prefix_waits_and_joins_the_following_tool_group() {
                 call_id: "call".to_string(),
                 name: "shell".to_string(),
                 arguments: "{}".to_string(),
+                call_ordinal: None,
                 outcome: Some(ToolOutcome::Succeeded),
                 output: Some("done".to_string()),
                 output_boundary: Some(RawBoundary(3)),
@@ -174,4 +183,31 @@ fn failed_character_does_not_commit_parser_state() {
         })
     ));
     assert_eq!(parser, before);
+}
+
+#[test]
+fn turn_abort_discards_incomplete_tool_group_without_fabricating_an_outcome() {
+    let mut parser = SpineCharParser::default();
+    parser
+        .eat(message(1, MessageRole::Assistant, "starting"))
+        .unwrap();
+    parser.eat(request(2, "call", "shell")).unwrap();
+
+    let aborted = parser.eat(turn_aborted(3)).unwrap();
+
+    assert_eq!(
+        aborted.events(),
+        &[RolloutEvent::Message(Message {
+            boundary: RawBoundary(3),
+            role: MessageRole::ContextualUser,
+            content: "<turn_aborted>interrupted</turn_aborted>".to_string(),
+        })]
+    );
+    assert!(aborted.pending_boundaries().is_empty());
+    assert_eq!(parser.stack().len(), 3);
+    assert!(
+        parser
+            .eat(message(4, MessageRole::User, "continue"))
+            .is_ok()
+    );
 }

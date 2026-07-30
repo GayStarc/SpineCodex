@@ -2041,6 +2041,11 @@ async fn try_run_sampling_request(
         .features
         .enabled(Feature::ConcurrentReasoningSummaries)
         && turn_context.provider.info().is_openai();
+    // Spine MODIFIED: Register the attempt at the real stream boundary.
+    let mut spine_sampling_attempt = sess
+        .begin_spine_sampling(&prompt.input)
+        .await
+        .map_err(|error| CodexErr::Fatal(error.to_string()))?;
     let mut stream = client_session
         .stream(
             prompt,
@@ -2550,6 +2555,23 @@ async fn try_run_sampling_request(
     };
     drain_in_flight(&mut in_flight, sess.clone(), turn_context.clone()).await?;
     drop(tool_blocking_timing_guard);
+
+    let terminal = if cancellation_token.is_cancelled() {
+        spine_core::SamplingTerminal::Cancelled
+    } else if outcome.is_ok() {
+        spine_core::SamplingTerminal::Completed
+    } else {
+        spine_core::SamplingTerminal::Failed
+    };
+    // Spine MODIFIED: Commit once all source and execution effects are terminal.
+    if let Some(attempt) = spine_sampling_attempt.take()
+        && let Err(error) = sess.finish_spine_sampling(attempt, terminal).await
+    {
+        let reason = error.to_string();
+        sess.latch_spine_durability_fault(reason.clone());
+        tracing::error!(%reason, "failed to commit canonical Spine sampling");
+        return Err(CodexErr::Fatal(reason));
+    }
 
     if should_emit_token_count {
         // A tool call such as request_user_input can intentionally pause the turn. Emit token

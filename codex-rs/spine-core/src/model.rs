@@ -482,9 +482,18 @@ impl TrimRequest {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TrimEdit {
-    Tagged { trim_id: String, body: String },
+    Tagged {
+        trim_id: String,
+        body: String,
+        #[serde(default = "trim_candidate_is_eligible")]
+        eligible: bool,
+    },
     Snipped,
     Sliced(String),
+}
+
+const fn trim_candidate_is_eligible() -> bool {
+    true
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -501,10 +510,21 @@ impl TrimProjection {
     }
 
     pub fn validate(&self, request: &TrimRequest) -> Result<(), String> {
-        let Some((_, edit)) = self.edits.values().find(|(_, edit)| {
+        self.validated_edit(request).map(|_| ())
+    }
+
+    pub fn validated_edit(
+        &self,
+        request: &TrimRequest,
+    ) -> Result<(RawBoundary, String, TrimEdit), String> {
+        let Some((boundary, (call_id, edit))) = self.edits.iter().find(|(_, (_, edit))| {
             matches!(
                 edit,
-                TrimEdit::Tagged { trim_id, .. } if trim_id == &request.trim_id
+                TrimEdit::Tagged {
+                    trim_id,
+                    eligible: true,
+                    ..
+                } if trim_id == &request.trim_id
             )
         }) else {
             return Err(format!(
@@ -512,16 +532,19 @@ impl TrimProjection {
                 request.trim_id
             ));
         };
-        if let TrimOperation::Slice(slice) = &request.operation {
-            let body = match edit {
-                TrimEdit::Tagged { body, .. } => body,
-                _ => return Err("TRIM_ID has already been trimmed; do not retry".to_string()),
+        let validated_edit =
+            match &request.operation {
+                TrimOperation::Snip => TrimEdit::Snipped,
+                TrimOperation::Slice(slice) => {
+                    let TrimEdit::Tagged { body, .. } = edit else {
+                        return Err("TRIM_ID has already been trimmed; do not retry".to_string());
+                    };
+                    TrimEdit::Sliced(apply_trim_slice(body, slice).ok_or_else(|| {
+                        "trim slice anchor was not found; do not retry".to_string()
+                    })?)
+                }
             };
-            apply_trim_slice(body, slice)
-                .map(|_| ())
-                .ok_or_else(|| "trim slice anchor was not found; do not retry".to_string())?;
-        }
-        Ok(())
+        Ok((*boundary, call_id.clone(), validated_edit))
     }
 
     pub fn derive(events: &[RolloutEvent]) -> Self {

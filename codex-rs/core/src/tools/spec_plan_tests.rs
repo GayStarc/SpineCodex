@@ -243,6 +243,77 @@ fn set_features(turn: &mut TurnContext, features: &[Feature]) {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct SpineFeatureExposureRow {
+    bits: u8,
+    namespace_functions: Vec<String>,
+    registered: Vec<(String, ToolExposure)>,
+}
+
+#[tokio::test]
+async fn spine_current_feature_matrix_tool_exposure() {
+    let mut actual = Vec::new();
+    for bits in 0u8..16 {
+        let plan = probe(|turn| {
+            for (feature_bits, feature) in [
+                (1, Feature::SpineJit),
+                (2, Feature::SpineTrim),
+                (4, Feature::SpineSpawn),
+                (8, Feature::SpinetreeMemoryProjection),
+            ] {
+                set_feature(turn, feature, bits & feature_bits != 0);
+            }
+        })
+        .await;
+        let namespace_functions = plan.namespace_function_names("spine").to_vec();
+        let registered = namespace_functions
+            .iter()
+            .map(|name| {
+                let name = ToolName::namespaced("spine", name).to_string();
+                let exposure = plan.exposure(&name);
+                (name, exposure)
+            })
+            .collect();
+        actual.push(SpineFeatureExposureRow {
+            bits,
+            namespace_functions,
+            registered,
+        });
+    }
+
+    let expected = (0u8..16)
+        .map(|bits| {
+            let jit = bits & 1 != 0;
+            let trim = bits & 2 != 0;
+            let spawn = bits & 4 != 0 && jit;
+            let mut names = Vec::new();
+            if jit {
+                names.extend(["close", "next", "open"]);
+            }
+            if spawn {
+                names.push("spawn");
+            }
+            if trim {
+                names.push("trim");
+            }
+            SpineFeatureExposureRow {
+                bits,
+                namespace_functions: names.iter().map(ToString::to_string).collect(),
+                registered: names
+                    .iter()
+                    .map(|name| {
+                        (
+                            ToolName::namespaced("spine", *name).to_string(),
+                            ToolExposure::DirectAndCodeMode,
+                        )
+                    })
+                    .collect(),
+            }
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(actual, expected);
+}
+
 #[tokio::test]
 async fn spine_spawn_is_disabled_by_default_for_direct_non_plan_calls() {
     let defaults = probe(|_| {}).await;
@@ -1319,10 +1390,10 @@ async fn code_mode_only_exposes_code_executor_and_hides_nested_tools() {
 
 #[tokio::test]
 async fn direct_and_code_mode_exposure_stays_top_level_and_nested_in_every_mode() {
-    for (mode, expects_code_mode) in [
-        (ToolMode::Direct, false),
-        (ToolMode::CodeMode, true),
-        (ToolMode::CodeModeOnly, true),
+    for (mode, expects_code_mode, expects_top_level) in [
+        (ToolMode::Direct, false, true),
+        (ToolMode::CodeMode, true, true),
+        (ToolMode::CodeModeOnly, true, false),
     ] {
         let plan = probe_with(
             move |turn| {
@@ -1339,26 +1410,22 @@ async fn direct_and_code_mode_exposure_stays_top_level_and_nested_in_every_mode(
         )
         .await;
 
+        let expected_top_level_names = if expects_top_level {
+            vec!["lookup".to_string()]
+        } else {
+            Default::default()
+        };
         assert_eq!(
             plan.namespace_function_names("dual"),
-            &["lookup".to_string()],
-            "dual tool must stay top-level in {mode:?}"
+            expected_top_level_names.as_slice(),
+            "dual tool top-level exposure must match {mode:?}"
         );
         assert_eq!(
             plan.exposure(&ToolName::namespaced("dual", "lookup").to_string()),
             ToolExposure::DirectAndCodeMode
         );
 
-        let ToolSpec::Namespace(namespace) = plan.visible_spec("dual") else {
-            panic!("expected dual namespace in {mode:?}");
-        };
-        let ResponsesApiNamespaceTool::Function(lookup) = &namespace.tools[0];
         if expects_code_mode {
-            assert!(
-                lookup.description.contains("dual__lookup(args:"),
-                "dual top-level schema must describe nested use in {mode:?}; description:\n{}",
-                lookup.description
-            );
             let ToolSpec::Freeform(exec) = plan.visible_spec(codex_code_mode::PUBLIC_TOOL_NAME)
             else {
                 panic!("expected code mode exec tool in {mode:?}");
@@ -1368,8 +1435,22 @@ async fn direct_and_code_mode_exposure_stays_top_level_and_nested_in_every_mode(
                     exec.description.contains("dual__lookup(args:"),
                     "code-mode-only exec must include the nested dual definition"
                 );
+            } else {
+                let ToolSpec::Namespace(namespace) = plan.visible_spec("dual") else {
+                    panic!("expected dual namespace in {mode:?}");
+                };
+                let ResponsesApiNamespaceTool::Function(lookup) = &namespace.tools[0];
+                assert!(
+                    lookup.description.contains("dual__lookup(args:"),
+                    "dual top-level schema must describe nested use in {mode:?}; description:\n{}",
+                    lookup.description
+                );
             }
         } else {
+            let ToolSpec::Namespace(namespace) = plan.visible_spec("dual") else {
+                panic!("expected dual namespace in {mode:?}");
+            };
+            let ResponsesApiNamespaceTool::Function(lookup) = &namespace.tools[0];
             assert!(!lookup.description.contains("dual__lookup(args:"));
             plan.assert_visible_lacks(&[
                 codex_code_mode::PUBLIC_TOOL_NAME,

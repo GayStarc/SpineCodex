@@ -75,7 +75,11 @@ impl DirectSpineControlBatch {
         self: &Arc<Self>,
         tool_name: &codex_tools::ToolName,
     ) -> Option<Arc<DirectSpineControlAdmission>> {
-        crate::spine::SpineControlKind::from_tool_name(tool_name)?;
+        if tool_name.namespace.as_deref() != Some(spine_core::SPINE_NAMESPACE)
+            || !matches!(tool_name.name.as_str(), "open" | "close" | "next")
+        {
+            return None;
+        }
         let ordinal = {
             let mut state = self.state.lock().expect("direct Spine control batch lock");
             let ordinal = state.slots.len();
@@ -288,12 +292,22 @@ impl ToolCallRuntime {
         self.step_context.spine_spawn_group.finish();
     }
 
+    pub(crate) fn tool_name_waits_for_runtime_cancellation(
+        &self,
+        name: &codex_tools::ToolName,
+    ) -> bool {
+        self.router.tool_waits_for_runtime_cancellation(name)
+    }
+
     #[instrument(level = "trace", skip_all)]
     pub(crate) fn handle_tool_call(
         self,
         call: ToolCall,
         cancellation_token: CancellationToken,
     ) -> impl std::future::Future<Output = Result<ResponseInputItem, CodexErr>> {
+        let spine_execution = self
+            .session
+            .begin_spine_execution(&call.tool_name, &call.call_id);
         // Spine MODIFIED: Register and finally commit direct Spine control admission around dispatch.
         // Reason: Validation may run in parallel, while the response order selects one successful transition.
         let admission = self.direct_spine_controls.register(&call.tool_name);
@@ -311,6 +325,13 @@ impl ToolCallRuntime {
                 Some(admission) => admission.commit(result),
                 None => result,
             };
+            if let Some(execution) = spine_execution {
+                execution.finish(
+                    result
+                        .as_ref()
+                        .is_ok_and(|output| output.result.success_for_logging()),
+                );
+            }
             match result {
                 Ok(response) => Ok(response.into_response()),
                 Err(FunctionCallError::Fatal(message)) => Err(CodexErr::Fatal(message)),
@@ -327,7 +348,22 @@ impl ToolCallRuntime {
         source: ToolCallSource,
         cancellation_token: CancellationToken,
     ) -> impl std::future::Future<Output = Result<AnyToolResult, FunctionCallError>> {
-        self.handle_tool_call_inner(call, source, cancellation_token, None)
+        let spine_execution = self
+            .session
+            .begin_spine_execution(&call.tool_name, &call.call_id);
+        let future = self.handle_tool_call_inner(call, source, cancellation_token, None);
+        async move {
+            let result = future.await;
+            if let Some(execution) = spine_execution {
+                execution.finish(
+                    result
+                        .as_ref()
+                        .is_ok_and(|output| output.result.success_for_logging()),
+                );
+            }
+            result
+        }
+        .in_current_span()
     }
 
     // Spine MODIFIED: Carry optional direct-control admission through the shared dispatch implementation.
@@ -347,7 +383,9 @@ impl ToolCallRuntime {
         let tracker = Arc::clone(&self.tracker);
         let lock = Arc::clone(&self.parallel_execution);
         let invocation_cancellation_token = cancellation_token.clone();
-        let wait_for_runtime_cancellation = self.router.tool_waits_for_runtime_cancellation(&call);
+        let wait_for_runtime_cancellation = self
+            .router
+            .tool_waits_for_runtime_cancellation(&call.tool_name);
         let started = Instant::now();
         let tool_call_timing_guard =
             ToolCallTimingGuard::capture(started, &session.thread_id, &turn.sub_id, &call, &source);

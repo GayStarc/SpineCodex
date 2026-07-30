@@ -16,15 +16,15 @@ pub const SPINE_NAMESPACE: &str = "spine";
 pub const SPINE_NAMESPACE_DESCRIPTION: &str = "Use Spine to shape the work.";
 
 const NODE_MEMORY_DESCRIPTION: &str = concat!(
-    "Continuation state replacing the finalized node's local working detail. ",
-    "Preserve only what later work needs beyond inherited context: completed or confirmed progress, confirmed findings, decisions and constraints, validation results, bounded unresolved factual gaps or risks, remaining work that can proceed from this memory and inherited context without reconstructing the replaced detail, and the logic linking evidence and findings to decisions and next steps. ",
+    "Model-authored continuation state for replacing the finalized node's local working context. ",
+    "Preserve only what later work needs beyond inherited context: completed or confirmed progress, confirmed findings, decisions and constraints, validation results, bounded unresolved factual gaps or risks, remaining work that can proceed from this memory and inherited context without reconstructing the replaced working context, and the logic linking evidence and findings to decisions and next steps. ",
     "Include compact supporting evidence or precise, recoverable references when needed. ",
     "For source code, cite exact paths and lines; for commands, cite the exact command and decisive output or result, so continuation need not replay the work. ",
     "Runtime preserves user messages and child memories. ",
     "Use existing `[U#]` anchors only to bind approvals, corrections, rejections, clarifications, and elliptical replies to their referents and record the resulting continuation-relevant semantic deltas in task scope, decisions, constraints, progress, and remaining obligations; the underlying user messages remain available independently of these references."
 );
-const OPEN_SUMMARY_DESCRIPTION: &str = "Concise, actionable, completable goal for a direct child within one aligned set of task, information, and context-lifecycle boundaries. The call carrying it remains in the child's context.";
-const NEXT_SUMMARY_DESCRIPTION: &str = "Concise, actionable, completable goal for a true sibling within its own aligned set of task, information, and context-lifecycle boundaries. The call carrying it remains in the sibling's context; finalized-node state belongs in memory.";
+const OPEN_SUMMARY_DESCRIPTION: &str = "Concise, actionable, completable goal for a direct child that will own one distinct body of work and local working context with an independently completable lifecycle. The call carrying it remains in the child's context.";
+const NEXT_SUMMARY_DESCRIPTION: &str = "Concise, actionable, completable goal for a true sibling that will own one distinct body of work and local working context with an independently completable lifecycle. The call carrying it remains in the sibling's context; finalized-node state belongs in memory.";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SpineTool {
@@ -91,6 +91,32 @@ impl ToolCatalog {
             })
             .collect();
         Ok(Self { definitions })
+    }
+
+    pub fn with_spawn_max_items(mut self, max_items: usize) -> Self {
+        if max_items < 2 {
+            self.definitions
+                .retain(|definition| definition.tool != SpineTool::Spawn);
+            return self;
+        }
+
+        if let Some(definition) = self
+            .definitions
+            .iter_mut()
+            .find(|definition| definition.tool == SpineTool::Spawn)
+        {
+            let max_items = max_items.min(MAX_SPAWN_TASKS);
+            definition.parameters["properties"]["tasks"]["maxItems"] = serde_json::json!(max_items);
+            let description = definition
+                .description
+                .split(" The tasks array must contain at least ")
+                .next()
+                .unwrap_or(&definition.description);
+            definition.description = format!(
+                "{description} The tasks array must contain at least 2 and at most {max_items} task assignments."
+            );
+        }
+        self
     }
 
     pub fn validate(
@@ -341,7 +367,7 @@ fn parameters_for(tool: SpineTool) -> Value {
                         "type": "object",
                         "properties": {
                             "summary": { "type": "string", "maxLength": MAX_SUMMARY_BYTES, "description": "Concise branch label, distinct within this spawn call, and its independently owned outcome." },
-                            "prompt": { "type": "string", "maxLength": MAX_SPAWN_PROMPT_BYTES, "description": "Complete initial branch assignment. If coordination is required, identify relevant peer branch summaries and roles, the common coordination root (recommended basename: `coordination_{task_id}_{timestamp}/`), this branch's single-writer coordination path, the artifact format and update/read protocol, synchronization points, and a bounded fallback for unavailable peer coordination state." }
+                            "prompt": { "type": "string", "maxLength": MAX_SPAWN_PROMPT_BYTES, "description": "Complete initial branch assignment. The branch identity is this task's summary. When coordination is required, include the same task-local `Shared collaboration directory: <path>` used by every affected branch, a distinct `My collaboration file: <path>` inside it, relevant peer summaries and roles, the artifact format and update/read protocol, required synchronization points, and a bounded fallback for unavailable or incomplete peer state. Absent locking or atomic append, the branch artifact must be append-only and single-writer. Coordination must never become a dependency, correctness-critical state, or an expansion of the assignment." }
                         },
                         "required": ["summary", "prompt"],
                         "additionalProperties": false
@@ -373,17 +399,25 @@ mod tests {
     }
 
     #[test]
-    fn spawn_schema_does_not_encode_runtime_capacity() {
+    fn spawn_schema_specialization_encodes_runtime_capacity() {
         let config = SpineConfig::v1()
             .with_features([Feature::Jit, Feature::Spawn])
             .unwrap();
-        let catalog = ToolCatalog::new(&config).unwrap();
+        let catalog = ToolCatalog::new(&config).unwrap().with_spawn_max_items(5);
         let definition = catalog.definition(SpineTool::Spawn).unwrap();
-        assert!(
-            definition.parameters["properties"]["tasks"]
-                .get("maxItems")
-                .is_none()
+        assert_eq!(
+            definition.parameters["properties"]["tasks"]["maxItems"],
+            serde_json::json!(5)
         );
+    }
+
+    #[test]
+    fn spawn_schema_specialization_hides_unusable_spawn() {
+        let config = SpineConfig::v1()
+            .with_features([Feature::Jit, Feature::Spawn])
+            .unwrap();
+        let catalog = ToolCatalog::new(&config).unwrap().with_spawn_max_items(1);
+        assert!(catalog.definition(SpineTool::Spawn).is_none());
     }
 
     #[test]

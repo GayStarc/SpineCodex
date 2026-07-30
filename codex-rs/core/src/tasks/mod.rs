@@ -881,6 +881,7 @@ impl Session {
             task.handle.abort();
             if spawn_abort_barrier.had_active_transactions() {
                 let _ = task.handle.await;
+                spawn_abort_barrier.wait_for_quiescence().await;
             }
             return;
         }
@@ -897,12 +898,16 @@ impl Session {
             },
             _ = tokio::time::sleep(Duration::from_millis(GRACEFULL_INTERRUPTION_TIMEOUT_MS)) => {
                 warn!("task {sub_id} didn't complete gracefully after {}ms", GRACEFULL_INTERRUPTION_TIMEOUT_MS);
+                // Spine MODIFIED: Let an effectful sampling reach its durable PostSampling point.
+                // Reason: Hard-aborting now would preserve host effects but orphan their facts.
+                self.wait_for_pending_spine_sampling().await;
             }
         }
 
         task.handle.abort();
         if spawn_abort_barrier.had_active_transactions() {
             let _ = task.handle.await;
+            spawn_abort_barrier.wait_for_quiescence().await;
         }
         let session_ctx = Arc::new(SessionTaskContext::new(
             Arc::clone(self),

@@ -43,7 +43,7 @@ mod tests {
         let config = SpineConfig::v1()
             .with_features([Feature::Jit, Feature::Trim, Feature::Spawn])
             .unwrap();
-        let catalog = ToolCatalog::new(&config).unwrap();
+        let catalog = ToolCatalog::new(&config).unwrap().with_spawn_max_items(3);
 
         for tool in [
             SpineTool::Open,
@@ -56,7 +56,7 @@ mod tests {
                 SpineTool::Open | SpineTool::Close | SpineTool::Next => {
                     crate::tools::handlers::spine_spec::create_spine_tool(tool.name())
                 }
-                SpineTool::Spawn => crate::tools::handlers::spine_spec::create_spine_spawn_tool(),
+                SpineTool::Spawn => crate::tools::handlers::spine_spec::create_spine_spawn_tool(3),
                 SpineTool::Trim => unreachable!("trim is compared through its dedicated factory"),
             };
             assert_eq!(actual, expected, "{} schema changed", tool.qualified_name());

@@ -14,7 +14,6 @@ use codex_protocol::spine_tree::SpineTreeNodeStatus;
 use spine_core::ContextPressureProblem;
 use spine_core::NodeKind;
 use spine_core::NodeStatus;
-use spine_core::SpineContextProjection;
 use spine_core::SpineObserverEffect;
 use spine_core::SpineObserverEffectHandler;
 use spine_core::SpineObserverEffectKind;
@@ -49,6 +48,62 @@ impl CodexSpineObserverHandler {
             jit_enabled,
         }
     }
+
+    pub(crate) fn publish_committed(
+        &mut self,
+        projection: &spine_core::SpineProjection,
+        usage_samples: &[spine_core::TokenUsageSample],
+        event_id: Option<&str>,
+        user_messages: Vec<SpinetreeUserMessageProjectionEntry>,
+    ) {
+        if !self.jit_enabled {
+            return;
+        }
+        self.publish_tree(projection, usage_samples, event_id);
+        self.publish_memory(projection, user_messages);
+    }
+
+    pub(crate) fn publish_usage(
+        &mut self,
+        projection: &spine_core::SpineProjection,
+        usage_samples: &[spine_core::TokenUsageSample],
+        event_id: Option<&str>,
+    ) {
+        if self.jit_enabled {
+            self.publish_tree(projection, usage_samples, event_id);
+        }
+    }
+
+    fn publish_tree(
+        &self,
+        projection: &spine_core::SpineProjection,
+        usage_samples: &[spine_core::TokenUsageSample],
+        event_id: Option<&str>,
+    ) {
+        let Some(tx_event) = &self.tx_event else {
+            return;
+        };
+        let event = Event {
+            id: event_id.unwrap_or(&self.fallback_event_id).to_string(),
+            msg: EventMsg::SpineTreeUpdate(tree_update_from_parts(projection, usage_samples)),
+        };
+        if let Err(err) = tx_event.try_send(event) {
+            warn!("failed to publish Spine tree update: {err}");
+        }
+    }
+
+    fn publish_memory(
+        &self,
+        projection: &spine_core::SpineProjection,
+        user_messages: Vec<SpinetreeUserMessageProjectionEntry>,
+    ) {
+        if let Some(tx) = &self.memory_projection_tx {
+            tx.send_replace(Some(CodexSpineMemoryProjection {
+                entries: super::closed_memory_projection_entries(projection),
+                user_messages,
+            }));
+        }
+    }
 }
 
 impl SpineObserverEffectHandler<CodexContextHandler> for CodexSpineObserverHandler {
@@ -56,29 +111,18 @@ impl SpineObserverEffectHandler<CodexContextHandler> for CodexSpineObserverHandl
         if !self.jit_enabled {
             return;
         }
-        if let Some(tx_event) = &self.tx_event {
-            let event = Event {
-                id: context_handler
-                    .latest_turn_id()
-                    .unwrap_or(&self.fallback_event_id)
-                    .to_string(),
-                msg: EventMsg::SpineTreeUpdate(context_tree_update(effect.projection())),
-            };
-            if let Err(err) = tx_event.try_send(event) {
-                warn!("failed to publish Spine tree update: {err}");
-            }
-        }
+        self.publish_tree(
+            effect.projection().spine(),
+            effect.projection().usage_samples(),
+            context_handler.latest_turn_id(),
+        );
         if effect.kind() != SpineObserverEffectKind::ContextCommitted {
             return;
         }
-        let Some(memory_projection_tx) = &self.memory_projection_tx else {
-            return;
-        };
-        memory_projection_tx.send_replace(Some(CodexSpineMemoryProjection {
-            entries: super::closed_memory_projection_entries(effect.projection().spine()),
-            user_messages: context_handler
-                .user_message_projection_entries(effect.projection().stack()),
-        }));
+        self.publish_memory(
+            effect.projection().spine(),
+            context_handler.user_message_projection_entries(effect.projection().stack()),
+        );
     }
 }
 
@@ -106,11 +150,14 @@ fn start_memory_projection_worker(
     tx
 }
 
-pub(crate) fn context_tree_update(projection: &SpineContextProjection) -> SpineTreeUpdateEvent {
+#[cfg(test)]
+pub(crate) fn context_tree_update(
+    projection: &spine_core::SpineContextProjection,
+) -> SpineTreeUpdateEvent {
     tree_update_from_parts(projection.spine(), projection.usage_samples())
 }
 
-fn tree_update_from_parts(
+pub(crate) fn tree_update_from_parts(
     projection: &spine_core::SpineProjection,
     usage_samples: &[spine_core::TokenUsageSample],
 ) -> SpineTreeUpdateEvent {

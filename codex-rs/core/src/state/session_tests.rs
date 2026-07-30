@@ -21,6 +21,20 @@ use codex_protocol::protocol::TokenUsage;
 use codex_protocol::protocol::TokenUsageInfo;
 use pretty_assertions::assert_eq;
 
+impl SessionState {
+    fn spine_tree_update(&self) -> Option<codex_protocol::protocol::SpineTreeUpdateEvent> {
+        self.spine_runtime.as_ref().and_then(|runtime| {
+            if self.session_configuration.spine_jit_enabled() {
+                runtime
+                    .legacy_projection()
+                    .map(crate::spine::observer::context_tree_update)
+            } else {
+                None
+            }
+        })
+    }
+}
+
 fn response_message(role: &str, text: &str) -> ResponseItem {
     ResponseItem::Message {
         id: None,
@@ -172,13 +186,6 @@ fn function_output(call_id: &str, text: &str) -> ResponseItem {
 
 fn record_native_and_rollout(state: &mut SessionState, items: &[ResponseItem]) {
     state.record_items(items.iter(), TruncationPolicy::Tokens(1_000_000));
-    state.append_spine_inputs(
-        &items
-            .iter()
-            .cloned()
-            .map(RolloutItem::ResponseItem)
-            .collect::<Vec<_>>(),
-    );
 }
 
 fn active_usage(state: &SessionState, server_reasoning_included: bool) -> i64 {
@@ -350,7 +357,6 @@ async fn spine_large_tool_output_uses_provider_usage_plus_pending_tail() {
 
     let output = function_output("large-output", &"x".repeat(50_000));
     state.record_items([&output], TruncationPolicy::Tokens(2_000));
-    state.append_spine_inputs(&[RolloutItem::ResponseItem(output)]);
     state.reconcile_projected_history(before.as_deref());
 
     let expected = state
@@ -661,14 +667,12 @@ async fn spine_resume_keeps_restored_usage_stale() {
         spine_call("close", r#"{"memory":"short memory"}"#, "close"),
         function_output("close", "Spine close accepted."),
     ];
-    state.record_items(closed_rollout.iter(), TruncationPolicy::Tokens(1_000_000));
-    state.replace_spine_rollout(
-        &closed_rollout
-            .iter()
-            .cloned()
-            .map(RolloutItem::ResponseItem)
-            .collect::<Vec<_>>(),
-    );
+    let rollout = closed_rollout
+        .iter()
+        .cloned()
+        .map(RolloutItem::ResponseItem)
+        .collect::<Vec<_>>();
+    state.replace_history_from_rollout(closed_rollout, None, &rollout);
     state.set_token_info(Some(TokenUsageInfo {
         total_token_usage: TokenUsage::default(),
         last_token_usage: usage(250_000),
@@ -877,99 +881,6 @@ async fn feature_off_body_after_prefix_keeps_basecodex_server_prefill_behavior()
     assert_eq!(
         pressure.body_after_prefix_prefill_tokens,
         Some(provider_usage.input_tokens)
-    );
-}
-
-#[tokio::test]
-async fn historical_code_mode_carrier_is_projected_with_spine_features_off() {
-    let mut session_configuration = make_session_configuration_for_tests().await;
-    session_configuration.disable_spine_jit_for_test();
-    session_configuration.disable_spine_trim_for_test();
-    let mut state = SessionState::new(session_configuration);
-    assert!(state.spine_rollout.is_none());
-
-    let call_id = "historical-exec";
-    let exec = ResponseItem::CustomToolCall {
-        id: None,
-        status: None,
-        call_id: call_id.to_string(),
-        name: "exec".to_string(),
-        namespace: None,
-        input: "text('visible exec output')".to_string(),
-        internal_chat_message_metadata_passthrough: None,
-    };
-    let carrier = CodeModeOutputCarrierV1::new(
-        FunctionCallOutputBody::Text("visible exec output".to_string()),
-        Some(true),
-        "historical-cell".to_string(),
-        vec![NestedSpineCallV1 {
-            runtime_call_id: "historical-open".to_string(),
-            invocation_ordinal: 0,
-            name: NestedSpineToolName::Open,
-            arguments: r#"{"summary":"historical task"}"#.to_string(),
-            output: NestedSpineOutputV1 {
-                success: true,
-                body: "Spine open accepted.".to_string(),
-            },
-        }],
-    )
-    .expect("valid historical carrier");
-    let carrier_output = ResponseItem::CustomToolCallOutput {
-        id: None,
-        call_id: call_id.to_string(),
-        name: Some(CODE_MODE_SPINE_CARRIER_MARKER.to_string()),
-        output: FunctionCallOutputPayload {
-            body: FunctionCallOutputBody::Text(encode_carrier(&carrier).expect("encode carrier")),
-            success: Some(true),
-        },
-        internal_chat_message_metadata_passthrough: None,
-    };
-    let rollout = vec![
-        RolloutItem::ResponseItem(exec.clone()),
-        RolloutItem::ResponseItem(carrier_output.clone()),
-    ];
-    state.record_items([&exec, &carrier_output], TruncationPolicy::Tokens(10_000));
-    state.replace_spine_rollout(&rollout);
-
-    let projected = state.clone_history();
-    assert_eq!(projected.raw_items().len(), 2);
-    assert_eq!(projected.raw_items()[0], exec);
-    let ResponseItem::CustomToolCallOutput {
-        name,
-        output,
-        call_id: projected_call_id,
-        ..
-    } = &projected.raw_items()[1]
-    else {
-        panic!("expected projected exec output");
-    };
-    assert_eq!(projected_call_id, call_id);
-    assert_eq!(name, &None);
-    assert_eq!(
-        output.body,
-        FunctionCallOutputBody::Text("visible exec output".to_string())
-    );
-    assert_eq!(output.success, Some(true));
-    assert!(state.spine_tree_update().is_none());
-
-    state.update_token_info_from_sampling_usage(
-        &TokenUsage {
-            input_tokens: 9_000,
-            output_tokens: 1_000,
-            total_tokens: 10_000,
-            ..TokenUsage::default()
-        },
-        Some(272_000),
-        "gpt-test",
-    );
-    assert_eq!(
-        state.projected_usage_basis,
-        ProjectedUsageBasis::ProviderValid
-    );
-    assert_eq!(
-        active_usage(&state, /*server_reasoning_included*/ false),
-        state.history.get_total_token_usage(false),
-        "historical carrier projection must not enable Spine accounting when features are off"
     );
 }
 
@@ -1498,7 +1409,7 @@ async fn context_transitions_publish_compact_and_replay_before_return() {
                 &SpineNodeFragment::new(
                     &spine_core::NodeId::root_epoch(2).child(1),
                     "fresh",
-                    spine_core::NodeStatus::Live,
+                    spine_core::NodeStatus::Opened,
                     spine_core::SpineConfig::v1()
                         .with_feature(spine_core::Feature::Jit)
                         .expect("JIT config")

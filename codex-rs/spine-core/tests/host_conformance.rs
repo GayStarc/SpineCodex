@@ -505,7 +505,7 @@ fn codex_and_kimi_fixture_adapters_conform() {
                 },
                 LogicalEvent::ToolTurn {
                     leading: None,
-                    calls: vec![close.clone()],
+                    calls: vec![close],
                 },
             ],
             "1.1",
@@ -530,7 +530,7 @@ fn codex_and_kimi_fixture_adapters_conform() {
             "ordinary coexists",
             vec![LogicalEvent::ToolTurn {
                 leading: Some("inspect then open"),
-                calls: vec![ordinary.clone(), open.clone()],
+                calls: vec![ordinary.clone(), open],
             }],
             "1.1",
         ),
@@ -584,7 +584,7 @@ fn codex_and_kimi_resume_from_full_native_transcript() {
 
 #[test]
 fn codex_and_kimi_rollback_use_the_same_native_prefix() {
-    let events = vec![
+    let events = [
         LogicalEvent::User("request"),
         LogicalEvent::ToolTurn {
             leading: None,

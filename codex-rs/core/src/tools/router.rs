@@ -106,9 +106,9 @@ impl ToolRouter {
             .unwrap_or(false)
     }
 
-    pub fn tool_waits_for_runtime_cancellation(&self, call: &ToolCall) -> bool {
+    pub fn tool_waits_for_runtime_cancellation(&self, name: &ToolName) -> bool {
         self.registry
-            .waits_for_runtime_cancellation(&call.tool_name)
+            .waits_for_runtime_cancellation(name)
             .unwrap_or(false)
     }
 

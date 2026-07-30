@@ -32,7 +32,6 @@ pub(crate) struct Session {
     pub(super) tx_event: Sender<Event>,
     pub(super) agent_status: watch::Sender<AgentStatus>,
     pub(super) state: Mutex<SessionState>,
-    pub(crate) spine_spawn_batch_coordinator: Mutex<crate::spine::spawn::SpawnBatchCoordinator>,
     pub(crate) spine_spawn_lifecycle: crate::spine::spawn::SpawnLifecycle,
     pub(crate) spawn_failure_record: Mutex<Option<crate::spine::spawn_salvage::SpawnFailureRecord>>,
     /// Serializes rebuild/apply cycles for the running proxy; each cycle
@@ -50,6 +49,7 @@ pub(crate) struct Session {
     pub(crate) guardian_review_session: GuardianReviewSessionManager,
     pub(crate) services: SessionServices,
     pub(super) next_internal_sub_id: AtomicU64,
+    pub(crate) spine: crate::spine::coordinator::SpineSessionAdapter,
 }
 
 #[derive(Clone)]
@@ -975,10 +975,18 @@ impl Session {
                 spinetree_memory_projection,
                 spine_jit_enabled,
             );
+            let spine = crate::spine::coordinator::SpineSessionAdapter::from_configuration(
+                spine_jit_enabled,
+                thread_id.to_string(),
+                session_configuration.spine_sdk_config(),
+                spine_observer.clone(),
+            )
+                .map_err(|error| CodexErr::Fatal(error.to_string()))?;
             let state = SessionState::new_with_auto_compact_window_ids(
                 session_configuration.clone(),
                 initial_auto_compact_window_ids,
-                spine_observer,
+                spine_observer.clone(),
+                Arc::clone(&spine.coordinator),
             );
             let managed_network_requirements_configured = config
                 .config_layer_stack
@@ -1179,7 +1187,6 @@ impl Session {
                 tx_event: tx_event.clone(),
                 agent_status,
                 state: Mutex::new(state),
-                spine_spawn_batch_coordinator: Mutex::new(Default::default()),
                 spine_spawn_lifecycle: Default::default(),
                 spawn_failure_record: Mutex::new(None),
                 managed_network_proxy_refresh_lock: Semaphore::new(/*permits*/ 1),
@@ -1193,6 +1200,7 @@ impl Session {
                 guardian_review_session: GuardianReviewSessionManager::default(),
                 services,
                 next_internal_sub_id: AtomicU64::new(0),
+                spine,
             });
             if let Some(network_policy_decider_session) = network_policy_decider_session {
                 let mut guard = network_policy_decider_session.write().await;

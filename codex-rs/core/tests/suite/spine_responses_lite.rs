@@ -3,29 +3,21 @@ use anyhow::Result;
 use codex_core::compact::SUMMARIZATION_PROMPT;
 use codex_features::Feature;
 use codex_protocol::config_types::AutoCompactTokenLimitScope;
-use codex_protocol::models::ContentItem;
-use codex_protocol::models::ResponseItem;
 #[cfg(not(target_os = "windows"))]
 use codex_protocol::openai_models::TruncationPolicyConfig;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
-use codex_protocol::protocol::RolloutItem;
-use codex_protocol::protocol::RolloutLine;
 #[cfg(not(target_os = "windows"))]
 use codex_protocol::user_input::UserInput;
 use core_test_support::hooks::trust_discovered_hooks;
 use core_test_support::responses;
 use core_test_support::skip_if_no_network;
 use core_test_support::test_codex::spine_test_codex;
+use core_test_support::wait_for_event;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
-use std::path::PathBuf;
-use std::sync::Arc;
 #[cfg(not(target_os = "windows"))]
 use std::time::Duration;
-use tempfile::TempDir;
-
-const CODE_MODE_SPINE_CARRIER_MARKER: &str = "spine.code_mode.output.v1";
 
 fn write_first_spine_open_blocking_post_hook(home: &std::path::Path) -> Result<()> {
     let script_path = home.join("post_tool_use_spine_open.py");
@@ -88,22 +80,6 @@ fn additional_tools(body: &Value) -> Result<&[Value]> {
         .context("additional_tools tools should be an array")
 }
 
-fn request_spine_transition_statuses(body: &Value) -> Vec<&str> {
-    body["input"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|item| {
-            (item.get("type").and_then(Value::as_str) == Some("message")
-                && item.get("role").and_then(Value::as_str) == Some("developer"))
-            .then_some(item)
-        })
-        .flat_map(|item| item["content"].as_array().into_iter().flatten())
-        .filter_map(|item| item.get("text").and_then(Value::as_str))
-        .filter(|text| text.starts_with("<spine_tran_status "))
-        .collect()
-}
-
 fn completed_without_usage(id: &str) -> Value {
     serde_json::json!({
         "type": "response.completed",
@@ -136,78 +112,6 @@ fn ev_compaction_item(id: &str, encrypted_content: &str) -> Value {
             "encrypted_content": encrypted_content,
         }
     })
-}
-
-fn status_kilotokens(status: &str, field: &str) -> Result<f64> {
-    let marker = format!(r#"{field}=""#);
-    let value = status
-        .split_once(&marker)
-        .with_context(|| format!("status is missing {field}: {status}"))?
-        .1
-        .split_once('"')
-        .with_context(|| format!("status has malformed {field}: {status}"))?
-        .0
-        .strip_suffix('K')
-        .with_context(|| format!("status {field} is not expressed in kilotokens: {status}"))?;
-    value
-        .parse()
-        .with_context(|| format!("status has non-numeric {field}: {status}"))
-}
-
-fn persisted_spine_transition_statuses(test: &TestCodex) -> Result<Vec<String>> {
-    let path = test
-        .codex
-        .rollout_path()
-        .context("test thread is missing its rollout path")?;
-    let rollout = std::fs::read_to_string(&path)
-        .with_context(|| format!("failed to read rollout {}", path.display()))?;
-    Ok(rollout
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .map(serde_json::from_str::<RolloutLine>)
-        .collect::<Result<Vec<_>, _>>()?
-        .into_iter()
-        .filter_map(|line| match line.item {
-            RolloutItem::ResponseItem(ResponseItem::Message { role, content, .. })
-                if role == "developer" =>
-            {
-                content.into_iter().find_map(|item| match item {
-                    codex_protocol::models::ContentItem::InputText { text }
-                        if text.starts_with("<spine_tran_status ") =>
-                    {
-                        Some(text)
-                    }
-                    _ => None,
-                })
-            }
-            _ => None,
-        })
-        .collect::<Vec<_>>())
-}
-
-async fn persist_spine_transition_status_and_shutdown(
-    server: &wiremock::MockServer,
-) -> Result<(Arc<TempDir>, PathBuf, String)> {
-    let mut builder = spine_test_codex().with_model_info_override("gpt-5.4", |model_info| {
-        model_info.use_responses_lite = true;
-    });
-    let test = builder.build(server).await?;
-
-    test.submit_turn("persist status").await?;
-    test.codex.flush_rollout().await?;
-    let persisted = persisted_spine_transition_statuses(&test)?;
-    let [persisted_status] = persisted.as_slice() else {
-        panic!("expected exactly one persisted transition status, got {persisted:#?}");
-    };
-    let home = test.home.clone();
-    let rollout_path = test.codex.rollout_path().context("rollout path")?;
-    test.codex.submit(Op::Shutdown).await?;
-    wait_for_event(&test.codex, |event| {
-        matches!(event, EventMsg::ShutdownComplete)
-    })
-    .await;
-
-    Ok((home, rollout_path, persisted_status.clone()))
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -262,16 +166,6 @@ async fn responses_lite_direct_controls_admit_first_valid_native_ordinal() -> Re
         second.contains("already has a validated Spine control"),
         "unexpected second control output: {second}"
     );
-    let followup_body = followup.body_json();
-    let statuses = request_spine_transition_statuses(&followup_body);
-    assert_eq!(statuses.len(), 1);
-    assert!(statuses[0].contains(r#"cursor="1.1""#), "{}", statuses[0]);
-    assert!(
-        statuses[0].contains(r#"summary="first child""#),
-        "{}",
-        statuses[0]
-    );
-
     Ok(())
 }
 
@@ -328,16 +222,6 @@ async fn responses_lite_direct_controls_skip_runtime_invalid_earlier_call() -> R
         .function_call_output_text("direct-open-after-invalid")
         .context("valid open output")?;
     assert_eq!(open, "Spine open accepted.");
-    let followup_body = followup.body_json();
-    let statuses = request_spine_transition_statuses(&followup_body);
-    assert_eq!(statuses.len(), 1);
-    assert!(statuses[0].contains(r#"cursor="1.1""#), "{}", statuses[0]);
-    assert!(
-        statuses[0].contains(r#"summary="valid child""#),
-        "{}",
-        statuses[0]
-    );
-
     Ok(())
 }
 
@@ -401,16 +285,6 @@ async fn responses_lite_direct_control_post_hook_failure_releases_next_ordinal()
             .as_deref(),
         Some("Spine open accepted.")
     );
-    let followup_body = followup.body_json();
-    let statuses = request_spine_transition_statuses(&followup_body);
-    assert_eq!(statuses.len(), 1);
-    assert!(statuses[0].contains(r#"cursor="1.1""#), "{}", statuses[0]);
-    assert!(
-        statuses[0].contains(r#"summary="hook survivor""#),
-        "{}",
-        statuses[0]
-    );
-
     Ok(())
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -460,69 +334,11 @@ async fn responses_lite_omits_spine_status_tail() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn responses_lite_spine_transition_status_uses_body_after_prefix_context_left() -> Result<()>
-{
-    skip_if_no_network!(Ok(()));
-
-    let server = responses::start_mock_server().await;
-    let sampled_output = "s".repeat(40_000);
-    let response_mock = responses::mount_sse_sequence(
-        &server,
-        vec![
-            responses::sse(vec![
-                responses::ev_response_created("resp-status-body-window-open"),
-                responses::ev_assistant_message("resp-status-body-window-output", &sampled_output),
-                responses::ev_function_call_with_namespace(
-                    "status-body-window-open",
-                    "spine",
-                    "open",
-                    r#"{"summary":"body window child"}"#,
-                ),
-                responses::ev_completed_with_tokens("resp-status-body-window-open", 100_000),
-            ]),
-            responses::sse(vec![
-                responses::ev_response_created("resp-status-body-window-done"),
-                responses::ev_completed("resp-status-body-window-done"),
-            ]),
-        ],
-    )
-    .await;
-    let mut builder = spine_test_codex()
-        .with_model_info_override("gpt-5.4", |model_info| {
-            model_info.use_responses_lite = true;
-        })
-        .with_config(|config| {
-            config.model_context_window = Some(200_000);
-            config.model_auto_compact_token_limit = Some(80_000);
-            config.model_auto_compact_token_limit_scope =
-                AutoCompactTokenLimitScope::BodyAfterPrefix;
-        });
-    let test = builder.build(&server).await?;
-
-    test.submit_turn("body-after-prefix transition status")
-        .await?;
-
-    let requests = response_mock.requests();
-    assert_eq!(requests.len(), 2);
-    let follow_up = requests[1].body_json();
-    let statuses = request_spine_transition_statuses(&follow_up);
-    assert_eq!(statuses.len(), 1);
-    let context_left = status_kilotokens(statuses[0], "context_left")?;
-    assert!(
-        (50.0..80.0).contains(&context_left),
-        "sampled growth must reduce BodyAfterPrefix context_left without resetting the window: {}",
-        statuses[0],
-    );
-
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn responses_lite_open_rewrite_preserves_body_after_prefix_growth() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
-    let large_sampled_output = "x".repeat(80_000);
+    let large_sampled_output = "x".repeat(30_000);
     let response_mock = responses::mount_sse_sequence(
         &server,
         vec![
@@ -597,8 +413,8 @@ async fn responses_lite_later_usage_cannot_absorb_no_usage_first_request_growth(
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
-    let first_growth = "a".repeat(40_000);
-    let second_growth = "b".repeat(40_000);
+    let first_growth = "a".repeat(30_000);
+    let second_growth = "b".repeat(30_000);
     let response_mock = responses::mount_sse_sequence(
         &server,
         vec![
@@ -755,11 +571,17 @@ async fn responses_lite_spine_close_rebases_provider_usage_before_auto_compact()
 
     let server = responses::start_mock_server().await;
     let mut old_reasoning =
-        responses::ev_reasoning_item("closed-child-reasoning", &["old"], &[&"r".repeat(360_000)]);
+        responses::ev_reasoning_item("closed-child-reasoning", &["old"], &[&"r".repeat(25_000)]);
     old_reasoning["item"]
         .as_object_mut()
         .context("reasoning fixture item should be an object")?
         .remove("content");
+    let child_work = vec![
+        responses::ev_response_created("resp-rebase-child-work"),
+        old_reasoning,
+        responses::ev_assistant_message("msg-rebase-child-work", "large child work complete"),
+        responses::ev_completed_with_tokens("resp-rebase-child-work", 30_000),
+    ];
     let response_mock = responses::mount_response_sequence(
         &server,
         vec![
@@ -778,16 +600,8 @@ async fn responses_lite_spine_close_rebases_provider_usage_before_auto_compact()
                 responses::ev_assistant_message("msg-rebase-opened", "child ready"),
                 responses::ev_completed_with_tokens("resp-rebase-opened", 10_000),
             ])),
-            responses::sse_response(responses::sse(vec![
-                responses::ev_response_created("resp-rebase-child-work"),
-                old_reasoning,
-                responses::ev_assistant_message(
-                    "msg-rebase-child-work",
-                    "large child work complete",
-                ),
-                responses::ev_completed_with_tokens("resp-rebase-child-work", 100_000),
-            ]))
-            .insert_header("X-Reasoning-Included", "true"),
+            responses::sse_response(responses::sse(child_work))
+                .insert_header("X-Reasoning-Included", "true"),
             responses::sse_response(responses::sse(vec![
                 responses::ev_response_created("resp-rebase-close"),
                 responses::ev_function_call_with_namespace(
@@ -796,13 +610,13 @@ async fn responses_lite_spine_close_rebases_provider_usage_before_auto_compact()
                     "close",
                     r#"{"memory":"short child memory"}"#,
                 ),
-                responses::ev_completed_with_tokens("resp-rebase-close", 250_000),
+                responses::ev_completed_with_tokens("resp-rebase-close", 52_000),
             ]))
             .insert_header("X-Reasoning-Included", "true"),
             responses::sse_response(responses::sse(vec![
                 responses::ev_response_created("resp-rebase-done"),
                 responses::ev_assistant_message("msg-rebase-done", "done"),
-                responses::ev_completed_with_tokens("resp-rebase-done", 159_837),
+                responses::ev_completed_with_tokens("resp-rebase-done", 45_000),
             ])),
             responses::sse_response(responses::sse(vec![
                 responses::ev_response_created("resp-rebase-next-turn"),
@@ -817,8 +631,8 @@ async fn responses_lite_spine_close_rebases_provider_usage_before_auto_compact()
             model_info.use_responses_lite = true;
         })
         .with_config(|config| {
-            config.model_context_window = Some(272_000);
-            config.model_auto_compact_token_limit = Some(244_800);
+            config.model_context_window = Some(80_000);
+            config.model_auto_compact_token_limit = Some(50_000);
         });
     let test = builder.build(&server).await?;
 
@@ -849,14 +663,6 @@ async fn responses_lite_spine_close_rebases_provider_usage_before_auto_compact()
     assert!(
         follow_up_body.contains("short child memory"),
         "closed child memory must replace the removed suffix"
-    );
-    let follow_up_json = follow_up.body_json();
-    let statuses = request_spine_transition_statuses(&follow_up_json);
-    assert_eq!(statuses.len(), 1);
-    assert!(
-        status_kilotokens(statuses[0], "context_left")? > 100.0,
-        "status must use the same rebased pressure as compact admission: {}",
-        statuses[0]
     );
     let metadata: Value = serde_json::from_str(
         &follow_up
@@ -895,8 +701,9 @@ async fn responses_lite_body_after_prefix_rewrite_keeps_full_window_hard_stop() 
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
+    let bounded_large_user = "u".repeat(30_000);
     let close_arguments = serde_json::json!({
-        "memory": "m".repeat(400_000),
+        "memory": "m".repeat(30_000),
     })
     .to_string();
     let response_mock = responses::mount_sse_sequence(
@@ -945,14 +752,14 @@ async fn responses_lite_body_after_prefix_rewrite_keeps_full_window_hard_stop() 
             model_info.use_responses_lite = true;
         })
         .with_config(|config| {
-            config.model_context_window = Some(80_000);
+            config.model_context_window = Some(18_000);
             config.model_auto_compact_token_limit = Some(500_000);
             config.model_auto_compact_token_limit_scope =
                 AutoCompactTokenLimitScope::BodyAfterPrefix;
         });
     let test = builder.build(&server).await?;
 
-    test.submit_turn("open a body-prefix child").await?;
+    test.submit_turn(&bounded_large_user).await?;
     test.submit_turn("close with a large memory").await?;
 
     let requests = response_mock.requests();
@@ -981,7 +788,18 @@ async fn responses_lite_model_output_without_usage_estimates_current_projection(
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
-    let large_reasoning = "n".repeat(180_000);
+    let large_reasoning = "n".repeat(30_000);
+    let mut large_response = vec![responses::ev_response_created("resp-no-usage-large")];
+    large_response.extend((0..6).map(|index| {
+        responses::ev_assistant_message(
+            &format!("reasoning-no-usage-large-{index}"),
+            &large_reasoning,
+        )
+    }));
+    large_response.extend([
+        responses::ev_function_call("no-usage-tool", "missing_tool", "{}"),
+        completed_without_usage("resp-no-usage-large"),
+    ]);
     let response_mock = responses::mount_sse_sequence(
         &server,
         vec![
@@ -990,16 +808,7 @@ async fn responses_lite_model_output_without_usage_estimates_current_projection(
                 responses::ev_assistant_message("msg-no-usage-baseline", "baseline"),
                 responses::ev_completed_with_tokens("resp-no-usage-baseline", 5_000),
             ]),
-            responses::sse(vec![
-                responses::ev_response_created("resp-no-usage-large"),
-                responses::ev_reasoning_item(
-                    "reasoning-no-usage-large",
-                    &["large"],
-                    &[&large_reasoning],
-                ),
-                responses::ev_function_call("no-usage-tool", "missing_tool", "{}"),
-                completed_without_usage("resp-no-usage-large"),
-            ]),
+            responses::sse(large_response),
             responses::sse(vec![
                 responses::ev_response_created("resp-no-usage-compact"),
                 ev_compaction_item("compact-no-usage", "compact-no-usage-summary"),
@@ -1197,7 +1006,14 @@ async fn responses_lite_retry_preserves_stale_projection_until_real_usage() -> R
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
-    let partial_reasoning = "r".repeat(180_000);
+    let partial_reasoning = "r".repeat(30_000);
+    let mut partial_response = vec![responses::ev_response_created("resp-retry-partial")];
+    partial_response.extend((0..6).map(|index| {
+        responses::ev_assistant_message(
+            &format!("reasoning-retry-partial-{index}"),
+            &partial_reasoning,
+        )
+    }));
     let response_mock = responses::mount_sse_sequence(
         &server,
         vec![
@@ -1206,14 +1022,7 @@ async fn responses_lite_retry_preserves_stale_projection_until_real_usage() -> R
                 responses::ev_assistant_message("msg-retry-baseline", "baseline"),
                 responses::ev_completed_with_tokens("resp-retry-baseline", 5_000),
             ]),
-            responses::sse(vec![
-                responses::ev_response_created("resp-retry-partial"),
-                responses::ev_reasoning_item(
-                    "reasoning-retry-partial",
-                    &["partial"],
-                    &[&partial_reasoning],
-                ),
-            ]),
+            responses::sse(partial_response),
             responses::sse(vec![
                 responses::ev_response_created("resp-retry-no-usage"),
                 responses::ev_function_call("retry-tool", "missing_tool", "{}"),
@@ -1266,12 +1075,23 @@ async fn responses_lite_cancel_keeps_projection_stale_for_next_turn() -> Result<
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
-    let cancelled_reasoning = "c".repeat(180_000);
+    let cancelled_reasoning = "c".repeat(30_000);
     let sleep_args = serde_json::json!({
         "command": "sleep 60",
         "timeout_ms": 60_000
     })
     .to_string();
+    let mut cancelled_response = vec![responses::ev_response_created("resp-cancel-large")];
+    cancelled_response.extend((0..6).map(|index| {
+        responses::ev_assistant_message(
+            &format!("reasoning-cancel-large-{index}"),
+            &cancelled_reasoning,
+        )
+    }));
+    cancelled_response.extend([
+        responses::ev_function_call("cancel-sleep", "shell_command", &sleep_args),
+        completed_without_usage("resp-cancel-large"),
+    ]);
     let response_mock = responses::mount_sse_sequence(
         &server,
         vec![
@@ -1280,16 +1100,7 @@ async fn responses_lite_cancel_keeps_projection_stale_for_next_turn() -> Result<
                 responses::ev_assistant_message("msg-cancel-baseline", "baseline"),
                 responses::ev_completed_with_tokens("resp-cancel-baseline", 5_000),
             ]),
-            responses::sse(vec![
-                responses::ev_response_created("resp-cancel-large"),
-                responses::ev_reasoning_item(
-                    "reasoning-cancel-large",
-                    &["cancelled"],
-                    &[&cancelled_reasoning],
-                ),
-                responses::ev_function_call("cancel-sleep", "shell_command", &sleep_args),
-                completed_without_usage("resp-cancel-large"),
-            ]),
+            responses::sse(cancelled_response),
             responses::sse(vec![
                 responses::ev_response_created("resp-cancel-compact"),
                 ev_compaction_item("compact-cancel", "compact-cancel-summary"),

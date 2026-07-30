@@ -1,6 +1,4 @@
 use std::collections::HashMap;
-// Spine MODIFIED: Track closed Code Mode cells and bound their retirement order.
-// Reason: Nested Spine calls can race cell closure, so late calls need bounded tombstones.
 use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -21,23 +19,14 @@ use tokio_util::sync::CancellationToken;
 use super::ExecContext;
 use super::PUBLIC_TOOL_NAME;
 use super::call_nested_tool;
-// Spine MODIFIED: Import nested Spine admission and first-output synchronization types.
-// Reason: The dispatch broker owns per-cell runtime ordering and lifecycle state.
-use super::spine_bridge::CellFirstOutputJoin;
-use super::spine_bridge::CellSpineState;
-use super::spine_bridge::NestedSpineAdmission;
-use super::spine_bridge::NestedSpineCallV1;
-use super::spine_bridge::NestedSpineToolName;
 use crate::session::step_context::StepContext;
 use crate::tools::ToolRouter;
 use crate::tools::context::SharedTurnDiffTracker;
 use crate::tools::parallel::ToolCallRuntime;
 
-// Spine MODIFIED: Replace readiness-only gates with a registry carrying Spine cell state.
-// Reason: A cell must survive runtime close until admitted calls are sealed into first output.
 #[derive(Default)]
 struct DispatchRegistry {
-    cells: HashMap<CellId, Arc<CellDispatchState>>,
+    cells: HashMap<CellId, CellDispatchState>,
     closed_cells: HashSet<CellId>,
     retired_order: VecDeque<CellId>,
 }
@@ -47,38 +36,49 @@ const MAX_RETIRED_CELL_TOMBSTONES: usize = 1024;
 
 struct CellDispatchState {
     ready: watch::Sender<bool>,
-    spine: Arc<CellSpineState>,
+    outer_call_id: Option<String>,
+    invocations: watch::Sender<InvocationCounts>,
+    next_spine_invocation: u64,
+    spine_invocations: HashMap<String, u64>,
+    spine_sealed: bool,
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+struct InvocationCounts {
+    pending: usize,
+    active: usize,
+    cleanup: usize,
+    spine: usize,
+}
+
+impl InvocationCounts {
+    fn is_idle(self) -> bool {
+        self.pending == 0 && self.active == 0
+    }
+}
+
+enum InvocationChange {
+    Start { cleanup: bool },
+    CancelPending { spine: bool },
+    Finish { cleanup: bool, spine: bool },
 }
 
 impl CellDispatchState {
     fn new() -> Self {
         Self {
             ready: watch::channel(false).0,
-            spine: Arc::new(CellSpineState::default()),
+            outer_call_id: None,
+            invocations: watch::channel(InvocationCounts::default()).0,
+            next_spine_invocation: 0,
+            spine_invocations: HashMap::new(),
+            spine_sealed: false,
         }
-    }
-}
-
-pub(crate) struct FirstOutputJoin {
-    cell_id: CellId,
-    state: Arc<CellDispatchState>,
-    dispatch_gates: Arc<DispatchGates>,
-    inner: CellFirstOutputJoin,
-}
-
-impl FirstOutputJoin {
-    pub(crate) async fn finish(self) -> Result<Vec<NestedSpineCallV1>, String> {
-        let calls = self.inner.finish().await?;
-        remove_dispatch_state_if_complete(&self.dispatch_gates, &self.cell_id, &self.state);
-        Ok(calls)
     }
 }
 
 pub(super) struct CodeModeDispatchBroker {
     dispatch_tx: async_channel::Sender<DispatchMessage>,
     dispatch_rx: async_channel::Receiver<DispatchMessage>,
-    // Spine MODIFIED: Store lifecycle-aware state instead of bare ready senders.
-    // Reason: Spine admission, closure, and tombstones must share one synchronization boundary.
     dispatch_gates: Arc<DispatchGates>,
 }
 
@@ -93,81 +93,58 @@ impl CodeModeDispatchBroker {
     }
 
     pub(super) fn mark_cell_ready_for_dispatch(&self, cell_id: &CellId) {
-        if let Some(state) = dispatch_state(&self.dispatch_gates, cell_id) {
-            state.ready.send_replace(true);
+        if let Some(ready) = dispatch_state(&self.dispatch_gates, cell_id) {
+            ready.send_replace(true);
         }
     }
 
-    // Spine MODIFIED: Register outer ownership and admit nested Spine calls per cell.
-    // Reason: Only the broker can serialize runtime calls with the outer response boundary.
-    pub(super) fn register_cell(
-        &self,
-        cell_id: &CellId,
-        outer_exec_call_id: &str,
-        spine_admission_enabled: bool,
-    ) -> Result<(), String> {
-        let (state, runtime_closed) = register_dispatch_state(&self.dispatch_gates, cell_id);
-        state
-            .spine
-            .register_outer_exec(outer_exec_call_id, spine_admission_enabled)?;
-        if runtime_closed {
-            state.spine.mark_runtime_closed();
-            remove_dispatch_state_if_complete(&self.dispatch_gates, cell_id, &state);
-        }
-        Ok(())
-    }
-
-    pub(super) fn admit_spine(
-        &self,
-        cell_id: &CellId,
-        runtime_call_id: String,
-        name: NestedSpineToolName,
-        arguments: String,
-    ) -> Result<NestedSpineAdmission, String> {
-        let state = dispatch_state(&self.dispatch_gates, cell_id)
-            .ok_or_else(|| format!("Code Mode cell `{cell_id}` is closed"))?;
-        state.spine.admit(runtime_call_id, name, arguments)
-    }
-
-    pub(super) fn begin_first_output(&self, cell_id: &CellId) -> Result<FirstOutputJoin, String> {
-        let state = find_dispatch_state(&self.dispatch_gates, cell_id)
-            .ok_or_else(|| format!("Code Mode cell `{cell_id}` is not registered"))?;
-        let inner = state.spine.begin_first_output()?;
-        Ok(FirstOutputJoin {
-            cell_id: cell_id.clone(),
-            state,
-            dispatch_gates: Arc::clone(&self.dispatch_gates),
-            inner,
-        })
-    }
-
-    pub(super) fn close_cell(&self, cell_id: &CellId) {
-        let Some(state) = mark_dispatch_state_closed(&self.dispatch_gates, cell_id) else {
-            return;
-        };
-        state.spine.mark_runtime_closed();
-        remove_dispatch_state_if_complete(&self.dispatch_gates, cell_id, &state);
-    }
-
-    // Spine MODIFIED: Add explicit abort and pending-output inspection for bridged cells.
-    // Reason: Cancellation removes admission state while normal teardown awaits first output.
-    pub(super) fn abort_cell(&self, cell_id: &CellId) {
+    pub(super) fn register_cell(&self, cell_id: &CellId, outer_call_id: &str) {
         let mut registry = lock_dispatch_registry(&self.dispatch_gates);
-        registry.closed_cells.insert(cell_id.clone());
-        if registry.cells.remove(cell_id).is_some() {
-            remember_retired_cell(&mut registry, cell_id.clone());
+        if registry.closed_cells.contains(cell_id) {
+            return;
         }
+        let state = registry
+            .cells
+            .entry(cell_id.clone())
+            .or_insert_with(CellDispatchState::new);
+        state
+            .outer_call_id
+            .get_or_insert_with(|| outer_call_id.to_string());
     }
 
-    pub(super) fn is_waiting_for_first_output(&self, outer_exec_call_id: &str) -> bool {
-        let states = lock_dispatch_registry(&self.dispatch_gates)
+    pub(super) fn outer_call_id(&self, cell_id: &CellId) -> Option<String> {
+        lock_dispatch_registry(&self.dispatch_gates)
             .cells
-            .values()
-            .cloned()
-            .collect::<Vec<_>>();
-        states
-            .iter()
-            .any(|state| state.spine.is_waiting_for_first_output(outer_exec_call_id))
+            .get(cell_id)
+            .and_then(|state| state.outer_call_id.clone())
+    }
+
+    pub(super) fn spine_invocation_ordinal(
+        &self,
+        cell_id: &CellId,
+        runtime_tool_call_id: &str,
+    ) -> Option<u64> {
+        lock_dispatch_registry(&self.dispatch_gates)
+            .cells
+            .get(cell_id)
+            .and_then(|state| state.spine_invocations.get(runtime_tool_call_id).copied())
+    }
+
+    pub(super) async fn close_cell_and_wait(&self, cell_id: &CellId) {
+        wait_for_cell_invocations(&self.dispatch_gates, cell_id).await;
+    }
+
+    pub(super) async fn close_cell_and_wait_for_spine(&self, cell_id: &CellId) {
+        mark_dispatch_state_closed(&self.dispatch_gates, cell_id);
+        wait_for_invocations(&self.dispatch_gates, cell_id, |counts| counts.spine == 0).await;
+    }
+
+    pub(super) async fn wait_for_cleanup_invocations(&self, cell_id: &CellId) {
+        seal_spine_dispatch(&self.dispatch_gates, cell_id);
+        wait_for_invocations(&self.dispatch_gates, cell_id, |counts| {
+            counts.pending == 0 && counts.cleanup == 0 && counts.spine == 0
+        })
+        .await;
     }
 
     pub(super) fn start_turn_worker(
@@ -200,8 +177,6 @@ impl CodeModeDispatchBroker {
                         cancellation_token,
                         response_tx,
                     } => {
-                        // Spine MODIFIED: Retain cell state when a notification is cancelled.
-                        // Reason: The first-output join, not one notification, owns retirement.
                         let response = if wait_until_cell_ready_for_dispatch(
                             &dispatch_gates,
                             &cell_id,
@@ -221,8 +196,7 @@ impl CodeModeDispatchBroker {
                         response_tx,
                     } => {
                         let cell_id = invocation.cell_id.clone();
-                        // Spine MODIFIED: Leave failed dispatch cleanup to the lifecycle owner.
-                        // Reason: Spine admission may still require the closed-cell tombstone.
+                        let spine = is_spine_invocation(&invocation);
                         if !wait_until_cell_ready_for_dispatch(
                             &dispatch_gates,
                             &cell_id,
@@ -230,14 +204,38 @@ impl CodeModeDispatchBroker {
                         )
                         .await
                         {
+                            update_invocations(
+                                &dispatch_gates,
+                                &cell_id,
+                                InvocationChange::CancelPending { spine },
+                            );
+                            continue;
+                        }
+                        let waits_for_cleanup = host
+                            .tool_runtime
+                            .tool_name_waits_for_runtime_cancellation(&invocation.tool_name);
+                        let start = InvocationChange::Start {
+                            cleanup: waits_for_cleanup,
+                        };
+                        if !update_invocations(&dispatch_gates, &cell_id, start) {
+                            update_invocations(
+                                &dispatch_gates,
+                                &cell_id,
+                                InvocationChange::CancelPending { spine },
+                            );
+                            let _ = response_tx
+                                .send(Err(format!("Code Mode cell `{cell_id}` is closed")));
                             continue;
                         }
                         let host = Arc::clone(&host);
+                        let guard = ActiveInvocationGuard {
+                            dispatch_gates: Arc::clone(&dispatch_gates),
+                            cell_id,
+                            cleanup: waits_for_cleanup,
+                            spine,
+                        };
                         tokio::spawn(async move {
-                            // Spine MODIFIED: Delegate cancellation to ToolCallRuntime.
-                            // Reason: Spine spawn needs cooperative teardown before returning.
-                            // ToolCallRuntime owns cancellation and lets tools such as
-                            // spine.spawn finish cooperative teardown before returning.
+                            let _guard = guard;
                             let response = host.invoke_tool(invocation, cancellation_token).await;
                             let _ = response_tx.send(response);
                         });
@@ -251,12 +249,7 @@ impl CodeModeDispatchBroker {
     }
 }
 
-// Spine MODIFIED: Reconcile cell states, closure tombstones, and bounded retirement.
-// Reason: Nested calls and runtime closure arrive independently and race at this boundary.
-fn dispatch_state(
-    dispatch_gates: &DispatchGates,
-    cell_id: &CellId,
-) -> Option<Arc<CellDispatchState>> {
+fn dispatch_state(dispatch_gates: &DispatchGates, cell_id: &CellId) -> Option<watch::Sender<bool>> {
     let mut registry = lock_dispatch_registry(dispatch_gates);
     if registry.closed_cells.contains(cell_id) {
         return None;
@@ -265,60 +258,186 @@ fn dispatch_state(
         registry
             .cells
             .entry(cell_id.clone())
-            .or_insert_with(|| Arc::new(CellDispatchState::new()))
+            .or_insert_with(CellDispatchState::new)
+            .ready
             .clone(),
     )
 }
 
-fn register_dispatch_state(
+fn mark_dispatch_state_closed(dispatch_gates: &DispatchGates, cell_id: &CellId) {
+    let mut registry = lock_dispatch_registry(dispatch_gates);
+    if !registry.closed_cells.insert(cell_id.clone()) {
+        return;
+    }
+    let is_idle = registry
+        .cells
+        .get(cell_id)
+        .is_none_or(|state| state.invocations.borrow().is_idle());
+    retire_if_idle(&mut registry, cell_id, is_idle);
+}
+
+fn update_invocations(
     dispatch_gates: &DispatchGates,
     cell_id: &CellId,
-) -> (Arc<CellDispatchState>, bool) {
+    change: InvocationChange,
+) -> bool {
     let mut registry = lock_dispatch_registry(dispatch_gates);
-    let runtime_closed = registry.closed_cells.contains(cell_id);
+    if matches!(change, InvocationChange::Start { .. }) && registry.closed_cells.contains(cell_id) {
+        return false;
+    }
+    let Some(state) = registry.cells.get(cell_id) else {
+        return false;
+    };
+    let mut counts = *state.invocations.borrow();
+    match change {
+        InvocationChange::Start { cleanup } => {
+            counts.pending = counts.pending.saturating_sub(1);
+            counts.active = counts.active.saturating_add(1);
+            if cleanup {
+                counts.cleanup = counts.cleanup.saturating_add(1);
+            }
+        }
+        InvocationChange::CancelPending { spine } => {
+            counts.pending = counts.pending.saturating_sub(1);
+            if spine {
+                counts.spine = counts.spine.saturating_sub(1);
+            }
+        }
+        InvocationChange::Finish { cleanup, spine } => {
+            counts.active = counts.active.saturating_sub(1);
+            if cleanup {
+                counts.cleanup = counts.cleanup.saturating_sub(1);
+            }
+            if spine {
+                counts.spine = counts.spine.saturating_sub(1);
+            }
+        }
+    }
+    state.invocations.send_replace(counts);
+    retire_if_idle(&mut registry, cell_id, counts.is_idle());
+    true
+}
+
+fn queue_invocation(
+    dispatch_gates: &DispatchGates,
+    invocation: &CodeModeNestedToolCall,
+) -> Result<(), String> {
+    let mut registry = lock_dispatch_registry(dispatch_gates);
+    let cell_id = &invocation.cell_id;
+    if registry.closed_cells.contains(cell_id) {
+        return Err(format!("Code Mode cell `{cell_id}` is closed"));
+    }
     let state = registry
         .cells
         .entry(cell_id.clone())
-        .or_insert_with(|| Arc::new(CellDispatchState::new()))
-        .clone();
-    (state, runtime_closed)
-}
-
-fn find_dispatch_state(
-    dispatch_gates: &DispatchGates,
-    cell_id: &CellId,
-) -> Option<Arc<CellDispatchState>> {
-    lock_dispatch_registry(dispatch_gates)
-        .cells
-        .get(cell_id)
-        .cloned()
-}
-
-fn mark_dispatch_state_closed(
-    dispatch_gates: &DispatchGates,
-    cell_id: &CellId,
-) -> Option<Arc<CellDispatchState>> {
-    let mut registry = lock_dispatch_registry(dispatch_gates);
-    registry.closed_cells.insert(cell_id.clone());
-    registry.cells.get(cell_id).cloned()
-}
-
-fn remove_dispatch_state_if_complete(
-    dispatch_gates: &DispatchGates,
-    cell_id: &CellId,
-    state: &Arc<CellDispatchState>,
-) {
-    if !state.spine.lifecycle_complete() {
-        return;
+        .or_insert_with(CellDispatchState::new);
+    let spine = is_spine_invocation(invocation);
+    if spine {
+        if state.spine_sealed {
+            return Err(format!(
+                "Code Mode cell `{cell_id}` no longer accepts Spine calls"
+            ));
+        }
+        if state
+            .spine_invocations
+            .contains_key(&invocation.runtime_tool_call_id)
+        {
+            return Err(format!(
+                "Code Mode runtime tool call `{}` was queued more than once",
+                invocation.runtime_tool_call_id
+            ));
+        }
+        let next = state
+            .next_spine_invocation
+            .checked_add(1)
+            .ok_or_else(|| "Code Mode Spine invocation ordinal overflow".to_string())?;
+        state.spine_invocations.insert(
+            invocation.runtime_tool_call_id.clone(),
+            state.next_spine_invocation,
+        );
+        state.next_spine_invocation = next;
     }
+    let mut counts = *state.invocations.borrow();
+    counts.pending = counts.pending.saturating_add(1);
+    if spine {
+        counts.spine = counts.spine.saturating_add(1);
+    }
+    state.invocations.send_replace(counts);
+    Ok(())
+}
+
+fn seal_spine_dispatch(dispatch_gates: &DispatchGates, cell_id: &CellId) {
+    if let Some(state) = lock_dispatch_registry(dispatch_gates)
+        .cells
+        .get_mut(cell_id)
+    {
+        state.spine_sealed = true;
+    }
+}
+
+fn is_spine_invocation(invocation: &CodeModeNestedToolCall) -> bool {
+    invocation.tool_name.namespace.as_deref() == Some(spine_core::SPINE_NAMESPACE)
+        && spine_core::SpineTool::all()
+            .iter()
+            .any(|tool| tool.name() == invocation.tool_name.name)
+}
+
+struct ActiveInvocationGuard {
+    dispatch_gates: Arc<DispatchGates>,
+    cell_id: CellId,
+    cleanup: bool,
+    spine: bool,
+}
+
+impl Drop for ActiveInvocationGuard {
+    fn drop(&mut self) {
+        update_invocations(
+            &self.dispatch_gates,
+            &self.cell_id,
+            InvocationChange::Finish {
+                cleanup: self.cleanup,
+                spine: self.spine,
+            },
+        );
+    }
+}
+
+async fn wait_for_cell_invocations(dispatch_gates: &DispatchGates, cell_id: &CellId) {
+    mark_dispatch_state_closed(dispatch_gates, cell_id);
+    wait_for_invocations(dispatch_gates, cell_id, InvocationCounts::is_idle).await;
     let mut registry = lock_dispatch_registry(dispatch_gates);
-    if registry
+    let is_idle = registry
         .cells
         .get(cell_id)
-        .is_some_and(|current| Arc::ptr_eq(current, state))
-    {
+        .is_none_or(|state| state.invocations.borrow().is_idle());
+    retire_if_idle(&mut registry, cell_id, is_idle);
+}
+
+async fn wait_for_invocations(
+    dispatch_gates: &DispatchGates,
+    cell_id: &CellId,
+    complete: impl Fn(InvocationCounts) -> bool,
+) {
+    let Some(mut invocations_rx) = ({
+        let registry = lock_dispatch_registry(dispatch_gates);
+        registry
+            .cells
+            .get(cell_id)
+            .map(|state| state.invocations.subscribe())
+    }) else {
+        return;
+    };
+    while !complete(*invocations_rx.borrow_and_update()) {
+        if invocations_rx.changed().await.is_err() {
+            break;
+        }
+    }
+}
+
+fn retire_if_idle(registry: &mut DispatchRegistry, cell_id: &CellId, is_idle: bool) {
+    if is_idle && registry.closed_cells.contains(cell_id) {
         registry.cells.remove(cell_id);
-        remember_retired_cell(&mut registry, cell_id.clone());
+        remember_retired_cell(registry, cell_id.clone());
     }
 }
 
@@ -348,12 +467,10 @@ async fn wait_until_cell_ready_for_dispatch(
     if cancellation_token.is_cancelled() {
         return false;
     }
-    // Spine MODIFIED: Subscribe through the registry and reject retired cells.
-    // Reason: A late dispatch must not recreate a cell after Spine admission has closed it.
-    let Some(state) = dispatch_state(dispatch_gates, cell_id) else {
+    let Some(ready) = dispatch_state(dispatch_gates, cell_id) else {
         return false;
     };
-    let mut ready_rx = state.ready.subscribe();
+    let mut ready_rx = ready.subscribe();
     loop {
         if *ready_rx.borrow_and_update() {
             return true;
@@ -379,15 +496,27 @@ impl CodeModeSessionDelegate for CodeModeDispatchBroker {
             if cancellation_token.is_cancelled() {
                 return Err("code mode nested tool call cancelled".to_string());
             }
+            queue_invocation(&self.dispatch_gates, &invocation)?;
+            let spine = is_spine_invocation(&invocation);
+            let cell_id = invocation.cell_id.clone();
             let (response_tx, response_rx) = oneshot::channel();
-            self.dispatch_tx
+            if self
+                .dispatch_tx
                 .send(DispatchMessage::InvokeTool {
                     invocation,
                     cancellation_token: cancellation_token.clone(),
                     response_tx,
                 })
                 .await
-                .map_err(|_| "code mode nested tool dispatcher is unavailable".to_string())?;
+                .is_err()
+            {
+                update_invocations(
+                    &self.dispatch_gates,
+                    &cell_id,
+                    InvocationChange::CancelPending { spine },
+                );
+                return Err("code mode nested tool dispatcher is unavailable".to_string());
+            }
             tokio::select! {
                 response = response_rx => response
                     .map_err(|_| "code mode nested tool dispatcher stopped".to_string())?,
@@ -431,7 +560,7 @@ impl CodeModeSessionDelegate for CodeModeDispatchBroker {
     }
 
     fn cell_closed(&self, cell_id: &CellId) {
-        self.close_cell(cell_id);
+        mark_dispatch_state_closed(&self.dispatch_gates, cell_id);
     }
 }
 
@@ -507,57 +636,26 @@ impl CoreTurnHost {
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn early_runtime_close_is_preserved_until_first_output_seals() {
+    #[test]
+    fn early_runtime_close_rejects_late_registration() {
         let broker = CodeModeDispatchBroker::new();
         let cell_id = CellId::new("cell-early-close".to_string());
 
-        broker.close_cell(&cell_id);
-        broker
-            .register_cell(&cell_id, "exec-1", true)
-            .expect("register after close");
-        assert!(find_dispatch_state(&broker.dispatch_gates, &cell_id).is_some());
+        mark_dispatch_state_closed(&broker.dispatch_gates, &cell_id);
+        broker.register_cell(&cell_id, "exec-early-close");
 
-        assert!(
-            broker
-                .begin_first_output(&cell_id)
-                .expect("begin first output")
-                .finish()
-                .await
-                .expect("finish first output")
-                .is_empty()
-        );
-        assert!(find_dispatch_state(&broker.dispatch_gates, &cell_id).is_none());
-        assert!(
-            broker
-                .admit_spine(
-                    &cell_id,
-                    "runtime-1".to_string(),
-                    NestedSpineToolName::Trim,
-                    "{}".to_string(),
-                )
-                .is_err()
-        );
+        let registry = lock_dispatch_registry(&broker.dispatch_gates);
+        assert!(!registry.cells.contains_key(&cell_id));
+        assert!(registry.closed_cells.contains(&cell_id));
     }
 
-    #[tokio::test]
-    async fn completed_cell_tombstones_are_bounded() {
+    #[test]
+    fn completed_cell_tombstones_are_bounded() {
         let broker = CodeModeDispatchBroker::new();
         for ordinal in 0..(MAX_RETIRED_CELL_TOMBSTONES + 16) {
             let cell_id = CellId::new(format!("cell-retired-{ordinal}"));
-            broker
-                .register_cell(&cell_id, &format!("exec-{ordinal}"), true)
-                .expect("register cell");
-            broker.close_cell(&cell_id);
-            assert!(
-                broker
-                    .begin_first_output(&cell_id)
-                    .expect("begin first output")
-                    .finish()
-                    .await
-                    .expect("finish first output")
-                    .is_empty()
-            );
+            broker.register_cell(&cell_id, &format!("exec-{ordinal}"));
+            mark_dispatch_state_closed(&broker.dispatch_gates, &cell_id);
         }
 
         let registry = lock_dispatch_registry(&broker.dispatch_gates);
@@ -567,29 +665,131 @@ mod tests {
     }
 
     #[test]
-    fn disabled_bridge_cell_closes_without_waiting_for_first_output_seal() {
+    fn completed_cell_closes_dispatch_immediately() {
         let broker = CodeModeDispatchBroker::new();
-        let cell_id = CellId::new("cell-disabled-bridge".to_string());
-        broker
-            .register_cell(&cell_id, "exec-1", false)
-            .expect("register cell");
+        let cell_id = CellId::new("cell-complete".to_string());
+        broker.register_cell(&cell_id, "exec-complete");
 
-        broker.close_cell(&cell_id);
+        mark_dispatch_state_closed(&broker.dispatch_gates, &cell_id);
 
-        assert!(find_dispatch_state(&broker.dispatch_gates, &cell_id).is_none());
+        let registry = lock_dispatch_registry(&broker.dispatch_gates);
+        assert!(!registry.cells.contains_key(&cell_id));
     }
 
     #[test]
-    fn abort_removes_cell_state_and_rejects_late_dispatch() {
+    fn spine_invocation_ordinals_follow_queue_order() {
+        let broker = CodeModeDispatchBroker::new();
+        let cell_id = CellId::new("cell-ordinals".to_string());
+        broker.register_cell(&cell_id, "exec-ordinals");
+        let invocation = |runtime_tool_call_id: &str| CodeModeNestedToolCall {
+            cell_id: cell_id.clone(),
+            runtime_tool_call_id: runtime_tool_call_id.to_string(),
+            tool_name: codex_protocol::ToolName::namespaced("spine", "trim"),
+            tool_kind: codex_code_mode::CodeModeToolKind::Function,
+            input: None,
+        };
+
+        queue_invocation(&broker.dispatch_gates, &invocation("tool-1")).unwrap();
+        queue_invocation(&broker.dispatch_gates, &invocation("tool-2")).unwrap();
+
+        assert_eq!(broker.spine_invocation_ordinal(&cell_id, "tool-1"), Some(0));
+        assert_eq!(broker.spine_invocation_ordinal(&cell_id, "tool-2"), Some(1));
+    }
+
+    #[test]
+    fn spine_invocation_can_arrive_before_cell_registration() {
+        let broker = CodeModeDispatchBroker::new();
+        let cell_id = CellId::new("cell-early-invocation".to_string());
+        let invocation = CodeModeNestedToolCall {
+            cell_id: cell_id.clone(),
+            runtime_tool_call_id: "tool-early".to_string(),
+            tool_name: codex_protocol::ToolName::namespaced("spine", "open"),
+            tool_kind: codex_code_mode::CodeModeToolKind::Function,
+            input: None,
+        };
+
+        queue_invocation(&broker.dispatch_gates, &invocation).unwrap();
+        broker.register_cell(&cell_id, "exec-early-invocation");
+
+        assert_eq!(
+            broker.spine_invocation_ordinal(&cell_id, "tool-early"),
+            Some(0)
+        );
+        assert_eq!(
+            broker.outer_call_id(&cell_id).as_deref(),
+            Some("exec-early-invocation")
+        );
+    }
+
+    #[test]
+    fn sealed_cell_rejects_late_spine_invocation() {
+        let broker = CodeModeDispatchBroker::new();
+        let cell_id = CellId::new("cell-sealed-spine".to_string());
+        broker.register_cell(&cell_id, "exec-sealed-spine");
+        seal_spine_dispatch(&broker.dispatch_gates, &cell_id);
+        let invocation = CodeModeNestedToolCall {
+            cell_id,
+            runtime_tool_call_id: "tool-late".to_string(),
+            tool_name: codex_protocol::ToolName::namespaced("spine", "open"),
+            tool_kind: codex_code_mode::CodeModeToolKind::Function,
+            input: None,
+        };
+
+        assert!(queue_invocation(&broker.dispatch_gates, &invocation).is_err());
+    }
+
+    #[tokio::test]
+    async fn cleanup_wait_includes_active_spine_invocations() {
+        let broker = CodeModeDispatchBroker::new();
+        let cell_id = CellId::new("cell-spine-wait".to_string());
+        broker.register_cell(&cell_id, "exec-spine-wait");
+        let invocation = CodeModeNestedToolCall {
+            cell_id: cell_id.clone(),
+            runtime_tool_call_id: "tool-1".to_string(),
+            tool_name: codex_protocol::ToolName::namespaced("spine", "open"),
+            tool_kind: codex_code_mode::CodeModeToolKind::Function,
+            input: None,
+        };
+        queue_invocation(&broker.dispatch_gates, &invocation).unwrap();
+        assert!(update_invocations(
+            &broker.dispatch_gates,
+            &cell_id,
+            InvocationChange::Start { cleanup: false },
+        ));
+        let wait = broker.wait_for_cleanup_invocations(&cell_id);
+        tokio::pin!(wait);
+
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(10), &mut wait)
+                .await
+                .is_err()
+        );
+        assert!(update_invocations(
+            &broker.dispatch_gates,
+            &cell_id,
+            InvocationChange::Finish {
+                cleanup: false,
+                spine: true,
+            },
+        ));
+        tokio::time::timeout(std::time::Duration::from_secs(1), &mut wait)
+            .await
+            .expect("Spine invocation completion must release cleanup wait");
+    }
+
+    #[test]
+    fn closed_cell_state_rejects_late_dispatch() {
         let broker = CodeModeDispatchBroker::new();
         let cell_id = CellId::new("cell-abort".to_string());
-        broker
-            .register_cell(&cell_id, "exec-1", true)
-            .expect("register cell");
+        broker.register_cell(&cell_id, "exec-abort");
 
-        broker.abort_cell(&cell_id);
+        mark_dispatch_state_closed(&broker.dispatch_gates, &cell_id);
 
-        assert!(find_dispatch_state(&broker.dispatch_gates, &cell_id).is_none());
+        assert!(
+            !lock_dispatch_registry(&broker.dispatch_gates)
+                .cells
+                .contains_key(&cell_id)
+        );
         assert!(dispatch_state(&broker.dispatch_gates, &cell_id).is_none());
     }
 }

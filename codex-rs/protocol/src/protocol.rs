@@ -2656,7 +2656,9 @@ impl InitialHistory {
                 | RolloutItem::InterAgentCommunicationMetadata { .. }
                 | RolloutItem::Compacted(_)
                 | RolloutItem::WorldState(_)
-                | RolloutItem::EventMsg(_) => None,
+                | RolloutItem::EventMsg(_)
+                | RolloutItem::SpineSamplingStarted(_)
+                | RolloutItem::SpineTransition(_) => None,
             })
             .and_then(|turn_context| turn_context.multi_agent_mode.clone())
     }
@@ -2992,7 +2994,9 @@ fn multi_agent_version_from_items(
             | RolloutItem::InterAgentCommunicationMetadata { .. }
             | RolloutItem::Compacted(_)
             | RolloutItem::WorldState(_)
-            | RolloutItem::EventMsg(_) => None,
+            | RolloutItem::EventMsg(_)
+            | RolloutItem::SpineSamplingStarted(_)
+            | RolloutItem::SpineTransition(_) => None,
         })
     })
 }
@@ -3155,6 +3159,22 @@ pub enum RolloutItem {
     TurnContext(TurnContextItem),
     WorldState(WorldStateItem),
     EventMsg(EventMsg),
+    /// Durable pre-sampling boundary for canonical Spine replay.
+    SpineSamplingStarted(SpineSamplingStartedItem),
+    /// One successfully committed Spine sampling transition.
+    SpineTransition(SpineTransitionItem),
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema, TS)]
+pub struct SpineSamplingStartedItem {
+    pub version: u32,
+    pub payload: Value,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema, TS)]
+pub struct SpineTransitionItem {
+    pub version: u32,
+    pub payload: Value,
 }
 
 /// Persisted comparison state used to resume model-visible world-state diffing.
@@ -4397,6 +4417,34 @@ mod tests {
     use std::path::PathBuf;
     use tempfile::NamedTempFile;
     use tempfile::TempDir;
+
+    #[test]
+    fn spine_transition_round_trips_as_named_metadata() -> Result<()> {
+        let item = RolloutItem::SpineTransition(SpineTransitionItem {
+            version: 1,
+            payload: json!({"type": "sampling_shadow_v1", "record": {"digest": "abc"}}),
+        });
+
+        let encoded = serde_json::to_value(&item)?;
+        assert_eq!(
+            encoded,
+            json!({
+                "type": "spine_transition",
+                "payload": {
+                    "version": 1,
+                    "payload": {
+                        "type": "sampling_shadow_v1",
+                        "record": {"digest": "abc"}
+                    }
+                }
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(serde_json::from_value::<RolloutItem>(encoded)?)?,
+            serde_json::to_value(item)?
+        );
+        Ok(())
+    }
 
     #[test]
     fn feature_thread_source_serializes_as_its_app_owned_label() -> Result<()> {

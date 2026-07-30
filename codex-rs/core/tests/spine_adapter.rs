@@ -21,6 +21,7 @@ use codex_protocol::protocol::Op;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::RolloutLine;
 use codex_protocol::user_input::UserInput;
+use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_completed_with_tokens;
 use core_test_support::responses::ev_function_call;
@@ -30,15 +31,267 @@ use core_test_support::responses::mount_sse_once;
 use core_test_support::responses::mount_sse_sequence;
 use core_test_support::responses::sse;
 use core_test_support::responses::start_mock_server;
+use core_test_support::skip_if_no_network;
+use core_test_support::streaming_sse::StreamingSseChunk;
+use core_test_support::streaming_sse::start_streaming_sse_server;
+use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::spine_test_codex;
 use core_test_support::wait_for_event;
 use serde_json::Value;
 use serde_json::json;
+use spine_core::SamplingArchiveRecord;
 use spine_core::SpineConfig;
+use spine_core::SpineOperationFact;
 use std::fs;
 #[cfg(not(target_os = "windows"))]
 use std::os::unix::fs::PermissionsExt;
 use tempfile::TempDir;
+
+#[tokio::test]
+async fn canonical_records_one_start_and_commit_per_real_stream() -> Result<()> {
+    let server = start_mock_server().await;
+    let response_mock = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_response_created("canonical-cardinality-open"),
+                ev_completed("canonical-cardinality-open"),
+            ]),
+            sse(vec![
+                ev_response_created("canonical-cardinality-final"),
+                ev_completed("canonical-cardinality-final"),
+            ]),
+        ],
+    )
+    .await;
+    let test = spine_test_codex().build(&server).await?;
+
+    test.submit_turn("record the first sampling boundary")
+        .await?;
+    test.submit_turn("record the second sampling boundary")
+        .await?;
+
+    let requests = response_mock.requests();
+    let records = load_sampling_records(&test)?;
+    assert_eq!(requests.len(), 2, "sampling records: {records:#?}");
+    assert_eq!(records.len(), requests.len() * 2);
+    for pair in records.chunks_exact(2) {
+        let SamplingArchiveRecord::SamplingStarted(started) = &pair[0] else {
+            anyhow::bail!("sampling record pair must start with SamplingStarted");
+        };
+        let SamplingArchiveRecord::SamplingCommit(commit) = &pair[1] else {
+            anyhow::bail!("sampling record pair must end with SamplingCommit");
+        };
+        assert_eq!(commit.attempt_id, started.attempt_id);
+        assert_eq!(commit.started_record_digest, started.record_digest);
+    }
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn retry_without_effect_leaves_an_orphan_start_without_a_synthetic_commit() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let incomplete = sse(vec![ev_response_created("effect-free-incomplete")]);
+    let completed = sse(vec![
+        ev_response_created("effect-free-retry"),
+        ev_completed("effect-free-retry"),
+    ]);
+    let (server, _) = start_streaming_sse_server(vec![
+        vec![StreamingSseChunk {
+            gate: None,
+            body: incomplete,
+        }],
+        vec![StreamingSseChunk {
+            gate: None,
+            body: completed,
+        }],
+    ])
+    .await;
+    let mut builder = spine_test_codex().with_config(|config| {
+        config.model_provider.request_max_retries = Some(0);
+        config.model_provider.stream_max_retries = Some(1);
+    });
+    let test = builder.build_with_streaming_server(&server).await?;
+
+    test.submit_turn("retry an effect-free stream").await?;
+
+    let records = load_sampling_records(&test)?;
+    let starts = records
+        .iter()
+        .filter_map(|record| match record {
+            SamplingArchiveRecord::SamplingStarted(started) => Some(started),
+            SamplingArchiveRecord::SamplingCommit(_) => None,
+        })
+        .collect::<Vec<_>>();
+    let commits = records
+        .iter()
+        .filter_map(|record| match record {
+            SamplingArchiveRecord::SamplingStarted(_) => None,
+            SamplingArchiveRecord::SamplingCommit(commit) => Some(commit),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(server.requests().await.len(), 2);
+    assert_eq!(starts.len(), 2);
+    assert_eq!(commits.len(), 1);
+    assert_ne!(commits[0].attempt_id, starts[0].attempt_id);
+    assert_eq!(commits[0].attempt_id, starts[1].attempt_id);
+
+    server.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn retry_after_spine_effect_commits_the_failed_attempt_before_retrying() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let failed_after_open = sse(vec![
+        ev_response_created("failed-after-open"),
+        ev_function_call_with_namespace(
+            "failed-after-open-call",
+            "spine",
+            "open",
+            r#"{"summary":"durable failed-stream child"}"#,
+        ),
+    ]);
+    let completed = sse(vec![
+        ev_response_created("failed-after-open-retry"),
+        ev_completed("failed-after-open-retry"),
+    ]);
+    let (server, _) = start_streaming_sse_server(vec![
+        vec![StreamingSseChunk {
+            gate: None,
+            body: failed_after_open,
+        }],
+        vec![StreamingSseChunk {
+            gate: None,
+            body: completed,
+        }],
+    ])
+    .await;
+    let mut builder = spine_test_codex().with_config(|config| {
+        config.model_provider.request_max_retries = Some(0);
+        config.model_provider.stream_max_retries = Some(1);
+    });
+    let test = builder.build_with_streaming_server(&server).await?;
+
+    test.submit_turn("preserve a Spine effect across retry")
+        .await?;
+
+    let requests = server.requests().await;
+    let records = load_sampling_records(&test)?;
+    let rollout = fs::read_to_string(test.codex.rollout_path().context("rollout path")?)?;
+    let commits = records
+        .iter()
+        .filter_map(|record| match record {
+            SamplingArchiveRecord::SamplingStarted(_) => None,
+            SamplingArchiveRecord::SamplingCommit(commit) => Some(commit),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        requests.len(),
+        2,
+        "sampling records: {records:#?}\nrollout:\n{rollout}"
+    );
+    assert_eq!(
+        commits.len(),
+        2,
+        "sampling records: {records:#?}\nrollout:\n{rollout}"
+    );
+    assert_eq!(commits[0].executions.len(), 1);
+    assert!(matches!(
+        commits[0].executions[0].operation,
+        SpineOperationFact::Open { .. }
+    ));
+    assert!(commits[1].executions.is_empty());
+    let retry_request: Value = serde_json::from_slice(&requests[1])?;
+    assert!(
+        retry_request["input"].to_string().contains("<spine_node"),
+        "retry must observe the installed failed-attempt transition"
+    );
+
+    server.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn interrupt_after_spine_effect_commits_the_cancelled_attempt() -> Result<()> {
+    let server = start_mock_server().await;
+    #[cfg(not(target_os = "windows"))]
+    let command = "sleep 60";
+    #[cfg(target_os = "windows")]
+    let command = "Start-Sleep -Seconds 60";
+    mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("cancelled-after-open"),
+            ev_function_call_with_namespace(
+                "cancelled-open-call",
+                "spine",
+                "open",
+                r#"{"summary":"durable cancelled child"}"#,
+            ),
+            ev_function_call(
+                "cancelled-blocking-call",
+                "shell_command",
+                &json!({
+                    "command": command,
+                    "timeout_ms": 60_000,
+                })
+                .to_string(),
+            ),
+            ev_completed("cancelled-after-open"),
+        ]),
+    )
+    .await;
+    let test = spine_test_codex().build(&server).await?;
+
+    test.codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "commit the Spine effect before interrupting".to_string(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(
+            event,
+            EventMsg::RawResponseItem(raw)
+                if matches!(
+                    &raw.item,
+                    codex_protocol::models::ResponseItem::FunctionCallOutput { call_id, .. }
+                        if call_id == "cancelled-open-call"
+                )
+        )
+    })
+    .await;
+    test.codex.submit(Op::Interrupt).await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnAborted(_))
+    })
+    .await;
+
+    let records = load_sampling_records(&test)?;
+    let commits = records
+        .iter()
+        .filter_map(|record| match record {
+            SamplingArchiveRecord::SamplingStarted(_) => None,
+            SamplingArchiveRecord::SamplingCommit(commit) => Some(commit),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(commits.len(), 1, "sampling records: {records:#?}");
+    assert_eq!(commits[0].executions.len(), 1);
+    assert!(matches!(
+        commits[0].executions[0].operation,
+        SpineOperationFact::Open { .. }
+    ));
+
+    Ok(())
+}
 
 #[tokio::test]
 async fn spine_tree_delivery_precedes_corresponding_protocol_events() -> Result<()> {
@@ -66,10 +319,6 @@ async fn spine_tree_delivery_precedes_corresponding_protocol_events() -> Result<
         .await?;
 
     wait_for_event(&test.codex, |event| {
-        matches!(event, EventMsg::SpineTreeUpdate(_))
-    })
-    .await;
-    wait_for_event(&test.codex, |event| {
         matches!(
             event,
             EventMsg::RawResponseItem(raw)
@@ -81,6 +330,10 @@ async fn spine_tree_delivery_precedes_corresponding_protocol_events() -> Result<
                         })
                 )
         )
+    })
+    .await;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::SpineTreeUpdate(_))
     })
     .await;
     let rollout = fs::read_to_string(test.codex.rollout_path().context("rollout path")?)?;
@@ -105,11 +358,11 @@ async fn spine_tree_delivery_precedes_corresponding_protocol_events() -> Result<
     );
 
     wait_for_event(&test.codex, |event| {
-        matches!(event, EventMsg::SpineTreeUpdate(_))
+        matches!(event, EventMsg::TokenCount(_))
     })
     .await;
     wait_for_event(&test.codex, |event| {
-        matches!(event, EventMsg::TokenCount(_))
+        matches!(event, EventMsg::SpineTreeUpdate(_))
     })
     .await;
     let rollout = fs::read_to_string(test.codex.rollout_path().context("rollout path")?)?;
@@ -212,7 +465,8 @@ description = "close"
 [tools.next]
 description = "next"
 "#
-    ))?;
+    ))?
+    .with_feature(spine_core::Feature::Jit)?;
     let server = start_mock_server().await;
     let response_mock = mount_sse_sequence(
         &server,
@@ -235,7 +489,11 @@ description = "next"
     )
     .await;
     let test = spine_test_codex()
-        .with_config(move |test_config| test_config.spine_config = config)
+        .with_config(move |test_config| {
+            test_config.spine_tools =
+                spine_core::ToolCatalog::new(&config).expect("configured Spine tool catalog");
+            test_config.spine_config = config;
+        })
         .build(&server)
         .await?;
 
@@ -259,6 +517,137 @@ description = "next"
     assert!(node.contains("</spine_node>"), "{node}");
     assert!(node_index < transition_index);
 
+    Ok(())
+}
+
+#[tokio::test]
+async fn spine_transition_baseline() -> Result<()> {
+    let server = start_mock_server().await;
+    let response_mock = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_response_created("baseline-open"),
+                ev_function_call_with_namespace(
+                    "baseline-open-call",
+                    "spine",
+                    "open",
+                    r#"{"summary":"baseline child"}"#,
+                ),
+                ev_completed("baseline-open"),
+            ]),
+            sse(vec![
+                ev_response_created("baseline-child-work"),
+                ev_assistant_message("baseline-child-reaction", "baseline child-only reaction"),
+                ev_function_call(
+                    "baseline-child-work-call",
+                    "shell_command",
+                    &json!({"command": "echo baseline-child-local-tool-output"}).to_string(),
+                ),
+                ev_completed("baseline-child-work"),
+            ]),
+            sse(vec![
+                ev_response_created("baseline-close"),
+                ev_function_call_with_namespace(
+                    "baseline-close-call",
+                    "spine",
+                    "close",
+                    r#"{"memory":"baseline memory"}"#,
+                ),
+                ev_completed("baseline-close"),
+            ]),
+            sse(vec![
+                ev_response_created("baseline-final"),
+                ev_completed("baseline-final"),
+            ]),
+        ],
+    )
+    .await;
+    let test = spine_test_codex().build(&server).await?;
+    test.submit_turn("baseline user evidence").await?;
+
+    let requests = response_mock.requests();
+    assert_eq!(requests.len(), 4);
+    let open_input = requests[1].input();
+    let node_index = open_input
+        .iter()
+        .position(|item| item.to_string().contains("<spine_node"))
+        .context("missing node guidance")?;
+    let open_index = open_input
+        .iter()
+        .position(|item| item.get("call_id").and_then(Value::as_str) == Some("baseline-open-call"))
+        .context("missing open call")?;
+    assert!(node_index < open_index);
+
+    let final_input = requests[3].input();
+    let rendered = serde_json::to_string(&final_input)?;
+    assert!(rendered.contains("<spine_memory"));
+    assert!(rendered.contains("baseline memory"));
+    assert!(rendered.contains("[U1]"));
+    assert!(!rendered.contains("baseline child-only reaction"));
+    assert!(!rendered.contains("baseline-child-work-call"));
+    assert!(!rendered.contains("baseline-child-local-tool-output"));
+    assert!(!rendered.contains("baseline-open-call"));
+    assert!(!rendered.contains("<spine_status "));
+    assert!(!rendered.contains("<spine_tran_status>"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn spine_next_replaces_closed_child_local_context_and_opens_sibling() -> Result<()> {
+    let server = start_mock_server().await;
+    let response_mock = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_response_created("next-open"),
+                ev_function_call_with_namespace(
+                    "next-open-call",
+                    "spine",
+                    "open",
+                    r#"{"summary":"first child"}"#,
+                ),
+                ev_completed("next-open"),
+            ]),
+            sse(vec![
+                ev_response_created("next-child-work"),
+                ev_assistant_message("next-child-reaction", "first child-only reaction"),
+                ev_function_call(
+                    "next-child-work-call",
+                    "shell_command",
+                    &json!({"command": "echo next-child-local-tool-output"}).to_string(),
+                ),
+                ev_completed("next-child-work"),
+            ]),
+            sse(vec![
+                ev_response_created("next-transition"),
+                ev_function_call_with_namespace(
+                    "next-transition-call",
+                    "spine",
+                    "next",
+                    r#"{"memory":"first child memory","summary":"second child"}"#,
+                ),
+                ev_completed("next-transition"),
+            ]),
+            sse(vec![
+                ev_response_created("next-final"),
+                ev_completed("next-final"),
+            ]),
+        ],
+    )
+    .await;
+    let test = spine_test_codex().build(&server).await?;
+    test.submit_turn("parent evidence for next").await?;
+
+    let requests = response_mock.requests();
+    assert_eq!(requests.len(), 4);
+    let rendered = serde_json::to_string(&requests[3].input())?;
+    assert!(rendered.contains("parent evidence for next"));
+    assert!(rendered.contains("first child memory"));
+    assert!(rendered.contains("second child"));
+    assert!(!rendered.contains("first child-only reaction"));
+    assert!(!rendered.contains("next-child-work-call"));
+    assert!(!rendered.contains("next-child-local-tool-output"));
     Ok(())
 }
 
@@ -534,4 +923,23 @@ fn message_text<'a>(input: &'a [Value], role: &str) -> Option<&'a str> {
         })
         .flatten()
     })
+}
+
+fn load_sampling_records(test: &TestCodex) -> Result<Vec<SamplingArchiveRecord>> {
+    let rollout = fs::read_to_string(test.codex.rollout_path().context("rollout path")?)?;
+    rollout
+        .lines()
+        .map(serde_json::from_str::<RolloutLine>)
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .filter_map(|line| match line.item {
+            RolloutItem::SpineSamplingStarted(item) => Some(item.payload),
+            RolloutItem::SpineTransition(item) => Some(item.payload),
+            _ => None,
+        })
+        .map(|payload| {
+            SamplingArchiveRecord::decode(&serde_json::to_vec(&payload)?)
+                .map_err(anyhow::Error::new)
+        })
+        .collect()
 }

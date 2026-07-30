@@ -16,6 +16,7 @@ use std::fmt;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SpineChar {
     Message(Message),
+    TurnAborted(Message),
     ToolRequest(ToolRequestChar),
     ToolResponse(ToolResponseChar),
     Opaque {
@@ -48,7 +49,7 @@ pub enum SpineRecoveryInput {
 impl SpineChar {
     pub fn boundary(&self) -> RawBoundary {
         match self {
-            Self::Message(message) => message.boundary,
+            Self::Message(message) | Self::TurnAborted(message) => message.boundary,
             Self::ToolRequest(request) => request.boundary,
             Self::ToolResponse(response) => response.boundary,
             Self::Opaque { boundary } | Self::Synthetic { boundary, .. } => *boundary,
@@ -222,6 +223,13 @@ impl SpineCharParser {
                     events.push(RolloutEvent::Message(message));
                 }
             }
+            SpineChar::TurnAborted(message) => {
+                if self.pending_tool_group.take().is_none() {
+                    self.flush_trailing_assistant(&mut events);
+                }
+                self.push_cell(SpineChar::TurnAborted(message.clone()));
+                events.push(RolloutEvent::Message(message));
+            }
             SpineChar::ToolRequest(request) => {
                 self.push_cell(SpineChar::ToolRequest(request.clone()));
                 let group = self.pending_tool_group.get_or_insert_with(|| {
@@ -241,6 +249,7 @@ impl SpineCharParser {
                     call_id: request.call_id,
                     name: request.name,
                     arguments: request.arguments,
+                    call_ordinal: None,
                     outcome: None,
                     output: None,
                     output_boundary: None,
@@ -339,6 +348,16 @@ impl SpineCharParser {
                     .flat_map(PendingToolGroup::boundaries),
             )
             .collect()
+    }
+
+    pub(crate) fn finish_sampling(
+        &mut self,
+        boundary: RawBoundary,
+    ) -> Result<Vec<RolloutEvent>, CharParseError> {
+        self.require_no_pending_tool_group(boundary)?;
+        let mut events = Vec::new();
+        self.flush_trailing_assistant(&mut events);
+        Ok(events)
     }
 
     pub(crate) fn finish_epoch(

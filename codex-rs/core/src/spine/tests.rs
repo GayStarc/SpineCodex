@@ -179,9 +179,9 @@ fn nested_open_keeps_the_materialized_parent_marker_prefix_stable() {
         output("open-parent", Some(true), "Spine open accepted."),
     ];
     let parent = derive_from_rollout(&rollout);
-    assert_eq!(
-        text(&parent.context[1]),
-        r#"<spine_node id="1.1" summary="parent" status="opened" />"#
+    assert!(
+        text(&parent.context[1])
+            .starts_with(r#"<spine_node id="1.1" summary="parent" status="opened">"#)
     );
 
     rollout.extend([
@@ -782,7 +782,7 @@ fn successful_close_carrier_at_root_does_not_transition() {
 fn trim_tag_bytes_persist_after_eligibility_expires() {
     let mut rollout = long_tool_rollout();
     let tagged = derive_from_rollout_with_features(&rollout, true, true, true);
-    let tagged_output = output_text(&tagged.context[1]).to_string();
+    let tagged_output = output_text(&tagged.context[1]);
     assert!(tagged_output.starts_with("[TRIM_ID: trim_1]"));
 
     rollout.extend([
@@ -813,8 +813,7 @@ fn trim_validation_rejects_a_visible_but_expired_id() {
         output("next-tool", Some(true), "short"),
         call("trim", "spine.trim", r#"{"TRIM_ID":"trim_1","op":"snip"}"#),
     ]);
-    let request =
-        codex_spine_core::TrimRequest::parse(r#"{"TRIM_ID":"trim_1","op":"snip"}"#).unwrap();
+    let request = spine_core::TrimRequest::parse(r#"{"TRIM_ID":"trim_1","op":"snip"}"#).unwrap();
 
     let error = validate_trim_request(&rollout, "trim", &request).unwrap_err();
 

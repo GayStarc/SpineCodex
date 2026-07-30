@@ -186,6 +186,23 @@ use uuid::Uuid;
 
 use codex_protocol::mcp::CallToolResult as McpCallToolResult;
 use pretty_assertions::assert_eq;
+
+impl crate::spine::coordinator::SpineSamplingAttemptGuard {
+    fn into_inner(mut self) -> crate::spine::coordinator::SpineSamplingAttempt {
+        self.attempt
+            .take()
+            .expect("Spine sampling attempt must be present")
+    }
+}
+
+impl crate::spine::coordinator::SpineSessionAdapter {
+    fn disabled() -> Self {
+        Self {
+            coordinator: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            sampling_active: tokio::sync::watch::channel(false).0,
+        }
+    }
+}
 use serde::Deserialize;
 use serde_json::json;
 use std::path::PathBuf;
@@ -205,6 +222,14 @@ impl StepContext {
         ));
         step.spine_spawn_group.finish();
         step
+    }
+}
+
+impl Session {
+    async fn begin_spine_canonical_sampling(
+        self: &Arc<Self>,
+    ) -> anyhow::Result<Option<crate::spine::coordinator::SpineSamplingAttemptGuard>> {
+        self.begin_spine_sampling(&[]).await
     }
 }
 
@@ -2025,7 +2050,7 @@ async fn spinetree_memory_projection_publishes_closed_memory_after_recording() -
     })
     .await?;
     let turn_context = session.new_default_turn().await;
-    let items = vec![
+    let items = [
         ResponseItem::Message {
             id: None,
             role: "user".to_string(),
@@ -2081,22 +2106,81 @@ async fn spinetree_memory_projection_publishes_closed_memory_after_recording() -
     ];
 
     session
-        .record_conversation_items(turn_context.as_ref(), &items)
+        .record_conversation_items(turn_context.as_ref(), &items[..1])
         .await;
+    let open_prompt = session.clone_history().await.for_prompt(&[]);
+    let open_attempt = session
+        .begin_spine_sampling(&open_prompt)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("canonical open attempt is unavailable"))?;
+    let open_execution = session
+        .begin_spine_execution(
+            &codex_tools::ToolName::namespaced("spine", "open"),
+            "open-call",
+        )
+        .ok_or_else(|| anyhow::anyhow!("canonical open execution is unavailable"))?;
+    session.stage_spine_fact(
+        "open-call",
+        spine_core::ExecutionOrigin::Direct {
+            call_id: "open-call".to_string(),
+        },
+        spine_core::SpineOperationFact::Open {
+            summary: "task".to_string(),
+        },
+    );
+    session
+        .record_conversation_items(turn_context.as_ref(), &items[1..3])
+        .await;
+    open_execution.finish(true);
+    session
+        .finish_spine_sampling(open_attempt, spine_core::SamplingTerminal::Completed)
+        .await?;
+
+    session
+        .record_conversation_items(turn_context.as_ref(), &items[3..4])
+        .await;
+    let close_prompt = session.clone_history().await.for_prompt(&[]);
+    let close_attempt = session
+        .begin_spine_sampling(&close_prompt)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("canonical close attempt is unavailable"))?;
+    let close_execution = session
+        .begin_spine_execution(
+            &codex_tools::ToolName::namespaced("spine", "close"),
+            "close-call",
+        )
+        .ok_or_else(|| anyhow::anyhow!("canonical close execution is unavailable"))?;
+    session.stage_spine_fact(
+        "close-call",
+        spine_core::ExecutionOrigin::Direct {
+            call_id: "close-call".to_string(),
+        },
+        spine_core::SpineOperationFact::Close {
+            memory: "done".to_string(),
+        },
+    );
+    session
+        .record_conversation_items(turn_context.as_ref(), &items[4..])
+        .await;
+    close_execution.finish(true);
+    session
+        .finish_spine_sampling(close_attempt, spine_core::SamplingTerminal::Completed)
+        .await?;
 
     let expected_user_messages =
         "# User Messages\n\n## User Message [U1]\nrequest\n\n## User Message [U2]\ndetail\n";
+    let expected_memory = "# Spine Memory 1.1\n\n## Node Memory\ndone";
     let session_dir = wait_for_spinetree_file(
         &workspace.path().join(".codex/spinetree"),
-        "USER.md",
-        expected_user_messages,
+        "1.1_task.md",
+        expected_memory,
     )
     .await?;
     let path = session_dir.join("1.1_task.md");
     assert!(std::fs::symlink_metadata(&path)?.file_type().is_file());
     assert!(!session_dir.join(".memory").exists());
     let body = std::fs::read_to_string(path)?;
-    assert_eq!(body, "# Spine Memory 1.1\n\n## Node Memory\ndone");
+    assert_eq!(body, expected_memory);
     assert_eq!(
         std::fs::read_to_string(session_dir.join("USER.md"))?,
         expected_user_messages
@@ -2174,6 +2258,416 @@ async fn spinetree_memory_projection_rebuilds_user_messages_after_rollout_recons
         std::fs::read_to_string(session_dir.join("USER.md"))?,
         expected_user_messages
     );
+    Ok(())
+}
+
+fn canonical_zero_fact_rollout(thread: &str) -> anyhow::Result<Vec<RolloutItem>> {
+    let config = spine_core::SpineConfig::v1()
+        .with_feature(spine_core::Feature::Jit)
+        .map_err(anyhow::Error::msg)?;
+    let mut coordinator = crate::spine::coordinator::CodexSpineCoordinator::new_with_observer(
+        thread,
+        config,
+        crate::spine::observer::CodexSpineObserverHandler::default(),
+    )?;
+    let user = user_message("canonical prefix");
+    let assistant = ResponseItem::Message {
+        id: None,
+        role: "assistant".to_string(),
+        content: vec![ContentItem::OutputText {
+            text: "canonical answer".to_string(),
+        }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+    coordinator.observe_response_items(std::slice::from_ref(&user))?;
+    let attempt = coordinator.begin_sampling()?;
+    let started =
+        coordinator.sampling_started_rollout_item(&attempt, std::slice::from_ref(&user))?;
+    coordinator.observe_response_items(std::slice::from_ref(&assistant))?;
+    let prepared = coordinator.prepare_canonical_sampling(attempt)?;
+    let mut rollout = vec![
+        RolloutItem::ResponseItem(user),
+        started,
+        RolloutItem::ResponseItem(assistant),
+    ];
+    rollout.extend(prepared.rollout_items());
+    Ok(rollout)
+}
+
+fn canonical_started_item(thread: &str) -> anyhow::Result<RolloutItem> {
+    canonical_zero_fact_rollout(thread)?
+        .into_iter()
+        .find(|item| matches!(item, RolloutItem::SpineSamplingStarted(_)))
+        .ok_or_else(|| anyhow::anyhow!("canonical rollout must contain a sampling-started record"))
+}
+
+fn legacy_open_rollout(summary: &str) -> Vec<RolloutItem> {
+    vec![
+        RolloutItem::ResponseItem(user_message("legacy prefix")),
+        RolloutItem::ResponseItem(ResponseItem::FunctionCall {
+            id: None,
+            name: "open".to_string(),
+            namespace: Some("spine".to_string()),
+            arguments: serde_json::json!({ "summary": summary }).to_string(),
+            call_id: "legacy-open".to_string(),
+            internal_chat_message_metadata_passthrough: None,
+        }),
+        RolloutItem::ResponseItem(ResponseItem::FunctionCallOutput {
+            id: None,
+            call_id: "legacy-open".to_string(),
+            output: FunctionCallOutputPayload {
+                body: FunctionCallOutputBody::Text("opened".to_string()),
+                success: Some(true),
+            },
+            internal_chat_message_metadata_passthrough: None,
+        }),
+    ]
+}
+
+#[tokio::test]
+async fn canonical_reconstruction_metadata_errors_fault_session_without_legacy_fallback()
+-> anyhow::Result<()> {
+    let seed_session = make_session_with_config(|config| {
+        let _ = config.features.enable(Feature::SpineJit);
+    })
+    .await?;
+    let valid = canonical_started_item(&seed_session.thread_id().to_string())?;
+
+    let mut malformed = valid.clone();
+    let RolloutItem::SpineSamplingStarted(malformed_item) = &mut malformed else {
+        unreachable!("canonical_started_item returns a sampling-started item");
+    };
+    malformed_item.payload = serde_json::json!({
+        "type": "sampling_started",
+        "record": {}
+    });
+    let mut unsupported = valid.clone();
+    let RolloutItem::SpineSamplingStarted(unsupported_item) = &mut unsupported else {
+        unreachable!("canonical_started_item returns a sampling-started item");
+    };
+    unsupported_item.version = unsupported_item.version.saturating_add(1);
+    let mut digest_invalid = valid;
+    let RolloutItem::SpineSamplingStarted(digest_invalid_item) = &mut digest_invalid else {
+        unreachable!("canonical_started_item returns a sampling-started item");
+    };
+    digest_invalid_item.payload["record"]["record_digest"] =
+        serde_json::Value::String("0".repeat(64));
+
+    for item in [malformed, unsupported, digest_invalid] {
+        let session = make_session_with_config(|config| {
+            let _ = config.features.enable(Feature::SpineJit);
+        })
+        .await?;
+        let turn_context = session.new_default_turn().await;
+        let mut rollout = legacy_open_rollout("must not be inferred");
+        rollout.push(item);
+
+        session
+            .apply_rollout_reconstruction(turn_context.as_ref(), &rollout)
+            .await;
+
+        assert!(
+            session
+                .lock_spine_coordinator()
+                .as_ref()
+                .expect("Spine coordinator")
+                .durability_fault
+                .as_deref()
+                .is_some()
+        );
+        let history = serde_json::to_string(session.clone_history().await.raw_items())?;
+        assert!(
+            !history.contains("<spine_node>"),
+            "invalid canonical metadata must not enter the legacy transition translator: {history}"
+        );
+        assert!(
+            session.begin_spine_canonical_sampling().await.is_err(),
+            "durability fault must reject later sampling"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn canonical_started_record_removed_by_rollback_restores_surviving_legacy_prefix()
+-> anyhow::Result<()> {
+    let session = make_session_with_config(|config| {
+        let _ = config.features.enable(Feature::SpineJit);
+    })
+    .await?;
+    let turn_context = session.new_default_turn().await;
+    let mut rollout = legacy_open_rollout("surviving legacy scope");
+    rollout.push(RolloutItem::ResponseItem(user_message(
+        "rolled back canonical turn",
+    )));
+    rollout.push(canonical_started_item(&session.thread_id().to_string())?);
+    rollout.push(RolloutItem::EventMsg(EventMsg::ThreadRolledBack(
+        ThreadRolledBackEvent { num_turns: 1 },
+    )));
+
+    session
+        .apply_rollout_reconstruction(turn_context.as_ref(), &rollout)
+        .await;
+
+    assert!(
+        session.lock_spine_coordinator().is_none(),
+        "surviving legacy transitions must select the legacy runtime"
+    );
+    let history = serde_json::to_string(session.clone_history().await.raw_items())?;
+    assert!(history.contains("surviving legacy scope"));
+    assert!(history.contains("<spine_node"));
+    assert!(!history.contains("rolled back canonical turn"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn spine_session_persists_pre_sampling_event_before_transition() -> anyhow::Result<()> {
+    let session = make_session_with_config(|config| {
+        let _ = config.features.enable(Feature::SpineJit);
+    })
+    .await?;
+    let turn_context = session.new_default_turn().await;
+    let prompt = vec![user_message("pre-sampling prompt")];
+    session
+        .record_conversation_items(turn_context.as_ref(), &prompt)
+        .await;
+    let _attempt = session
+        .begin_spine_sampling(&prompt)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("canonical sampling is unavailable"))?;
+    session.flush_rollout().await?;
+
+    let rollout_path = session
+        .current_rollout_path()
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("rollout path is unavailable"))?;
+    let (items, _, parse_errors) = RolloutRecorder::load_rollout_items(&rollout_path).await?;
+    assert_eq!(parse_errors, 0);
+    assert!(items.iter().any(|item| {
+        matches!(
+            crate::spine::coordinator::decode_spine_rollout_item(item),
+            Ok(Some(spine_core::SamplingArchiveRecord::SamplingStarted(_)))
+        )
+    }));
+    Ok(())
+}
+
+#[tokio::test]
+async fn canonical_fork_reconstruction_uses_child_namespace_for_new_suffix() -> anyhow::Result<()> {
+    let parent_thread = ThreadId::new();
+    let parent_namespace = spine_core::ThreadNamespace::parse(parent_thread.to_string())
+        .map_err(anyhow::Error::msg)?;
+    let parent_rollout = canonical_zero_fact_rollout(&parent_thread.to_string())?;
+    let child = make_session_with_config(|config| {
+        let _ = config.features.enable(Feature::SpineJit);
+    })
+    .await?;
+    let child_namespace = spine_core::ThreadNamespace::parse(child.thread_id().to_string())
+        .map_err(anyhow::Error::msg)?;
+    let turn_context = child.new_default_turn().await;
+
+    child
+        .apply_rollout_reconstruction(turn_context.as_ref(), &parent_rollout)
+        .await;
+    let attempt = child
+        .begin_spine_canonical_sampling()
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("child canonical sampling is unavailable"))?;
+    child
+        .record_conversation_items(
+            turn_context.as_ref(),
+            &[ResponseItem::Message {
+                id: None,
+                role: "assistant".to_string(),
+                content: vec![ContentItem::OutputText {
+                    text: "child suffix".to_string(),
+                }],
+                phase: None,
+                internal_chat_message_metadata_passthrough: None,
+            }],
+        )
+        .await;
+    child
+        .finish_spine_sampling(attempt, spine_core::SamplingTerminal::Completed)
+        .await?;
+    child.flush_rollout().await?;
+
+    let rollout_path = child
+        .current_rollout_path()
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("child rollout path is unavailable"))?;
+    let (items, _, parse_errors) = RolloutRecorder::load_rollout_items(&rollout_path).await?;
+    assert_eq!(parse_errors, 0);
+    let (child_attempt_id, child_commit_id, child_previous_commit_id) = items
+        .iter()
+        .filter_map(|item| {
+            crate::spine::coordinator::decode_spine_rollout_item(item)
+                .ok()
+                .flatten()
+        })
+        .find_map(|record| match record {
+            spine_core::SamplingArchiveRecord::SamplingCommit(commit) => Some((
+                commit.attempt_id,
+                commit.commit_id,
+                commit.previous_commit_id,
+            )),
+            spine_core::SamplingArchiveRecord::SamplingStarted(_) => None,
+        })
+        .ok_or_else(|| anyhow::anyhow!("child suffix commit was not persisted"))?;
+
+    assert_eq!(child_attempt_id.thread(), &child_namespace);
+    assert_eq!(child_commit_id.thread(), &child_namespace);
+    assert_eq!(
+        child_previous_commit_id
+            .as_ref()
+            .map(spine_core::SamplingCommitId::thread),
+        Some(&parent_namespace)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn spine_session_persist_failure_does_not_install_canonical_commit() -> anyhow::Result<()> {
+    let session = make_session_with_config(|config| {
+        let _ = config.features.enable(Feature::SpineJit);
+    })
+    .await?;
+    let commit = {
+        let mut coordinator = session.lock_spine_coordinator();
+        let coordinator = coordinator
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("Spine coordinator is unavailable"))?;
+        let attempt = coordinator.begin_sampling()?;
+        coordinator.sampling_started_rollout_item(&attempt, &[])?;
+        coordinator.observe_response_items(&[user_message("unpersisted source")])?;
+        coordinator.prepare_canonical_sampling(attempt)?
+    };
+    let before = session
+        .lock_spine_coordinator()
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Spine coordinator is unavailable"))?
+        .runtime
+        .projection()
+        .clone();
+
+    let codex_home = session.codex_home().await;
+    std::fs::create_dir_all(codex_home.as_path())?;
+    let sessions_blocker = codex_home.join("sessions");
+    std::fs::File::create(&sessions_blocker)?;
+    let rollout_path = session
+        .current_rollout_path()
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("rollout path is unavailable"))?;
+
+    let error = session
+        .persist_install_spine_canonical_commit(commit)
+        .await
+        .expect_err("blocked rollout persistence must fail before install");
+
+    assert!(
+        !rollout_path.exists(),
+        "failed durable acknowledgement must not materialize a rollout"
+    );
+    {
+        let coordinator = session.lock_spine_coordinator();
+        let coordinator = coordinator
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Spine coordinator is unavailable"))?;
+        assert_eq!(coordinator.runtime.projection(), &before);
+        assert!(coordinator.durability_fault.is_some());
+    }
+    assert!(
+        session.begin_spine_canonical_sampling().await.is_err(),
+        "a persistence fault must reject later sampling"
+    );
+    assert!(
+        error.to_string().contains("Not a directory"),
+        "the failure must come from the blocked rollout filesystem path: {error:#}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn spine_session_prepared_commit_rejects_racing_source_before_persistence()
+-> anyhow::Result<()> {
+    let session = make_session_with_config(|config| {
+        let _ = config.features.enable(Feature::SpineJit);
+    })
+    .await?;
+    let turn_context = session.new_default_turn().await;
+    session
+        .record_conversation_items(
+            turn_context.as_ref(),
+            &[user_message("durable source before sampling")],
+        )
+        .await;
+    let prompt = session.clone_history().await.for_prompt(&[]);
+    let attempt = session
+        .begin_spine_sampling(&prompt)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("canonical sampling is unavailable"))?;
+    let commit = {
+        let mut coordinator = session.lock_spine_coordinator();
+        coordinator
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("Spine coordinator is unavailable"))?
+            .prepare_canonical_sampling(attempt.into_inner())?
+    };
+    let race_error = {
+        let mut coordinator = session.lock_spine_coordinator();
+        coordinator
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("Spine coordinator is unavailable"))?
+            .observe_response_items(&[user_message("racing source after prepare")])
+            .expect_err("prepared commit must exclude racing source")
+    };
+    assert!(matches!(
+        race_error,
+        crate::spine::coordinator::CoordinatorError::Planner(
+            spine_core::PlannerError::SamplingCommitPendingInstall
+        )
+    ));
+
+    session
+        .persist_install_spine_canonical_commit(commit)
+        .await?;
+    session.flush_rollout().await?;
+
+    let rollout_path = session
+        .current_rollout_path()
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("rollout path is unavailable"))?;
+    let (items, _, parse_errors) = RolloutRecorder::load_rollout_items(&rollout_path).await?;
+    assert_eq!(parse_errors, 0);
+    let record_kinds = items
+        .iter()
+        .filter_map(|item| {
+            crate::spine::coordinator::decode_spine_rollout_item(item)
+                .ok()
+                .flatten()
+        })
+        .map(|record| match record {
+            spine_core::SamplingArchiveRecord::SamplingCommit(_) => "commit",
+            spine_core::SamplingArchiveRecord::SamplingStarted(_) => "started",
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(record_kinds, vec!["started", "commit"]);
+
+    assert!(
+        session
+            .lock_spine_coordinator()
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Spine coordinator is unavailable"))?
+            .durability_fault
+            .as_deref()
+            .is_none()
+    );
+    let next_attempt = session
+        .begin_spine_canonical_sampling()
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("canonical sampling is unavailable after install"))?;
+    drop(next_attempt);
     Ok(())
 }
 
@@ -2262,12 +2756,12 @@ async fn spine_observer_delivery_follows_each_session_transition() {
     }
     session.send_token_count_event(turn_context.as_ref()).await;
     assert!(matches!(
-        rx.recv().await.expect("token tree event").msg,
-        EventMsg::SpineTreeUpdate(_)
-    ));
-    assert!(matches!(
         rx.recv().await.expect("token count event").msg,
         EventMsg::TokenCount(_)
+    ));
+    assert!(matches!(
+        rx.recv().await.expect("token tree event").msg,
+        EventMsg::SpineTreeUpdate(_)
     ));
 
     let communication = InterAgentCommunication::new(
@@ -2290,12 +2784,14 @@ async fn spine_observer_delivery_follows_each_session_transition() {
     ));
 
     let compacted_history = vec![assistant_message("compacted context")];
+    let auto_compact_window = session.next_auto_compact_window().await;
     session
         .replace_compacted_history(
-            turn_context.as_ref(),
+            Arc::clone(&turn_context),
             compacted_history.clone(),
             /*reference_context_item*/ None,
             /*world_state_baseline*/ None,
+            auto_compact_window,
             CompactedItem {
                 message: "compacted context".to_string(),
                 replacement_history: None,
@@ -2305,7 +2801,8 @@ async fn spine_observer_delivery_follows_each_session_transition() {
                 window_id: None,
             },
         )
-        .await;
+        .await
+        .expect("compacted history should install");
     assert_eq!(
         session.state.lock().await.history.raw_items(),
         compacted_history
@@ -3220,7 +3717,9 @@ async fn start_new_context_window_assigns_and_persists_item_ids() {
         | RolloutItem::InterAgentCommunicationMetadata { .. }
         | RolloutItem::TurnContext(_)
         | RolloutItem::WorldState(_)
-        | RolloutItem::EventMsg(_) => None,
+        | RolloutItem::EventMsg(_)
+        | RolloutItem::SpineSamplingStarted(_)
+        | RolloutItem::SpineTransition(_) => None,
     });
     assert_eq!(
         persisted_replacement_history.map(Vec::as_slice),
@@ -3745,7 +4244,9 @@ async fn record_initial_history_assigns_and_persists_id_for_forked_response_item
         | RolloutItem::Compacted(_)
         | RolloutItem::TurnContext(_)
         | RolloutItem::WorldState(_)
-        | RolloutItem::EventMsg(_) => None,
+        | RolloutItem::EventMsg(_)
+        | RolloutItem::SpineSamplingStarted(_)
+        | RolloutItem::SpineTransition(_) => None,
     });
     assert_eq!(persisted_item_id, Some(live_item_id.as_str()));
 }
@@ -6297,10 +6798,12 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         memory_projection,
         config.features.enabled(Feature::SpineJit),
     );
+    let spine = crate::spine::coordinator::SpineSessionAdapter::disabled();
     let state = SessionState::new_with_auto_compact_window_ids(
         session_configuration.clone(),
         AutoCompactWindowIds::new_initial(),
         spine_observer,
+        Arc::clone(&spine.coordinator),
     );
     let (environment_manager, resolved_environments) =
         resolved_environments_for_configuration(&session_configuration).await;
@@ -6452,7 +6955,6 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         tx_event,
         agent_status: agent_status_tx,
         state: Mutex::new(state),
-        spine_spawn_batch_coordinator: Mutex::new(Default::default()),
         spine_spawn_lifecycle: Default::default(),
         spawn_failure_record: Mutex::new(None),
         managed_network_proxy_refresh_lock: Semaphore::new(/*permits*/ 1),
@@ -6466,6 +6968,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         guardian_review_session: crate::guardian::GuardianReviewSessionManager::default(),
         services,
         next_internal_sub_id: AtomicU64::new(0),
+        spine,
     };
 
     (session, turn_context)
@@ -8451,10 +8954,12 @@ where
         memory_projection,
         config.features.enabled(Feature::SpineJit),
     );
+    let spine = crate::spine::coordinator::SpineSessionAdapter::disabled();
     let state = SessionState::new_with_auto_compact_window_ids(
         session_configuration.clone(),
         AutoCompactWindowIds::new_initial(),
         spine_observer,
+        Arc::clone(&spine.coordinator),
     );
     let (environment_manager, resolved_turn_environments) =
         resolved_environments_for_configuration(&session_configuration).await;
@@ -8605,7 +9110,6 @@ where
         tx_event,
         agent_status: agent_status_tx,
         state: Mutex::new(state),
-        spine_spawn_batch_coordinator: Mutex::new(Default::default()),
         spine_spawn_lifecycle: Default::default(),
         spawn_failure_record: Mutex::new(None),
         managed_network_proxy_refresh_lock: Semaphore::new(/*permits*/ 1),
@@ -8619,6 +9123,7 @@ where
         guardian_review_session: crate::guardian::GuardianReviewSessionManager::default(),
         services,
         next_internal_sub_id: AtomicU64::new(0),
+        spine,
     });
 
     (session, turn_context, rx_event)

@@ -98,6 +98,9 @@ fn keep_forked_rollout_item(item: &RolloutItem, preserve_reference_context_item:
         // from the parent's durable baseline. Truncated forks drop part of that prompt,
         // so they must rebuild context on their first child turn.
         RolloutItem::TurnContext(_) | RolloutItem::WorldState(_) => preserve_reference_context_item,
+        RolloutItem::SpineSamplingStarted(_) | RolloutItem::SpineTransition(_) => {
+            preserve_reference_context_item
+        }
         RolloutItem::Compacted(_) | RolloutItem::EventMsg(_) | RolloutItem::SessionMeta(_) => true,
     }
 }
@@ -782,29 +785,55 @@ impl AgentControl {
             })
             .unwrap_or_default();
         let mut forked_rollout_items = parent_history.items;
+        let canonical_parent_rollout = match fork_mode {
+            SpawnAgentForkMode::LastNTurns(_) => false,
+            SpawnAgentForkMode::FullHistory | SpawnAgentForkMode::FullHistoryTrimToolCallSuffix => {
+                crate::spine::is_canonical_rollout(&forked_rollout_items)
+                    .map_err(|error| CodexErr::Fatal(error.to_string()))?
+            }
+        };
         // Spine MODIFIED: Apply the suffix-trimming fork mode before normal rollout filtering.
         // Reason: Spine children need the exact parent prefix ending before the transaction's tool-call batch.
-        match fork_mode {
+        let preserve_exact_rollout_prefix = match fork_mode {
             SpawnAgentForkMode::LastNTurns(last_n_turns) => {
                 forked_rollout_items =
                     truncate_rollout_to_last_n_fork_turns(&forked_rollout_items, *last_n_turns);
+                false
             }
             SpawnAgentForkMode::FullHistoryTrimToolCallSuffix => {
                 let parent_call_id = options
                     .fork_parent_spawn_call_id
                     .as_deref()
-                    .expect("full-history suffix trim requires a parent call id");
+                    .expect("full-history fork requires a parent call id");
                 if !trim_tool_call_related_suffix(&mut forked_rollout_items, parent_call_id) {
                     return Err(CodexErr::Fatal(format!(
                         "parent tool call `{parent_call_id}` is unavailable for full-history fork"
                     )));
                 }
+                true
             }
-            SpawnAgentForkMode::FullHistory => {}
+            SpawnAgentForkMode::FullHistory if canonical_parent_rollout => {
+                let parent_call_id = options
+                    .fork_parent_spawn_call_id
+                    .as_deref()
+                    .expect("full-history fork requires a parent call id");
+                if !trim_tool_call_related_suffix(&mut forked_rollout_items, parent_call_id) {
+                    return Err(CodexErr::Fatal(format!(
+                        "parent tool call `{parent_call_id}` is unavailable for full-history fork"
+                    )));
+                }
+                true
+            }
+            SpawnAgentForkMode::FullHistory => false,
+        };
+        // Spine MODIFIED: Drop assistant-leading items from the unresolved canonical response batch.
+        // Reason: Canonical replay requires a committed source tail; the native fork keeps those items only for legacy history semantics.
+        if preserve_exact_rollout_prefix && canonical_parent_rollout {
+            crate::spine::trim_uncommitted_canonical_fork_source(&mut forked_rollout_items);
         }
         // Spine MODIFIED: Preserve the complete pre-transaction rollout for Spine suffix-trim forks.
         // Reason: Native filtering would remove context records needed by SDK replay in the child session.
-        if !matches!(fork_mode, SpawnAgentForkMode::FullHistoryTrimToolCallSuffix) {
+        if !preserve_exact_rollout_prefix {
             let multi_agent_v2_usage_hint_texts_to_filter: Vec<String> =
                 if let Some(parent_thread) = parent_thread.as_ref() {
                     if multi_agent_version == MultiAgentVersion::V2 {

@@ -29,7 +29,7 @@ fn typed_fragments_own_exact_rendering() {
     );
     assert_eq!(
         opened.render(),
-        "<spine_node id=\"1.1\" summary=\"child &lt;scope&gt;\" status=\"opened\"></spine_node>"
+        "<spine_node id=\"1.1\" summary=\"child &lt;scope&gt;\" status=\"opened\">\nNode guidance.\n</spine_node>"
     );
 }
 

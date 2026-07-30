@@ -502,6 +502,51 @@ fn archived_recovery_matches_live_compact_projection() {
 }
 
 #[test]
+fn sampling_archive_fixture_preserves_current_compact_recovery_contract() {
+    let archived = [
+        SpineRecoveryInput::Char(message(1, MessageRole::User, "archived request")),
+        SpineRecoveryInput::Signal(SpineSignal::Compact {
+            boundary: RawBoundary(2),
+        }),
+        SpineRecoveryInput::Signal(SpineSignal::Usage(TokenUsageSample {
+            boundary: RawBoundary(3),
+            input_tokens: 37,
+        })),
+    ];
+    let installed = [
+        SpineChar::Opaque {
+            boundary: RawBoundary(2),
+        },
+        message(4, MessageRole::User, "live request"),
+    ];
+    let mut first_history = TestHistory {
+        cells: vec![20, 21],
+    };
+    let mut second_history = first_history.clone();
+    let mut first =
+        SpineContextRuntime::new(config(&[Feature::Jit]), TestHandler::default()).unwrap();
+    let mut second =
+        SpineContextRuntime::new(config(&[Feature::Jit]), TestHandler::default()).unwrap();
+
+    first
+        .recover(archived.clone(), installed.clone(), &mut first_history)
+        .unwrap();
+    second
+        .recover(archived, installed, &mut second_history)
+        .unwrap();
+
+    assert_eq!(first.projection(), second.projection());
+    assert_eq!(first_history, second_history);
+    assert_eq!(
+        first.projection().usage_samples(),
+        &[TokenUsageSample {
+            boundary: RawBoundary(3),
+            input_tokens: 37,
+        }]
+    );
+}
+
+#[test]
 fn recovery_rejects_archived_live_tail_without_committing() {
     let mut history = TestHistory { cells: vec![0] };
     let mut runtime =

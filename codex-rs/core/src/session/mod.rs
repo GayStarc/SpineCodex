@@ -1342,8 +1342,10 @@ impl Session {
         &self,
         tool: spine_core::SpineTool,
     ) -> Result<(), String> {
-        let state = self.state.lock().await;
-        state.validate_spine_control(tool)
+        if let Some(coordinator) = self.lock_spine_coordinator().as_ref() {
+            return coordinator.validate_control(tool);
+        }
+        self.state.lock().await.validate_spine_control(tool)
     }
 
     pub(crate) async fn validate_spine_trim(
@@ -1351,8 +1353,22 @@ impl Session {
         current_call_id: &str,
         request: &spine_core::TrimRequest,
     ) -> Result<(), String> {
+        if let Some(coordinator) = self.lock_spine_coordinator().as_ref() {
+            return coordinator.validate_trim(current_call_id, request);
+        }
         let state = self.state.lock().await;
         state.validate_spine_trim(current_call_id, request)
+    }
+
+    pub(crate) async fn validate_spine_trim_request(
+        &self,
+        request: &spine_core::TrimRequest,
+    ) -> Result<(), String> {
+        if let Some(coordinator) = self.lock_spine_coordinator().as_ref() {
+            return coordinator.validate_trim_request(request);
+        }
+        let state = self.state.lock().await;
+        state.validate_spine_trim_request(request)
     }
 
     // Merges connector IDs into the session-level explicit connector selection.
@@ -1508,8 +1524,8 @@ impl Session {
         prepare_response_items(&mut history);
         {
             let mut state = self.state.lock().await;
-            // Spine MODIFIED: Recover SDK state from the same persisted rollout as native history.
-            // Reason: Resume, fork, and rollback must rebuild one deterministic Spine projection.
+            // Spine MODIFIED: Recover SDK state from the same rollout as native history.
+            // Reason: The adapter selects legacy or canonical replay without exposing it here.
             state.replace_history_from_rollout(history, reference_context_item, rollout_items);
             if let Some(world_state) = world_state_baseline {
                 state.history.set_world_state_baseline(world_state);
@@ -3700,6 +3716,13 @@ impl Session {
         state.history.clone()
     }
 
+    pub(crate) async fn replace_spine_context_items(&self, items: Vec<ResponseItem>) {
+        let mut state = self.state.lock().await;
+        let before = state.projected_history_snapshot();
+        crate::spine::replace_context_if_changed(&mut state.history, items);
+        state.reconcile_projected_history(before.as_deref());
+    }
+
     pub(crate) async fn current_window_id(&self) -> String {
         let state = self.state.lock().await;
         let thread_id = self.thread_id;
@@ -4053,15 +4076,13 @@ impl Session {
             let state = self.state.lock().await;
             state.token_info_and_rate_limits()
         };
-        // Spine MODIFIED: Feed token observations to the SDK before publishing the native event.
-        // Reason: Spine derives context pressure and tree status from the same authoritative sample.
         let token_count = TokenCountEvent { info, rate_limits };
         let event = EventMsg::TokenCount(token_count.clone());
-        {
-            let mut state = self.state.lock().await;
-            state.observe_token_count(token_count);
-        }
         self.send_event(turn_context, event).await;
+        // Spine MODIFIED: Feed token observations to the SDK after publishing the native event.
+        // Reason: Preserve native event ordering while updating Spine context pressure.
+        let mut state = self.state.lock().await;
+        state.observe_token_count(token_count);
     }
 
     pub(crate) async fn set_total_tokens_full(&self, turn_context: &TurnContext) {

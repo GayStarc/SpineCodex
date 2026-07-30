@@ -1,13 +1,16 @@
 use crate::ContextEdit;
+use crate::ExecutedSpineFact;
 use crate::ProjectionDelta;
 use crate::RawBoundary;
 use crate::RolloutEvent;
 use crate::SpineConfig;
 use crate::SpineProjection;
+use crate::ToolCallGroup;
 use crate::TrimProjection;
 use crate::bootstrap::InitError;
 use crate::reducer::SpineReducer;
 use crate::reducer::TrimReducer;
+use crate::reducer::TypedTransitionError;
 use std::fmt;
 
 pub const MAX_RAW_EVENT_BYTES: usize = 64 * 1024 * 1024;
@@ -70,6 +73,66 @@ impl SpineCompiler {
         Ok(delta)
     }
 
+    pub(crate) fn eat_source(
+        &mut self,
+        event: RolloutEvent,
+    ) -> Result<ProjectionDelta, SamplingCompileError> {
+        let retained_bytes = event.retained_bytes();
+        validate_event(
+            self.projection.last_boundary,
+            event.boundary(),
+            retained_bytes,
+        )
+        .map_err(SamplingCompileError::Spine)?;
+        let mut trim_reducer = self.trim_reducer.clone();
+        if let (Some(trim_reducer), RolloutEvent::ToolCall(group)) = (&mut trim_reducer, &event) {
+            trim_reducer
+                .apply_sampling_group(group, &[])
+                .map_err(SamplingCompileError::Transition)?;
+        } else if matches!(event, RolloutEvent::Compact { .. })
+            && let Some(trim_reducer) = &mut trim_reducer
+        {
+            trim_reducer.apply(&event);
+        }
+        let mut reducer = self.reducer.clone();
+        let delta = reducer.apply_source(event);
+        validate_projection(&delta.projection).map_err(SamplingCompileError::Spine)?;
+        self.reducer = reducer;
+        self.trim_reducer = trim_reducer;
+        self.projection = delta.projection.clone();
+        Ok(delta)
+    }
+
+    pub(crate) fn eat_sampling_group(
+        &mut self,
+        group: ToolCallGroup,
+        facts: &[&ExecutedSpineFact],
+        trims: &[(RawBoundary, &ExecutedSpineFact)],
+    ) -> Result<ProjectionDelta, SamplingCompileError> {
+        let event = RolloutEvent::ToolCall(group.clone());
+        validate_event(
+            self.projection.last_boundary,
+            group.end,
+            event.retained_bytes(),
+        )
+        .map_err(SamplingCompileError::Spine)?;
+        let mut trim_reducer = self.trim_reducer.clone();
+        if let Some(trim_reducer) = &mut trim_reducer {
+            trim_reducer
+                .apply_sampling_group(&group, trims)
+                .map_err(SamplingCompileError::Transition)?;
+        }
+        let mut reducer = self.reducer.clone();
+        let delta = reducer
+            .apply_sampling_group(group, facts)
+            .map_err(SamplingCompileError::Transition)?;
+        validate_projection(&delta.projection).map_err(SamplingCompileError::Spine)?;
+        self.reducer = reducer;
+        self.trim_reducer = trim_reducer;
+        self.projection = delta.projection.clone();
+        Ok(delta)
+    }
+
     pub fn replay<I>(&mut self, events: I) -> Result<ProjectionDelta, SpineError>
     where
         I: IntoIterator<Item = RolloutEvent>,
@@ -105,9 +168,50 @@ impl SpineCompiler {
         self.trim_reducer.as_ref().map(TrimReducer::projection)
     }
 
+    pub(crate) fn set_runtime_config(&mut self, config: SpineConfig) -> Result<(), InitError> {
+        config.validate()?;
+        if config.is_enabled(crate::Feature::Trim) {
+            self.trim_reducer
+                .get_or_insert_with(|| TrimReducer::new(config.trim_threshold_bytes()));
+        } else {
+            self.trim_reducer = None;
+        }
+        self.config = config;
+        Ok(())
+    }
+
     pub fn extend_system_prompt(&self, base: &str) -> String {
         crate::prompt::extend(base.to_owned(), &self.config)
     }
+}
+
+fn validate_event(
+    previous: Option<RawBoundary>,
+    boundary: RawBoundary,
+    retained_bytes: usize,
+) -> Result<(), SpineError> {
+    if retained_bytes > MAX_RAW_EVENT_BYTES {
+        return Err(SpineError::ContextLimit {
+            kind: "raw event bytes",
+            max: MAX_RAW_EVENT_BYTES,
+            actual: retained_bytes,
+        });
+    }
+    if let Some(previous) = previous
+        && boundary < previous
+    {
+        return Err(SpineError::NonMonotonicBoundary {
+            previous,
+            next: boundary,
+        });
+    }
+    Ok(())
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum SamplingCompileError {
+    Spine(SpineError),
+    Transition(TypedTransitionError),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

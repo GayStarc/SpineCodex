@@ -1180,6 +1180,9 @@ async fn read_head_summary(path: &Path, head_limit: usize) -> io::Result<HeadTai
             RolloutItem::WorldState(_) => {
                 // Not included in `head`; skip.
             }
+            RolloutItem::SpineSamplingStarted(_) | RolloutItem::SpineTransition(_) => {
+                // Internal runtime metadata is not part of thread summaries.
+            }
             RolloutItem::Compacted(_) => {
                 // Not included in `head`; skip.
             }
@@ -1250,7 +1253,9 @@ pub async fn read_head_for_summary(path: &Path) -> io::Result<Vec<serde_json::Va
                 | RolloutItem::Compacted(_)
                 | RolloutItem::TurnContext(_)
                 | RolloutItem::WorldState(_)
-                | RolloutItem::EventMsg(_) => {}
+                | RolloutItem::EventMsg(_)
+                | RolloutItem::SpineSamplingStarted(_)
+                | RolloutItem::SpineTransition(_) => {}
             }
         }
     }

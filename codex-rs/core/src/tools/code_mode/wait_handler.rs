@@ -118,7 +118,8 @@ impl CodeModeWaitHandler {
                     exec.session
                         .services
                         .code_mode_service
-                        .finish_cell_dispatch(runtime_cell_id);
+                        .finish_cell_dispatch(runtime_cell_id)
+                        .await;
                 }
                 exec.session.services.elicitations.wait_until_clear().await;
                 handle_runtime_response(&exec, wait_response.into(), args.max_tokens, started_at)

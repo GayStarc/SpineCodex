@@ -85,7 +85,8 @@ where
             let cell = take_source_cell(source, used, |cell| {
                 matches!(
                     cell.character(),
-                    SpineChar::Message(source) if source.boundary == message.boundary
+                    SpineChar::Message(source) | SpineChar::TurnAborted(source)
+                        if source.boundary == message.boundary
                 )
             })
             .ok_or(SpineContextRuntimeError::MissingCell {
@@ -126,7 +127,8 @@ where
             let cell = take_source_cell(source, used, |cell| {
                 matches!(
                     cell.character(),
-                    SpineChar::Message(source) if source.boundary == message.boundary
+                    SpineChar::Message(source) | SpineChar::TurnAborted(source)
+                        if source.boundary == message.boundary
                 )
             })
             .ok_or(SpineContextRuntimeError::MissingCell {
@@ -216,7 +218,7 @@ fn cell_belongs_to_group(cell: &ParseCell, group: &ToolCallGroup) -> bool {
             .calls
             .iter()
             .any(|call| call.call_id == response.call_id),
-        SpineChar::Opaque { .. } | SpineChar::Synthetic { .. } => false,
+        SpineChar::TurnAborted(_) | SpineChar::Opaque { .. } | SpineChar::Synthetic { .. } => false,
     }
 }
 

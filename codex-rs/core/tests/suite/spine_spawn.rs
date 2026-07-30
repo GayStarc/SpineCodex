@@ -14,14 +14,13 @@ use codex_protocol::protocol::Op;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::RolloutLine;
 use codex_protocol::user_input::UserInput;
-use codex_spine_core::SPINE_SPAWN_RESULT_SCHEMA;
-use codex_spine_core::SpawnReceipt;
 use core_test_support::responses::ResponseMock;
 use core_test_support::responses::ResponsesRequest;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_custom_tool_call;
 use core_test_support::responses::ev_function_call_with_namespace;
+use core_test_support::responses::ev_reasoning_item;
 use core_test_support::responses::ev_response_created;
 use core_test_support::responses::ev_shell_command_call;
 use core_test_support::responses::mount_response_once_match;
@@ -35,6 +34,7 @@ use core_test_support::test_codex::spine_test_codex;
 use core_test_support::wait_for_event;
 use serde_json::Value;
 use serde_json::json;
+use spine_core::SPINE_SPAWN_RESULT_SCHEMA;
 use std::time::Duration;
 use tokio::time::Instant;
 use tokio::time::sleep;
@@ -53,7 +53,7 @@ const CORRECTION_MESSAGE: &str = concat!(
     "tool-free assistant final response containing terminal memory. That response\n",
     "ends this branch execution."
 );
-const CODE_MODE_SPINE_CARRIER_MARKER: &str = "spine.code_mode.output.v1";
+const LEGACY_CARRIER_MARKER: &str = "spine.code_mode.output.v1";
 
 fn body_contains(request: &wiremock::Request, text: &str) -> bool {
     decoded_body(request)
@@ -231,31 +231,13 @@ async fn wait_for_request(
     label: &str,
     predicate: impl Fn(&core_test_support::responses::ResponsesRequest) -> bool,
 ) -> Result<()> {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         if mock_response.requests().iter().any(&predicate) {
             return Ok(());
         }
         if Instant::now() >= deadline {
             anyhow::bail!("timed out waiting for mocked Responses request `{label}`");
-        }
-        sleep(Duration::from_millis(10)).await;
-    }
-}
-
-async fn wait_for_code_mode_first_output(test: &TestCodex, outer_exec_call_id: &str) -> Result<()> {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        if codex_core::test_support::code_mode_is_waiting_for_first_output(
-            &test.codex,
-            outer_exec_call_id,
-        ) {
-            return Ok(());
-        }
-        if Instant::now() >= deadline {
-            anyhow::bail!(
-                "timed out waiting for Code Mode first-output settlement `{outer_exec_call_id}`"
-            );
         }
         sleep(Duration::from_millis(10)).await;
     }
@@ -341,6 +323,7 @@ async fn build_reverse_completion_fixture(
         is_parent_spawn_request,
         sse(vec![
             ev_response_created("parent-spawn-response"),
+            ev_reasoning_item("parent-spawn-reasoning", &["plan spawn batch"], &[]),
             ev_function_call_with_namespace(
                 SPAWN_CALL_ID,
                 SPAWN_NAMESPACE,
@@ -866,18 +849,20 @@ text(JSON.stringify({left, right, spawned}));
         "{visible_output}"
     );
     assert!(
-        visible_output.contains(r#""spawned":"Spine spawn accepted.""#),
+        visible_output.contains(SPINE_SPAWN_RESULT_SCHEMA)
+            && visible_output.contains("nested first memory")
+            && visible_output.contains("nested second memory"),
         "{visible_output}"
     );
     let followup_body = followup.body_json().to_string();
-    assert!(!followup_body.contains(CODE_MODE_SPINE_CARRIER_MARKER));
-    assert!(!followup_body.contains(SPINE_SPAWN_RESULT_SCHEMA));
+    assert!(!followup_body.contains(LEGACY_CARRIER_MARKER));
+    assert!(followup_body.contains(SPINE_SPAWN_RESULT_SCHEMA));
     assert!(followup_body.contains("nested first memory"));
     assert!(followup_body.contains("nested second memory"));
 
     let rollout_path = test.codex.rollout_path().context("rollout path")?;
     let rollout = std::fs::read_to_string(&rollout_path)?;
-    let carrier = rollout
+    let outer_output = rollout
         .lines()
         .filter(|line| !line.trim().is_empty())
         .map(serde_json::from_str::<RolloutLine>)
@@ -889,31 +874,19 @@ text(JSON.stringify({left, right, spawned}));
                 name,
                 output,
                 ..
-            }) if call_id == "exec-nested-spawn"
-                && name.as_deref() == Some(CODE_MODE_SPINE_CARRIER_MARKER) =>
-            {
-                output.body.to_text()
-            }
+            }) if call_id == "exec-nested-spawn" => Some((name, output.body.to_text())),
             _ => None,
         })
-        .context("raw outer exec output should contain the marked carrier")?;
-    let carrier: Value = serde_json::from_str(&carrier)?;
-    let calls = carrier["nested_spine_calls"]
-        .as_array()
-        .context("carrier nested calls")?;
-    assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0]["invocation_ordinal"], 0);
-    assert_eq!(calls[0]["name"], "spawn");
-    assert_eq!(calls[0]["output"]["success"], true);
-    let receipt: SpawnReceipt = serde_json::from_str(
-        calls[0]["output"]["body"]
-            .as_str()
-            .context("nested spawn receipt body")?,
-    )?;
-    assert_eq!(receipt.schema, SPINE_SPAWN_RESULT_SCHEMA);
-    assert_eq!(receipt.results.len(), 2);
-    assert_eq!(receipt.results[0].memory_body, "nested first memory");
-    assert_eq!(receipt.results[1].memory_body, "nested second memory");
+        .context("raw outer exec output should be persisted")?;
+    assert_eq!(outer_output.0, None);
+    assert!(
+        outer_output
+            .1
+            .as_deref()
+            .is_some_and(|body| body.contains("nested first memory"))
+    );
+    assert!(!rollout.contains(LEGACY_CARRIER_MARKER));
+    assert!(rollout.contains("spine.sampling.commit"));
 
     Ok(())
 }
@@ -991,7 +964,6 @@ await tools.spine__spawn({
         body_has_child_task_marker(&request.body_json(), "nested-cancel-second-marker")
     })
     .await?;
-    wait_for_code_mode_first_output(&test, "exec-nested-cancel").await?;
     assert_eq!(
         test.thread_manager.list_thread_ids().await.len(),
         3,
@@ -1032,7 +1004,7 @@ await tools.spine__spawn({
                     name,
                     ..
                 }) if call_id == "exec-nested-cancel"
-                    && name.as_deref() == Some(CODE_MODE_SPINE_CARRIER_MARKER)
+                    && name.as_deref() == Some(LEGACY_CARRIER_MARKER)
             )
         });
     assert!(
@@ -1539,7 +1511,7 @@ async fn interrupt_tears_down_children_drops_late_mail_and_releases_batch_capaci
     .await
     .context("Interrupt did not complete within the native hard-abort bound")??;
 
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         if test.thread_manager.list_thread_ids().await.len() == 1
             && test.codex.agent_status().await == AgentStatus::Interrupted

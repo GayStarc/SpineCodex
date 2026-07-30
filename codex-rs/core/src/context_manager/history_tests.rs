@@ -135,6 +135,25 @@ fn world_state_baseline_deduplicates_until_history_is_replaced() {
 }
 
 #[test]
+fn spine_projection_rewrite_updates_bookkeeping_only_when_changed() {
+    let first = user_msg("first");
+    let second = user_msg("second");
+    let mut history = create_history_with_items(vec![first.clone()]);
+    let mut world_state = WorldState::default();
+    world_state.add_section(TestWorldStateSection);
+    let _ = history.update_world_state(&world_state);
+    let version = history.history_version;
+
+    crate::spine::replace_context_if_changed(&mut history, vec![first]);
+    assert_eq!(history.history_version, version);
+    assert!(history.world_state_baseline.is_some());
+
+    crate::spine::replace_context_if_changed(&mut history, vec![second]);
+    assert_eq!(history.history_version, version + 1);
+    assert_eq!(history.world_state_baseline, None);
+}
+
+#[test]
 fn world_state_reconciles_matching_legacy_history_once() {
     let item = crate::context::ContextualUserFragment::into(UserInstructions {
         directory: None,

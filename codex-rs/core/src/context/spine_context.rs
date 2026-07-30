@@ -75,7 +75,7 @@ impl SpineNodeFragment {
             escape_xml_attribute(summary),
             status_name(status),
         );
-        let body = if status == NodeStatus::Live {
+        let body = if matches!(status, NodeStatus::Live | NodeStatus::Opened) {
             format!("{attributes}\n{}\n", prompt.trim())
         } else {
             attributes

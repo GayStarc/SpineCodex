@@ -705,8 +705,13 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut
 
     // Spine MODIFIED: Register SDK-selected Spine tools in the turn's native tool plan.
     // Reason: This is the Codex boundary where configured SDK contracts become model-visible tools.
+    let spine_tools = turn_context
+        .config
+        .spine_tools
+        .clone()
+        .with_spawn_max_items(turn_context.config.effective_spine_spawn_max_threads());
     SpineHandler::add_tools(
-        &turn_context.config.spine_tools,
+        &spine_tools,
         turn_context.collaboration_mode.mode,
         |handler| planned_tools.add(handler),
     );

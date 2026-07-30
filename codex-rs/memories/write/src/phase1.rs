@@ -413,6 +413,8 @@ mod job {
                 }
                 RolloutItem::SessionMeta(_)
                 | RolloutItem::InterAgentCommunicationMetadata { .. }
+                | RolloutItem::SpineSamplingStarted(_)
+                | RolloutItem::SpineTransition(_)
                 | RolloutItem::Compacted(_)
                 | RolloutItem::TurnContext(_)
                 | RolloutItem::WorldState(_)

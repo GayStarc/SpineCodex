@@ -1,7 +1,5 @@
 use crate::function_tool::FunctionCallError;
 use crate::spine::tool_response::SpineToolResponse;
-use crate::tools::code_mode::spine_bridge::NestedSpineAdmission;
-use crate::tools::code_mode::spine_bridge::NestedSpineToolName;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolCallSource;
 use crate::tools::context::ToolInvocation;
@@ -13,11 +11,11 @@ use crate::tools::handlers::spine_sdk_spec::SPINE_TRIM;
 use crate::tools::handlers::spine_sdk_spec::create_spine_tool;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolExecutor;
-use codex_code_mode::CellId;
 use codex_protocol::config_types::ModeKind;
 use codex_tools::ToolExposure;
 use codex_tools::ToolName;
 use codex_tools::ToolSpec;
+use spine_core::SpineOperationFact;
 use spine_core::SpineTool;
 use spine_core::ToolCatalog;
 use spine_core::ToolDefinition;
@@ -69,21 +67,27 @@ impl SpineHandler {
     }
 }
 
+#[cfg(test)]
 fn validate_arguments(tool: SpineTool, arguments: &str) -> Result<(), FunctionCallError> {
-    spine_core::validate_tool(tool, arguments)
-        .map(|_| ())
-        .map_err(|error| {
-            let message = match error {
-                spine_core::ToolValidationError::InvalidJson(error) => {
-                    format!("failed to parse function arguments: {error}")
-                }
-                spine_core::ToolValidationError::EmptyField(_) => {
-                    format!("{} requires a non-empty argument", tool.name())
-                }
-                error => error.to_string(),
-            };
-            FunctionCallError::RespondToModel(message)
-        })
+    validate_control_fact(tool, arguments).map(|_| ())
+}
+
+fn validate_control_fact(
+    tool: SpineTool,
+    arguments: &str,
+) -> Result<SpineOperationFact, FunctionCallError> {
+    crate::spine::validated_control_fact(tool, arguments).map_err(|error| {
+        let message = match error {
+            spine_core::ToolValidationError::InvalidJson(error) => {
+                format!("failed to parse function arguments: {error}")
+            }
+            spine_core::ToolValidationError::EmptyField(_) => {
+                format!("{} requires a non-empty argument", tool.name())
+            }
+            error => error.to_string(),
+        };
+        FunctionCallError::RespondToModel(message)
+    })
 }
 
 impl ToolExecutor<ToolInvocation> for SpineHandler {
@@ -123,12 +127,54 @@ impl SpineHandler {
             source,
             ..
         } = invocation;
-        let nested_source = match source {
-            ToolCallSource::Direct => None,
+        let (origin, spawn_scope, code_mode_trim) = match source {
+            ToolCallSource::Direct => (
+                spine_core::ExecutionOrigin::Direct {
+                    call_id: call_id.clone(),
+                },
+                crate::spine::spawn::SpawnExecutionScope::ResponseGroup(step_context),
+                false,
+            ),
             ToolCallSource::CodeMode {
                 cell_id,
                 runtime_tool_call_id,
-            } => Some((CellId::new(cell_id), runtime_tool_call_id)),
+            } => {
+                if session.lock_spine_coordinator().is_none() {
+                    return Err(FunctionCallError::RespondToModel(
+                        "Code Mode Spine calls are unavailable after restoring a legacy Spine rollout"
+                            .to_string(),
+                    ));
+                }
+                let cell_id = codex_code_mode::CellId::new(cell_id);
+                let outer_call_id = session
+                    .services
+                    .code_mode_service
+                    .outer_call_id(&cell_id)
+                    .ok_or_else(|| {
+                        FunctionCallError::RespondToModel(format!(
+                            "Code Mode cell `{cell_id}` is missing its outer call identity"
+                        ))
+                    })?;
+                let invocation_ordinal = session
+                    .services
+                    .code_mode_service
+                    .spine_invocation_ordinal(&cell_id, &runtime_tool_call_id)
+                    .ok_or_else(|| {
+                        FunctionCallError::RespondToModel(format!(
+                            "Code Mode Spine call `{runtime_tool_call_id}` is missing its invocation ordinal"
+                        ))
+                    })?;
+                (
+                    spine_core::ExecutionOrigin::CodeMode {
+                        outer_call_id: outer_call_id.clone(),
+                        invocation_ordinal,
+                    },
+                    crate::spine::spawn::SpawnExecutionScope::Isolated {
+                        fork_parent_call_id: outer_call_id,
+                    },
+                    true,
+                )
+            }
         };
         if turn.collaboration_mode.mode == ModeKind::Plan {
             return Err(FunctionCallError::RespondToModel(
@@ -146,65 +192,49 @@ impl SpineHandler {
 
         let response_tool = match self.kind {
             SpineHandlerKind::Control(tool) => {
-                validate_arguments(tool, &arguments)?;
-                let admission = self.admit_nested(&session, nested_source, arguments.clone())?;
+                let operation = validate_control_fact(tool, &arguments)?;
                 let response = SpineToolResponse::from_control(tool);
                 match session.validate_spine_control(tool).await {
                     Ok(()) => {
-                        complete_nested(admission, true, response.success_carrier())?;
+                        session.stage_spine_fact(&call_id, origin.clone(), operation);
                         response
                     }
                     Err(error) => {
-                        complete_nested(admission, false, error.clone())?;
                         return Err(FunctionCallError::RespondToModel(error));
                     }
                 }
             }
             SpineHandlerKind::Spawn => {
-                let admission = self.admit_nested(&session, nested_source, arguments.clone())?;
-                let receipt = match admission.as_ref() {
-                    Some(admission) => {
-                        crate::spine::spawn::execute_nested(
-                            session.clone(),
-                            turn.clone(),
-                            admission.outer_exec_call_id().to_string(),
-                            admission.invocation_ordinal(),
-                            cancellation_token,
-                            arguments,
-                        )
-                        .await
-                    }
-                    None => {
-                        crate::spine::spawn::execute(
-                            session,
-                            turn,
-                            step_context,
-                            call_id,
-                            cancellation_token,
-                            arguments,
-                        )
-                        .await
-                    }
-                };
+                let tasks = crate::spine::spawn::parse_tasks(&arguments)
+                    .map_err(FunctionCallError::RespondToModel)?;
+                let receipt = crate::spine::spawn::execute(
+                    session.clone(),
+                    turn,
+                    spawn_scope,
+                    call_id.clone(),
+                    cancellation_token,
+                    tasks.clone(),
+                )
+                .await;
                 let receipt = match receipt {
                     Ok(receipt) => receipt,
                     Err(error) => {
-                        complete_nested(admission, false, error.clone())?;
                         return Err(FunctionCallError::RespondToModel(error));
                     }
                 };
+                session.stage_spine_fact(
+                    &call_id,
+                    origin,
+                    SpineOperationFact::Spawn {
+                        tasks,
+                        terminal_results: receipt.results.clone(),
+                    },
+                );
                 let body = receipt.encode_json().map_err(|error| {
                     FunctionCallError::RespondToModel(format!(
                         "failed to encode spine.spawn receipt: {error}"
                     ))
                 })?;
-                if admission.is_some() {
-                    complete_nested(admission, true, body)?;
-                    return Ok(boxed_tool_output(FunctionToolOutput::from_text(
-                        format!("Spine {SPINE_SPAWN} accepted."),
-                        Some(true),
-                    )));
-                }
                 return Ok(boxed_tool_output(FunctionToolOutput::from_text(
                     body,
                     Some(true),
@@ -213,26 +243,19 @@ impl SpineHandler {
             SpineHandlerKind::Trim => {
                 let request =
                     TrimRequest::parse(&arguments).map_err(FunctionCallError::RespondToModel)?;
-                let admission = self.admit_nested(&session, nested_source, arguments.clone())?;
-                let validation = match admission.as_ref() {
-                    Some(admission) => {
-                        session
-                            .validate_nested_spine_trim(admission.outer_exec_call_id(), &request)
-                            .await
-                    }
-                    None => session.validate_spine_trim(&call_id, &request).await,
+                let validation = if code_mode_trim {
+                    session.validate_spine_trim_request(&request).await
+                } else {
+                    session.validate_spine_trim(&call_id, &request).await
                 };
                 match validation {
                     Ok(()) => {
-                        complete_nested(
-                            admission,
-                            true,
-                            SpineToolResponse::Trim.success_carrier(),
-                        )?;
+                        if let Some(operation) = session.validated_spine_trim_fact(&request) {
+                            session.stage_spine_fact(&call_id, origin, operation);
+                        }
                         SpineToolResponse::Trim
                     }
                     Err(error) => {
-                        complete_nested(admission, false, error.clone())?;
                         return Err(FunctionCallError::RespondToModel(error));
                     }
                 }
@@ -241,54 +264,6 @@ impl SpineHandler {
 
         Ok(boxed_tool_output(response_tool.success()))
     }
-
-    fn admit_nested(
-        &self,
-        session: &crate::session::session::Session,
-        source: Option<(CellId, String)>,
-        arguments: String,
-    ) -> Result<Option<NestedSpineAdmission>, FunctionCallError> {
-        let Some((cell_id, runtime_call_id)) = source else {
-            return Ok(None);
-        };
-        session
-            .services
-            .code_mode_service
-            .admit_spine(
-                &cell_id,
-                runtime_call_id,
-                self.nested_tool_name(),
-                arguments,
-            )
-            .map(Some)
-            .map_err(FunctionCallError::RespondToModel)
-    }
-
-    fn nested_tool_name(&self) -> NestedSpineToolName {
-        match self.kind {
-            SpineHandlerKind::Control(SpineTool::Open) => NestedSpineToolName::Open,
-            SpineHandlerKind::Control(SpineTool::Close) => NestedSpineToolName::Close,
-            SpineHandlerKind::Control(SpineTool::Next) => NestedSpineToolName::Next,
-            SpineHandlerKind::Spawn => NestedSpineToolName::Spawn,
-            SpineHandlerKind::Trim => NestedSpineToolName::Trim,
-            SpineHandlerKind::Control(SpineTool::Spawn | SpineTool::Trim) => {
-                unreachable!("spawn and trim have dedicated handler kinds")
-            }
-        }
-    }
-}
-
-fn complete_nested(
-    admission: Option<NestedSpineAdmission>,
-    success: bool,
-    body: String,
-) -> Result<(), FunctionCallError> {
-    let Some(admission) = admission else {
-        return Ok(());
-    };
-    admission
-        .complete(success, body)
-        .map_err(FunctionCallError::RespondToModel)
 }
 
 impl CoreToolRuntime for SpineHandler {
@@ -361,7 +336,7 @@ mod tests {
         assert_eq!(
             handlers
                 .iter()
-                .map(|handler| handler.tool_name())
+                .map(codex_tools::ToolExecutor::tool_name)
                 .collect::<Vec<_>>(),
             catalog
                 .definitions()
@@ -376,7 +351,7 @@ mod tests {
         assert_eq!(
             handlers(ModeKind::Plan)
                 .iter()
-                .map(|handler| handler.tool_name())
+                .map(codex_tools::ToolExecutor::tool_name)
                 .collect::<Vec<_>>(),
             [
                 SpineTool::Open,

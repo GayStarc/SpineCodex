@@ -1,9 +1,4 @@
 use super::*;
-use codex_protocol::models::ContentItem;
-use codex_protocol::models::FunctionCallOutputBody;
-use codex_protocol::models::FunctionCallOutputPayload;
-use codex_protocol::models::ReasoningItemReasoningSummary;
-use codex_protocol::models::ResponseItem;
 use pretty_assertions::assert_eq;
 use spine_core::SPINE_SPAWN_RESULT_SCHEMA;
 use spine_core::SpawnOutcome;
@@ -82,57 +77,12 @@ fn task_envelope_injects_identity_and_same_call_peer_roster() {
     assert!(envelope.ends_with(&format!("Assignment:\n{}", tasks[0].prompt)));
 }
 
-fn call(call_id: &str, namespace: Option<&str>, name: &str) -> RolloutItem {
-    let is_spawn = name == "spine.spawn" || (namespace == Some("spine") && name == "spawn");
-    RolloutItem::ResponseItem(ResponseItem::FunctionCall {
-        id: None,
-        name: name.to_string(),
-        namespace: namespace.map(str::to_string),
-        arguments: if is_spawn {
-            r#"{"tasks":[{"summary":"one","prompt":"first"},{"summary":"two","prompt":"second"}]}"#
-                .to_string()
-        } else {
-            "{}".to_string()
-        },
-        call_id: call_id.to_string(),
-        internal_chat_message_metadata_passthrough: None,
-    })
-}
-
-fn message(role: &str, text: &str) -> RolloutItem {
-    RolloutItem::ResponseItem(ResponseItem::Message {
-        id: None,
-        role: role.to_string(),
-        content: vec![ContentItem::OutputText {
-            text: text.to_string(),
-        }],
-        phase: None,
-        internal_chat_message_metadata_passthrough: None,
-    })
-}
-
-fn output(call_id: &str) -> RolloutItem {
-    RolloutItem::ResponseItem(ResponseItem::FunctionCallOutput {
-        id: None,
-        call_id: call_id.to_string(),
-        output: FunctionCallOutputPayload {
-            body: FunctionCallOutputBody::Text("done".to_string()),
-            success: Some(true),
-        },
-        internal_chat_message_metadata_passthrough: None,
-    })
-}
-
-fn reasoning() -> RolloutItem {
-    RolloutItem::ResponseItem(ResponseItem::Reasoning {
-        id: None,
-        summary: vec![ReasoningItemReasoningSummary::SummaryText {
-            text: "thinking".to_string(),
-        }],
-        content: None,
-        encrypted_content: None,
-        internal_chat_message_metadata_passthrough: None,
-    })
+fn register_spawn(group: &SpineSpawnGroup, call_id: &str) {
+    group.register(
+        call_id,
+        "spine.spawn",
+        r#"{"tasks":[{"summary":"one","prompt":"first"},{"summary":"two","prompt":"second"}]}"#,
+    );
 }
 
 #[test]
@@ -241,16 +191,18 @@ fn subtree_membership_uses_agent_path_segment_boundaries() {
 #[test]
 fn abort_barrier_blocks_new_admission_without_owning_transaction_cleanup() {
     let lifecycle = SpawnLifecycle::default();
-    let transaction = lifecycle.try_enter().expect("first Spawn may enter");
+    let transaction = lifecycle
+        .try_enter(CancellationToken::new())
+        .expect("first Spawn may enter");
     let abort_barrier = lifecycle.begin_abort();
 
     assert!(abort_barrier.had_active_transactions());
-    assert!(lifecycle.try_enter().is_none());
+    assert!(lifecycle.try_enter(CancellationToken::new()).is_none());
     drop(transaction);
-    assert!(lifecycle.try_enter().is_none());
+    assert!(lifecycle.try_enter(CancellationToken::new()).is_none());
 
     drop(abort_barrier);
-    assert!(lifecycle.try_enter().is_some());
+    assert!(lifecycle.try_enter(CancellationToken::new()).is_some());
 }
 
 #[test]
@@ -504,62 +456,41 @@ fn capacity_rejection_partitions_multiple_calls_without_losing_task_identity() {
     }
 }
 
-#[test]
-fn response_group_admission_accepts_flat_and_namespaced_spawn_calls() {
-    for rollout in [
-        vec![call("spawn", None, "spine.spawn")],
-        vec![call("spawn", Some("spine"), "spawn")],
-    ] {
-        let calls = calls_in_response_group(&rollout, "spawn").unwrap();
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].tasks.len(), 2);
-    }
+#[tokio::test]
+async fn response_group_admission_accepts_spawn_call() {
+    let group = SpineSpawnGroup::default();
+    register_spawn(&group, "spawn");
+    group.finish();
+
+    let call = group
+        .spawn_call("spawn", &CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(call.tasks.len(), 2);
 }
 
-#[test]
-fn response_group_admission_uses_native_response_group_boundaries() {
-    let rollout = [
-        message("user", "first turn"),
-        call("previous", None, "shell"),
-        output("previous"),
-        message("user", "spawn now"),
-        call("spawn", Some("spine"), "spawn"),
-        output("later"),
-    ];
-    let calls = calls_in_response_group(&rollout, "spawn").unwrap();
-    assert_eq!(
-        calls
-            .iter()
-            .map(|call| call.call_id.as_str())
-            .collect::<Vec<_>>(),
-        vec!["spawn"]
-    );
+#[tokio::test]
+async fn response_group_admission_accepts_ordinary_sibling_calls() {
+    let group = SpineSpawnGroup::default();
+    register_spawn(&group, "spawn");
+    group.register("shell", "shell", "{}");
+    group.finish();
+
+    group
+        .spawn_call("spawn", &CancellationToken::new())
+        .await
+        .unwrap();
 }
 
-#[test]
-fn response_group_admission_accepts_text_reasoning_and_ordinary_sibling_calls() {
-    for rollout in [
-        vec![
-            message("assistant", "extra"),
-            call("spawn", None, "spine.spawn"),
-        ],
-        vec![reasoning(), call("spawn", None, "spine.spawn")],
-        vec![
-            call("spawn", None, "spine.spawn"),
-            call("shell", None, "shell"),
-        ],
-    ] {
-        assert_eq!(calls_in_response_group(&rollout, "spawn").unwrap().len(), 1);
-    }
-}
-
-#[test]
-fn response_group_admission_rejects_multiple_spawn_calls() {
-    let multiple = vec![
-        call("spawn-1", None, "spine.spawn"),
-        call("spawn-2", Some("spine"), "spawn"),
-    ];
-    let error = calls_in_response_group(&multiple, "spawn-2")
+#[tokio::test]
+async fn response_group_admission_rejects_multiple_spawn_calls() {
+    let group = SpineSpawnGroup::default();
+    register_spawn(&group, "spawn-1");
+    register_spawn(&group, "spawn-2");
+    group.finish();
+    let error = group
+        .spawn_call("spawn-2", &CancellationToken::new())
+        .await
         .expect_err("multiple spine.spawn calls must be rejected before execution");
     assert_eq!(
         error,
@@ -567,14 +498,19 @@ fn response_group_admission_rejects_multiple_spawn_calls() {
     );
 }
 
-#[test]
-fn response_group_admission_rejects_conflicting_spine_controls() {
+#[tokio::test]
+async fn response_group_admission_rejects_conflicting_spine_controls() {
     for control in ["spine.open", "spine.close", "spine.next"] {
-        let rollout = vec![
-            call("spawn", None, "spine.spawn"),
-            call("control", None, control),
-        ];
-        assert!(calls_in_response_group(&rollout, "spawn").is_err());
+        let group = SpineSpawnGroup::default();
+        register_spawn(&group, "spawn");
+        group.register("control", control, "{}");
+        group.finish();
+        assert!(
+            group
+                .spawn_call("spawn", &CancellationToken::new())
+                .await
+                .is_err()
+        );
     }
 }
 
