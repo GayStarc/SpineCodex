@@ -201,6 +201,27 @@ pub struct TurnSteerResponse {
     pub turn_id: String,
 }
 
+/// Append user guidance to the active turn of a task-path thread-spawn subagent.
+///
+/// Unlike `turn/start`, this method cannot create a new turn or change thread settings.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadSubagentSteerParams {
+    pub thread_id: String,
+    #[ts(optional = nullable)]
+    pub client_user_message_id: Option<String>,
+    pub input: Vec<UserInput>,
+    pub expected_turn_id: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadSubagentSteerResponse {
+    pub turn_id: String,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]

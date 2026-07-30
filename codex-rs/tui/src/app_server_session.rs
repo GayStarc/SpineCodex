@@ -97,6 +97,8 @@ use codex_app_server_protocol::ThreadSource;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::ThreadStartSource;
+use codex_app_server_protocol::ThreadSubagentSteerParams;
+use codex_app_server_protocol::ThreadSubagentSteerResponse;
 use codex_app_server_protocol::ThreadUnarchiveParams;
 use codex_app_server_protocol::ThreadUnarchiveResponse;
 use codex_app_server_protocol::ThreadUnsubscribeParams;
@@ -876,6 +878,26 @@ impl AppServerSession {
                     input: items,
                     responsesapi_client_metadata: None,
                     additional_context: None,
+                    expected_turn_id: turn_id,
+                },
+            })
+            .await
+    }
+
+    pub(crate) async fn thread_subagent_steer(
+        &mut self,
+        thread_id: ThreadId,
+        turn_id: String,
+        items: Vec<UserInput>,
+    ) -> std::result::Result<ThreadSubagentSteerResponse, TypedRequestError> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::ThreadSubagentSteer {
+                request_id,
+                params: ThreadSubagentSteerParams {
+                    thread_id: thread_id.to_string(),
+                    client_user_message_id: None,
+                    input: items,
                     expected_turn_id: turn_id,
                 },
             })

@@ -1253,6 +1253,11 @@ impl MessageProcessor {
             ClientRequest::TurnSteer { params, .. } => {
                 self.turn_processor.turn_steer(&request_id, params).await
             }
+            ClientRequest::ThreadSubagentSteer { params, .. } => {
+                self.turn_processor
+                    .thread_subagent_steer(&request_id, params)
+                    .await
+            }
             ClientRequest::TurnInterrupt { params, .. } => {
                 self.turn_processor
                     .turn_interrupt(&request_id, params)

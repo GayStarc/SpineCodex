@@ -2754,31 +2754,19 @@ fn install_live_spawn_overlay(
     }
 }
 
-fn try_render_inserted_history_cell(
+fn next_selected_agent_thread(
     app_event_rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
-) -> Option<String> {
+) -> Option<ThreadId> {
     while let Ok(event) = app_event_rx.try_recv() {
-        if let AppEvent::InsertHistoryCell(cell) = event {
-            return Some(
-                cell.display_lines(/*width*/ 120)
-                    .into_iter()
-                    .map(|line| line.to_string())
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-            );
+        if let AppEvent::SelectAgentThread(thread_id) = event {
+            return Some(thread_id);
         }
     }
     None
 }
 
-fn render_inserted_history_cell(
-    app_event_rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
-) -> String {
-    try_render_inserted_history_cell(app_event_rx).expect("expected InsertHistoryCell event")
-}
-
 #[tokio::test]
-async fn open_agent_picker_suppresses_visible_spine_spawn_children() -> Result<()> {
+async fn open_agent_picker_shows_visible_spine_spawn_child_in_native_picker() -> Result<()> {
     let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
     let mut app_server =
         crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
@@ -2795,13 +2783,23 @@ async fn open_agent_picker_suppresses_visible_spine_spawn_children() -> Result<(
 
     app.open_agent_picker(&mut app_server).await;
 
-    assert_eq!(try_render_inserted_history_cell(&mut app_event_rx), None);
+    let rendered = render_bottom_popup(&app.chat_widget, /*width*/ 100);
+    assert!(rendered.contains("Subagents"), "{rendered}");
+    assert!(rendered.contains("/root/spawn-child"), "{rendered}");
+    assert!(!rendered.contains("Sub-agents running"), "{rendered}");
+
+    app.chat_widget
+        .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(
+        next_selected_agent_thread(&mut app_event_rx),
+        Some(child_thread_id)
+    );
     Ok(())
 }
 
 #[tokio::test]
-async fn open_agent_picker_shows_only_native_children_in_mixed_status() -> Result<()> {
-    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+async fn open_agent_picker_shows_spine_and_native_children_once() -> Result<()> {
+    let (mut app, _app_event_rx, _op_rx) = make_test_app_with_channels().await;
     let mut app_server =
         crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
     let parent_thread_id = ThreadId::new();
@@ -2819,44 +2817,67 @@ async fn open_agent_picker_shows_only_native_children_in_mixed_status() -> Resul
 
     app.open_agent_picker(&mut app_server).await;
 
-    let rendered = render_inserted_history_cell(&mut app_event_rx);
-    insta::assert_snapshot!(rendered, @r###"
-    /agent
-    Sub-agents running
-
-      • `/root/native-child`
-        No recent activity yet.
-    "###);
+    let rendered = render_bottom_popup(&app.chat_widget, /*width*/ 100);
+    assert_eq!(
+        rendered.matches("/root/spawn-child").count(),
+        1,
+        "{rendered}"
+    );
+    assert_eq!(
+        rendered.matches("/root/native-child").count(),
+        1,
+        "{rendered}"
+    );
+    assert!(!rendered.contains("Sub-agents running"), "{rendered}");
     Ok(())
 }
 
 #[tokio::test]
-async fn open_agent_picker_ignores_inactive_spine_spawn_overlays() -> Result<()> {
+async fn open_agent_picker_shows_nested_spine_descendant_and_selects_it() -> Result<()> {
     let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
     let mut app_server =
         crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
-    let visible_parent_thread_id = ThreadId::new();
-    let inactive_parent_thread_id = ThreadId::new();
     let child_thread_id = ThreadId::new();
-    display_test_thread(&mut app, visible_parent_thread_id);
-    record_running_path_backed_agent(&mut app, child_thread_id, "/root/background-child").await;
+    let descendant_thread_id = ThreadId::new();
+    let parent_thread_id = ThreadId::new();
+    display_test_thread(&mut app, parent_thread_id);
+    record_running_path_backed_agent(&mut app, child_thread_id, "/root/spawn-child").await;
+    record_running_path_backed_agent(
+        &mut app,
+        descendant_thread_id,
+        "/root/spawn-child/sub-child",
+    )
+    .await;
     install_live_spawn_overlay(
         &mut app,
-        inactive_parent_thread_id,
-        "spawn-inactive",
-        &[(child_thread_id, "/root/background-child")],
+        parent_thread_id,
+        "spawn-nested",
+        &[(child_thread_id, "/root/spawn-child")],
     );
 
     app.open_agent_picker(&mut app_server).await;
 
-    let rendered = render_inserted_history_cell(&mut app_event_rx);
-    assert!(rendered.contains("/root/background-child"), "{rendered}");
+    let rendered = render_bottom_popup(&app.chat_widget, /*width*/ 100);
+    assert!(rendered.contains("/root/spawn-child"), "{rendered}");
+    assert!(
+        rendered.contains("/root/spawn-child/sub-child"),
+        "{rendered}"
+    );
+
+    app.chat_widget
+        .handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    app.chat_widget
+        .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(
+        next_selected_agent_thread(&mut app_event_rx),
+        Some(descendant_thread_id)
+    );
     Ok(())
 }
 
 #[tokio::test]
-async fn open_agent_picker_shows_child_after_spine_spawn_settles() -> Result<()> {
-    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+async fn open_agent_picker_keeps_native_format_after_spine_spawn_settles() -> Result<()> {
+    let (mut app, _app_event_rx, _op_rx) = make_test_app_with_channels().await;
     let mut app_server =
         crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
     let parent_thread_id = ThreadId::new();
@@ -2878,15 +2899,57 @@ async fn open_agent_picker_shows_child_after_spine_spawn_settles() -> Result<()>
 
     app.open_agent_picker(&mut app_server).await;
 
-    let rendered = render_inserted_history_cell(&mut app_event_rx);
+    let rendered = render_bottom_popup(&app.chat_widget, /*width*/ 100);
+    assert!(rendered.contains("Subagents"), "{rendered}");
     assert!(rendered.contains("/root/settled-child"), "{rendered}");
+    assert!(!rendered.contains("Sub-agents running"), "{rendered}");
     Ok(())
 }
 
 #[tokio::test]
-async fn open_agent_picker_does_not_suppress_unpublished_spine_overlay_during_replay() -> Result<()>
-{
+async fn open_agent_picker_keeps_closed_branch_after_cancel_overlay_cleanup() -> Result<()> {
     let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let mut app_server =
+        crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
+    let parent_thread_id = ThreadId::new();
+    let child_thread_id = ThreadId::new();
+    display_test_thread(&mut app, parent_thread_id);
+    record_running_path_backed_agent(&mut app, child_thread_id, "/root/cancelled-child").await;
+    install_live_spawn_overlay(
+        &mut app,
+        parent_thread_id,
+        "spawn-cancelled",
+        &[(child_thread_id, "/root/cancelled-child")],
+    );
+
+    app.mark_agent_picker_thread_closed(child_thread_id);
+    app.spine_tree_views
+        .get_mut(&parent_thread_id)
+        .expect("missing Spine tree view")
+        .clear_incomplete_spawn_overlays(Some("turn-spawn"));
+
+    app.open_agent_picker(&mut app_server).await;
+
+    let rendered = render_bottom_popup(&app.chat_widget, /*width*/ 100);
+    assert!(rendered.contains("Subagents"), "{rendered}");
+    assert!(
+        rendered.contains("Closed · /root/cancelled-child"),
+        "{rendered}"
+    );
+    assert!(!rendered.contains("Sub-agents running"), "{rendered}");
+
+    app.chat_widget
+        .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(
+        next_selected_agent_thread(&mut app_event_rx),
+        Some(child_thread_id)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn open_agent_picker_keeps_native_format_during_history_replay() -> Result<()> {
+    let (mut app, _app_event_rx, _op_rx) = make_test_app_with_channels().await;
     let mut app_server =
         crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
     let parent_thread_id = ThreadId::new();
@@ -2903,8 +2966,195 @@ async fn open_agent_picker_does_not_suppress_unpublished_spine_overlay_during_re
 
     app.open_agent_picker(&mut app_server).await;
 
-    let rendered = render_inserted_history_cell(&mut app_event_rx);
+    let rendered = render_bottom_popup(&app.chat_widget, /*width*/ 100);
+    assert!(rendered.contains("Subagents"), "{rendered}");
     assert!(rendered.contains("/root/replay-child"), "{rendered}");
+    assert!(!rendered.contains("Sub-agents running"), "{rendered}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn terminal_path_backed_subagent_input_is_non_fatal_and_does_not_start_turn() -> Result<()> {
+    let (mut app, mut app_event_rx, _op_rx) = Box::pin(async {
+        let (app, app_event_rx, op_rx) = make_test_app_with_channels().await;
+        (Box::new(app), app_event_rx, op_rx)
+    })
+    .await;
+    let mut app_server = Box::pin(async {
+        crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
+            .await
+            .map(Box::new)
+    })
+    .await?;
+    let primary_thread_id = ThreadId::new();
+    let child_thread_id = ThreadId::new();
+    app.primary_thread_id = Some(primary_thread_id);
+    display_test_thread(&mut app, primary_thread_id);
+    record_running_path_backed_agent(&mut app, child_thread_id, "/root/finished-child").await;
+    app.chat_widget.handle_thread_session(test_thread_session(
+        primary_thread_id,
+        test_path_buf("/tmp/main"),
+    ));
+    app.chat_widget.handle_server_notification(
+        turn_started_notification(primary_thread_id, "stale-running-turn"),
+        /*replay_kind*/ None,
+    );
+    let stale_running_input_state = app
+        .chat_widget
+        .capture_thread_input_state()
+        .expect("expected stale running input state");
+    {
+        let channel = app
+            .thread_event_channels
+            .get(&child_thread_id)
+            .expect("missing child channel");
+        let mut store = channel.store.lock().await;
+        store.set_session(
+            test_thread_session(child_thread_id, test_path_buf("/tmp/finished-child")),
+            Vec::new(),
+        );
+        store.input_state = Some(stale_running_input_state);
+    }
+    app.mark_agent_picker_thread_closed(child_thread_id);
+
+    let mut tui = crate::tui::test_support::make_test_tui().expect("test tui");
+    app.select_agent_thread(&mut tui, &mut app_server, child_thread_id)
+        .await?;
+    assert!(app.chat_widget.steer_only_user_input_for_test());
+    assert!(!app.chat_widget.is_task_running_for_test());
+    while app_event_rx.try_recv().is_ok() {}
+
+    app.chat_widget.set_composer_text(
+        "must not start a replacement turn".to_string(),
+        Vec::new(),
+        Vec::new(),
+    );
+    app.chat_widget
+        .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let op = loop {
+        match app_event_rx.try_recv() {
+            Ok(AppEvent::CodexOp(op @ Op::UserTurn { .. })) => break Box::new(op),
+            Ok(_) => continue,
+            Err(err) => panic!("terminal child input should be staged as a steer: {err}"),
+        }
+    };
+    assert_eq!(app.chat_widget.pending_steer_count_for_test(), 1);
+    assert_eq!(
+        app.chat_widget.pending_steer_text_for_test(),
+        Some("must not start a replacement turn")
+    );
+
+    let handled = app
+        .try_submit_active_thread_op_via_app_server(&mut app_server, child_thread_id, &op)
+        .await?;
+
+    assert!(handled);
+    assert_eq!(
+        app.chat_widget.composer_text_with_pending(),
+        "must not start a replacement turn"
+    );
+    assert!(!app.chat_widget.user_turn_pending_start_for_test());
+    assert_eq!(app.chat_widget.pending_steer_count_for_test(), 0);
+    let mut rendered = None;
+    while let Ok(event) = app_event_rx.try_recv() {
+        match event {
+            AppEvent::SubmitThreadOp {
+                op: Op::UserTurn { .. },
+                ..
+            }
+            | AppEvent::CodexOp(Op::UserTurn { .. }) => {
+                panic!("terminal subagent input must not start a replacement turn");
+            }
+            AppEvent::InsertHistoryCell(cell) if rendered.is_none() => {
+                rendered = Some(
+                    cell.display_lines(/*width*/ 120)
+                        .into_iter()
+                        .map(|line| line.to_string())
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                );
+            }
+            _ => {}
+        }
+    }
+    let rendered = rendered.expect("expected a non-fatal terminal subagent message");
+    assert!(
+        rendered.contains("This subagent is not running"),
+        "{rendered}"
+    );
+    assert!(
+        !rendered.contains("must not start a replacement turn"),
+        "rejected guidance must not be rendered as submitted history: {rendered}"
+    );
+    app_server.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn select_agent_thread_updates_steer_only_input_for_target_thread() -> Result<()> {
+    let (mut app, _app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let mut app_server =
+        crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
+    let mut tui = crate::tui::test_support::make_test_tui().expect("test tui");
+    let primary_thread_id = ThreadId::new();
+    let child_thread_id = ThreadId::new();
+    let pathless_child_thread_id = ThreadId::new();
+    app.primary_thread_id = Some(primary_thread_id);
+    let primary_channel = ThreadEventChannel::new(/*capacity*/ 4);
+    primary_channel.store.lock().await.set_session(
+        test_thread_session(primary_thread_id, test_path_buf("/tmp/main")),
+        Vec::new(),
+    );
+    app.thread_event_channels
+        .insert(primary_thread_id, primary_channel);
+    app.activate_thread_channel(primary_thread_id).await;
+    app.chat_widget
+        .handle_thread_session_quiet(test_thread_session(
+            primary_thread_id,
+            test_path_buf("/tmp/main"),
+        ));
+
+    let child_channel = ThreadEventChannel::new(/*capacity*/ 4);
+    child_channel.store.lock().await.set_session(
+        test_thread_session(child_thread_id, test_path_buf("/tmp/finished-child")),
+        Vec::new(),
+    );
+    app.thread_event_channels
+        .insert(child_thread_id, child_channel);
+    app.agent_navigation
+        .record_sub_agent_activity(SubAgentActivityDisplay {
+            thread_id: child_thread_id,
+            agent_path: "/root/finished-child".to_string(),
+            is_running_hint: false,
+        });
+    let pathless_child_channel = ThreadEventChannel::new(/*capacity*/ 4);
+    pathless_child_channel.store.lock().await.set_session(
+        test_thread_session(
+            pathless_child_thread_id,
+            test_path_buf("/tmp/pathless-child"),
+        ),
+        Vec::new(),
+    );
+    app.thread_event_channels
+        .insert(pathless_child_thread_id, pathless_child_channel);
+    app.agent_navigation.upsert(
+        pathless_child_thread_id,
+        Some("legacy-child".to_string()),
+        None,
+        /*is_closed*/ false,
+    );
+
+    app.select_agent_thread(&mut tui, &mut app_server, child_thread_id)
+        .await?;
+    assert!(app.chat_widget.steer_only_user_input_for_test());
+    app.select_agent_thread(&mut tui, &mut app_server, pathless_child_thread_id)
+        .await?;
+    assert!(!app.chat_widget.steer_only_user_input_for_test());
+    app.select_agent_thread(&mut tui, &mut app_server, primary_thread_id)
+        .await?;
+    assert!(!app.chat_widget.steer_only_user_input_for_test());
+
+    app_server.shutdown().await?;
     Ok(())
 }
 
@@ -6824,39 +7074,44 @@ fn session_start_error_surfaces_archived_guidance_without_rollout_path() {
 
 #[test]
 fn active_turn_steer_race_detects_missing_active_turn() {
-    let error = TypedRequestError::Server {
-        method: "turn/steer".to_string(),
-        source: JSONRPCErrorError {
-            code: -32602,
-            message: "no active turn to steer".to_string(),
-            data: None,
-        },
-    };
+    for method in ["turn/steer", "thread/subagent/steer"] {
+        let error = TypedRequestError::Server {
+            method: method.to_string(),
+            source: JSONRPCErrorError {
+                code: -32602,
+                message: "no active turn to steer".to_string(),
+                data: None,
+            },
+        };
 
-    assert_eq!(
-        active_turn_steer_race(&error),
-        Some(ActiveTurnSteerRace::Missing)
-    );
-    assert_eq!(active_turn_not_steerable_turn_error(&error), None);
+        assert_eq!(
+            active_turn_steer_race(&error),
+            Some(ActiveTurnSteerRace::Missing)
+        );
+        assert_eq!(active_turn_not_steerable_turn_error(&error), None);
+    }
 }
 
 #[test]
 fn active_turn_steer_race_extracts_actual_turn_id_from_mismatch() {
-    let error = TypedRequestError::Server {
-        method: "turn/steer".to_string(),
-        source: JSONRPCErrorError {
-            code: -32602,
-            message: "expected active turn id `turn-expected` but found `turn-actual`".to_string(),
-            data: None,
-        },
-    };
+    for method in ["turn/steer", "thread/subagent/steer"] {
+        let error = TypedRequestError::Server {
+            method: method.to_string(),
+            source: JSONRPCErrorError {
+                code: -32602,
+                message: "expected active turn id `turn-expected` but found `turn-actual`"
+                    .to_string(),
+                data: None,
+            },
+        };
 
-    assert_eq!(
-        active_turn_steer_race(&error),
-        Some(ActiveTurnSteerRace::ExpectedTurnMismatch {
-            actual_turn_id: "turn-actual".to_string(),
-        })
-    );
+        assert_eq!(
+            active_turn_steer_race(&error),
+            Some(ActiveTurnSteerRace::ExpectedTurnMismatch {
+                actual_turn_id: "turn-actual".to_string(),
+            })
+        );
+    }
 }
 
 #[test]

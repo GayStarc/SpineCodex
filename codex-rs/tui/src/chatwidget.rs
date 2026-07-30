@@ -640,6 +640,11 @@ pub(crate) struct ChatWidget {
     #[cfg(test)]
     pet_image_support_override: Option<crate::pets::PetImageSupport>,
     thread_id: Option<ThreadId>,
+    /// User input for this thread may only extend an already-active subagent turn.
+    ///
+    /// Such input must stay pending until the server accepts the steer; it must never be rendered
+    /// locally as a replacement turn.
+    steer_only_user_input: bool,
     last_spine_tree_snapshot: Option<SpineTreeUpdatedNotification>,
     live_spine_tree_cell: Option<history_cell::SpineTreeUpdateCell>,
     /// Nudge dismissals that should survive draft edits within the current thread scope.

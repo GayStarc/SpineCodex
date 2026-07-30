@@ -142,6 +142,18 @@ impl ChatWidget {
         true
     }
 
+    pub(crate) fn restore_pending_steer_to_composer(&mut self) -> bool {
+        let Some(pending_steer) = self.input_queue.pending_steers.pop_front() else {
+            return false;
+        };
+        self.restore_user_message_to_composer(user_message_for_restore(
+            pending_steer.user_message,
+            &pending_steer.history_record,
+        ));
+        self.refresh_pending_input_preview();
+        true
+    }
+
     /// Handle a turn aborted due to user interrupt (Esc), budget exhaustion,
     /// or review completion.
     /// When there are queued user messages, restore them into the composer
@@ -446,6 +458,13 @@ impl ChatWidget {
         }
         self.refresh_pending_input_preview();
         self.request_redraw();
+    }
+
+    pub(crate) fn settle_replay_only_thread_input_state(&mut self) {
+        self.turn_lifecycle.finish();
+        self.input_queue.user_turn_pending_start = false;
+        self.update_task_running_state();
+        self.refresh_pending_input_preview();
     }
 
     pub(crate) fn set_queue_autosend_suppressed(&mut self, suppressed: bool) {

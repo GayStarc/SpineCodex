@@ -814,6 +814,12 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::TurnSteerResponse,
     },
+    #[experimental("thread/subagent/steer")]
+    ThreadSubagentSteer => "thread/subagent/steer" {
+        params: v2::ThreadSubagentSteerParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadSubagentSteerResponse,
+    },
     TurnInterrupt => "turn/interrupt" {
         params: v2::TurnInterruptParams,
         serialization: thread_id(params.thread_id),
@@ -3524,6 +3530,21 @@ mod tests {
         };
         let reason = crate::experimental_api::ExperimentalApi::experimental_reason(&request);
         assert_eq!(reason, Some("mock/experimentalMethod"));
+    }
+
+    #[test]
+    fn thread_subagent_steer_is_marked_experimental() {
+        let request = ClientRequest::ThreadSubagentSteer {
+            request_id: RequestId::Integer(1),
+            params: v2::ThreadSubagentSteerParams {
+                thread_id: "thr_child".to_string(),
+                client_user_message_id: None,
+                input: Vec::new(),
+                expected_turn_id: "turn_child".to_string(),
+            },
+        };
+        let reason = crate::experimental_api::ExperimentalApi::experimental_reason(&request);
+        assert_eq!(reason, Some("thread/subagent/steer"));
     }
 
     #[test]

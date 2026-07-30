@@ -12,6 +12,8 @@ use crate::image_url::is_remote_image_url;
 
 const DIRECT_INPUT_TO_MULTI_AGENT_V2_SUBAGENT_ERROR: &str =
     "direct app-server input is not allowed for multi-agent v2 sub-agents";
+const SUBAGENT_STEER_TARGET_ERROR: &str =
+    "thread/subagent/steer requires a task-path thread-spawn sub-agent";
 const RESERVED_CODE_MODE_SPINE_CARRIER_MARKER: &str = "spine.code_mode.output.v1";
 const RESERVED_CODE_MODE_SPINE_CARRIER_INJECTION_ERROR: &str =
     "thread/inject_items cannot inject the host-reserved Spine carrier marker";
@@ -221,6 +223,17 @@ impl TurnRequestProcessor {
             .map(|response| Some(response.into()))
     }
 
+    pub(crate) async fn thread_subagent_steer(
+        &self,
+        request_id: &ConnectionRequestId,
+        params: ThreadSubagentSteerParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        validate_user_input_image_urls(&params.input)?;
+        self.thread_subagent_steer_inner(request_id, params)
+            .await
+            .map(|response| Some(response.into()))
+    }
+
     pub(crate) async fn turn_interrupt(
         &self,
         request_id: &ConnectionRequestId,
@@ -338,18 +351,46 @@ impl TurnRequestProcessor {
         request_id: &ConnectionRequestId,
         thread: &CodexThread,
     ) -> Result<(), JSONRPCErrorError> {
-        if thread.multi_agent_version() == Some(MultiAgentVersion::V2)
-            && matches!(
-                thread.config_snapshot().await.session_source,
-                SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
-            )
-        {
+        if Self::is_multi_agent_v2_thread_spawn_subagent(thread).await {
             let error = invalid_request(DIRECT_INPUT_TO_MULTI_AGENT_V2_SUBAGENT_ERROR);
             self.track_error_response(request_id, &error, /*error_type*/ None);
             return Err(error);
         }
 
         Ok(())
+    }
+
+    async fn ensure_subagent_steer_allowed(
+        &self,
+        request_id: &ConnectionRequestId,
+        thread: &CodexThread,
+    ) -> Result<(), JSONRPCErrorError> {
+        let session_source = &thread.config_snapshot().await.session_source;
+        if !Self::is_task_path_thread_spawn_source(session_source) {
+            let error = invalid_request(SUBAGENT_STEER_TARGET_ERROR);
+            self.track_error_response(request_id, &error, /*error_type*/ None);
+            return Err(error);
+        }
+
+        Ok(())
+    }
+
+    fn is_task_path_thread_spawn_source(session_source: &SessionSource) -> bool {
+        matches!(
+            session_source,
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                agent_path: Some(_),
+                ..
+            })
+        )
+    }
+
+    async fn is_multi_agent_v2_thread_spawn_subagent(thread: &CodexThread) -> bool {
+        thread.multi_agent_version() == Some(MultiAgentVersion::V2)
+            && matches!(
+                thread.config_snapshot().await.session_source,
+                SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
+            )
     }
 
     fn normalize_collaboration_mode(
@@ -879,6 +920,49 @@ impl TurnRequestProcessor {
         self.ensure_direct_input_allowed(request_id, thread.as_ref())
             .await?;
 
+        self.steer_loaded_thread(request_id, thread.as_ref(), params)
+            .await
+    }
+
+    async fn thread_subagent_steer_inner(
+        &self,
+        request_id: &ConnectionRequestId,
+        params: ThreadSubagentSteerParams,
+    ) -> Result<ThreadSubagentSteerResponse, JSONRPCErrorError> {
+        let (_, thread) = self
+            .load_thread(&params.thread_id)
+            .await
+            .inspect_err(|error| {
+                self.track_error_response(request_id, error, /*error_type*/ None);
+            })?;
+        self.ensure_subagent_steer_allowed(request_id, thread.as_ref())
+            .await?;
+
+        let response = self
+            .steer_loaded_thread(
+                request_id,
+                thread.as_ref(),
+                TurnSteerParams {
+                    thread_id: params.thread_id,
+                    client_user_message_id: params.client_user_message_id,
+                    input: params.input,
+                    responsesapi_client_metadata: None,
+                    additional_context: None,
+                    expected_turn_id: params.expected_turn_id,
+                },
+            )
+            .await?;
+        Ok(ThreadSubagentSteerResponse {
+            turn_id: response.turn_id,
+        })
+    }
+
+    async fn steer_loaded_thread(
+        &self,
+        request_id: &ConnectionRequestId,
+        thread: &CodexThread,
+        params: TurnSteerParams,
+    ) -> Result<TurnSteerResponse, JSONRPCErrorError> {
         if params.expected_turn_id.is_empty() {
             return Err(invalid_request("expectedTurnId must not be empty"));
         }
@@ -1466,4 +1550,39 @@ fn xcode_26_4_mcp_elicitations_auto_deny(
     // TODO: Remove this compatibility hack once Xcode 26.4 ages out.
     client_name == Some("Xcode")
         && client_version.is_some_and(|version| version.starts_with("26.4"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use codex_protocol::AgentPath;
+
+    #[test]
+    fn subagent_steer_target_requires_a_canonical_task_path() {
+        let parent_thread_id = ThreadId::new();
+        let task_path_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id,
+            depth: 1,
+            agent_path: Some(AgentPath::try_from("/root/worker").expect("valid agent path")),
+            agent_nickname: None,
+            agent_role: None,
+        });
+        let pathless_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id,
+            depth: 1,
+            agent_path: None,
+            agent_nickname: None,
+            agent_role: None,
+        });
+
+        assert!(TurnRequestProcessor::is_task_path_thread_spawn_source(
+            &task_path_source
+        ));
+        assert!(!TurnRequestProcessor::is_task_path_thread_spawn_source(
+            &pathless_source
+        ));
+        assert!(!TurnRequestProcessor::is_task_path_thread_spawn_source(
+            &SessionSource::Cli
+        ));
+    }
 }

@@ -662,7 +662,7 @@ fn active_turn_steer_race(error: &TypedRequestError) -> Option<ActiveTurnSteerRa
     let TypedRequestError::Server { method, source } = error else {
         return None;
     };
-    if method != "turn/steer" {
+    if !matches!(method.as_str(), "turn/steer" | "thread/subagent/steer") {
         return None;
     }
     if source.message == "no active turn to steer" {
