@@ -419,6 +419,18 @@ mod tests {
     }
 
     #[test]
+    fn accepts_exact_attachment_byte_limit() {
+        let attachments = [attachment(
+            "rollout-debug.jsonl.gz",
+            "application/gzip",
+            &vec![0; super::SPINE_FEEDBACK_MAX_ATTACHMENT_BYTES],
+        )];
+
+        super::validate_attachments(&attachments)
+            .expect("the documented attachment byte limit is inclusive");
+    }
+
+    #[test]
     fn rejects_note_over_byte_limit() {
         let attachments = valid_attachments();
         let note = "x".repeat(super::SPINE_FEEDBACK_MAX_NOTE_BYTES + 1);

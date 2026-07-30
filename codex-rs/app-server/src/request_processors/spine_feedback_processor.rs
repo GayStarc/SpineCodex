@@ -748,7 +748,18 @@ fn upload_result_to_response(
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::collections::HashSet;
+    use std::fs;
+    use std::fs::Metadata;
+    use std::fs::OpenOptions;
+    use std::io;
+    use std::io::BufRead;
+    use std::io::BufReader;
     use std::io::Read;
+    use std::io::Write;
+    use std::path::Path;
+    use std::path::PathBuf;
+    use std::time::SystemTime;
 
     use base64::Engine;
     use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
@@ -760,11 +771,303 @@ mod tests {
     use pretty_assertions::assert_eq;
     use serde_json::Value;
     use serde_json::json;
+    use sha2::Digest;
+    use sha2::Sha256;
     use tempfile::TempDir;
 
     use super::*;
 
     const SECRET: &str = "private-spine-feedback-secret";
+    const ACCEPTED_REAL_CORPUS_THREADS: usize = 24;
+    const ACCEPTED_REAL_CORPUS_DIRECT_CHILDREN: usize = 23;
+    const ACCEPTED_REAL_CORPUS_BYTES: u64 = 106_713_621;
+    const ACCEPTED_REAL_CORPUS_RECORDS: u64 = 35_612;
+    const STAGING_UUID_ROOT: &str = "01911111-1111-7111-8111-111111111111";
+    const STAGING_UUID_CHILD: &str = "01922222-2222-7222-8222-222222222222";
+    const STAGING_HOME_PATH: &str = "/home/spine-feedback-staging/private.rs";
+    const STAGING_DATA_PATH: &str = "/data/spine-feedback-staging/private.json";
+    const STAGING_HTTP_URL: &str = "https://staging.invalid/private?token=canary";
+    const STAGING_FILE_URL: &str = "file:///home/spine-feedback-staging/private.rs";
+    const STAGING_SECRET: &str = "spine-feedback-staging-secret-canary";
+    const STAGING_NONCE: &str = "v1";
+
+    #[derive(Debug)]
+    struct TestSessionFile {
+        thread_id: ThreadId,
+        parent_thread_id: Option<ThreadId>,
+        path: PathBuf,
+        metadata: TestFileMetadata,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct TestFileMetadata {
+        len: u64,
+        modified: SystemTime,
+    }
+
+    fn required_env_path(name: &str) -> PathBuf {
+        std::env::var_os(name)
+            .map(PathBuf::from)
+            .unwrap_or_else(|| panic!("{name} must be set for this ignored test"))
+    }
+
+    fn validation_temp_null_root() -> PathBuf {
+        let cachetree_root = std::env::var_os("CACHETREE_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .ancestors()
+                    .nth(5)
+                    .expect("app-server manifest must be nested under CacheTree")
+                    .to_path_buf()
+            });
+        cachetree_root
+            .join("temp/null")
+            .canonicalize()
+            .expect("CacheTree temp/null must exist")
+    }
+
+    fn validation_target_under(
+        temp_null_root: &Path,
+        requested_path: &Path,
+    ) -> io::Result<PathBuf> {
+        if !requested_path.is_absolute() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "validation output path must be absolute",
+            ));
+        }
+        let canonical_root = temp_null_root.canonicalize()?;
+        let requested_parent = requested_path.parent().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "validation output path must have a parent",
+            )
+        })?;
+        let canonical_parent = requested_parent.canonicalize()?;
+        if !canonical_parent.starts_with(&canonical_root) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "validation output must remain under CacheTree temp/null",
+            ));
+        }
+        let file_name = requested_path.file_name().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "validation output path must have a final component",
+            )
+        })?;
+        Ok(canonical_parent.join(file_name))
+    }
+
+    fn validation_output_file(requested_path: &Path) -> PathBuf {
+        validation_target_under(&validation_temp_null_root(), requested_path)
+            .expect("validation output file must be contained by CacheTree temp/null")
+    }
+
+    fn create_validation_output_dir_at(
+        temp_null_root: &Path,
+        requested_path: &Path,
+    ) -> io::Result<PathBuf> {
+        let output_dir = validation_target_under(temp_null_root, requested_path)?;
+        fs::create_dir(&output_dir)?;
+        Ok(output_dir)
+    }
+
+    fn create_validation_output_dir(requested_path: &Path) -> PathBuf {
+        create_validation_output_dir_at(&validation_temp_null_root(), requested_path)
+            .expect("staging output must be a new directory under CacheTree temp/null")
+    }
+
+    fn file_metadata(metadata: &Metadata) -> TestFileMetadata {
+        TestFileMetadata {
+            len: metadata.len(),
+            modified: metadata
+                .modified()
+                .expect("rollout source must expose modification time"),
+        }
+    }
+
+    fn source_metadata(path: &Path) -> TestFileMetadata {
+        let metadata = fs::metadata(path).expect("read rollout source metadata");
+        assert!(metadata.is_file(), "rollout source must be a regular file");
+        file_metadata(&metadata)
+    }
+
+    fn nested_parent_thread_id(value: &Value) -> Option<ThreadId> {
+        match value {
+            Value::Object(fields) => {
+                if let Some(Value::String(parent_thread_id)) = fields.get("parent_thread_id") {
+                    return ThreadId::from_string(parent_thread_id).ok();
+                }
+                fields.values().find_map(nested_parent_thread_id)
+            }
+            Value::Array(values) => values.iter().find_map(nested_parent_thread_id),
+            _ => None,
+        }
+    }
+
+    fn read_test_session_file(path: &Path) -> Option<TestSessionFile> {
+        let file = File::open(path).ok()?;
+        let mut reader = BufReader::new(file);
+        let mut first_line = String::new();
+        reader.read_line(&mut first_line).ok()?;
+        let record: Value = serde_json::from_str(&first_line).ok()?;
+        if record.get("type").and_then(Value::as_str) != Some("session_meta") {
+            return None;
+        }
+        let payload = record.get("payload")?;
+        let thread_id = payload
+            .get("id")
+            .and_then(Value::as_str)
+            .and_then(|value| ThreadId::from_string(value).ok())?;
+        let parent_thread_id = payload
+            .get("parent_thread_id")
+            .and_then(Value::as_str)
+            .and_then(|value| ThreadId::from_string(value).ok())
+            .or_else(|| payload.get("source").and_then(nested_parent_thread_id));
+        Some(TestSessionFile {
+            thread_id,
+            parent_thread_id,
+            path: path.to_path_buf(),
+            metadata: source_metadata(path),
+        })
+    }
+
+    fn collect_rollout_paths(directory: &Path, output: &mut Vec<PathBuf>) {
+        for entry in fs::read_dir(directory).expect("read sessions directory") {
+            let entry = entry.expect("read sessions directory entry");
+            let file_type = entry.file_type().expect("read sessions entry type");
+            if file_type.is_dir() {
+                collect_rollout_paths(&entry.path(), output);
+            } else if file_type.is_file() {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if name.starts_with("rollout-") && name.ends_with(".jsonl") {
+                    output.push(entry.path());
+                }
+            }
+        }
+    }
+
+    fn discover_real_corpus(root_path: &Path, sessions_root: &Path) -> Vec<TestSessionFile> {
+        let root = read_test_session_file(root_path).expect("root rollout must be valid");
+        let root_thread_id = root.thread_id;
+        let mut paths = Vec::new();
+        collect_rollout_paths(sessions_root, &mut paths);
+        paths.sort();
+
+        let mut by_id = HashMap::new();
+        for path in paths {
+            let Some(session) = read_test_session_file(&path) else {
+                continue;
+            };
+            assert!(
+                by_id.insert(session.thread_id, session).is_none(),
+                "duplicate rollout thread id"
+            );
+        }
+        by_id.entry(root_thread_id).or_insert(root);
+
+        let mut children = HashMap::<ThreadId, Vec<ThreadId>>::new();
+        for session in by_id.values() {
+            if let Some(parent_thread_id) = session.parent_thread_id {
+                children
+                    .entry(parent_thread_id)
+                    .or_default()
+                    .push(session.thread_id);
+            }
+        }
+        for child_ids in children.values_mut() {
+            child_ids.sort_unstable_by_key(ToString::to_string);
+        }
+
+        let mut pending = vec![root_thread_id];
+        let mut seen = HashSet::new();
+        while let Some(thread_id) = pending.pop() {
+            assert!(seen.insert(thread_id), "cycle in rollout thread tree");
+            if let Some(child_ids) = children.get(&thread_id) {
+                pending.extend(child_ids.iter().rev().copied());
+            }
+        }
+
+        let mut descendants = seen
+            .into_iter()
+            .filter(|thread_id| *thread_id != root_thread_id)
+            .collect::<Vec<_>>();
+        descendants.sort_unstable_by_key(ToString::to_string);
+        let mut ordered_ids = Vec::with_capacity(descendants.len() + 1);
+        ordered_ids.push(root_thread_id);
+        ordered_ids.extend(descendants);
+        ordered_ids
+            .into_iter()
+            .map(|thread_id| {
+                by_id
+                    .remove(&thread_id)
+                    .expect("discovered rollout must remain indexed")
+            })
+            .collect()
+    }
+
+    fn count_source_records(path: &Path) -> u64 {
+        let file = File::open(path).expect("open rollout source for record count");
+        let mut reader = BufReader::new(file);
+        let mut line = Vec::new();
+        let mut count = 0_u64;
+        loop {
+            line.clear();
+            let read = reader
+                .read_until(b'\n', &mut line)
+                .expect("count rollout source records");
+            if read == 0 {
+                return count;
+            }
+            count = count.saturating_add(1);
+        }
+    }
+
+    fn create_new_file(path: &Path, bytes: &[u8]) {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .expect("create validation output without overwriting");
+        file.write_all(bytes).expect("write validation output");
+        file.flush().expect("flush validation output");
+    }
+
+    fn checkerboard_png() -> Vec<u8> {
+        let image = ImageBuffer::from_fn(8, 8, |x, y| {
+            if (x + y) % 2 == 0 {
+                Rgba([18, 52, 86, 255])
+            } else {
+                Rgba([240, 220, 200, 255])
+            }
+        });
+        let mut bytes = Cursor::new(Vec::new());
+        DynamicImage::ImageRgba8(image)
+            .write_to(&mut bytes, ImageFormat::Png)
+            .expect("encode checkerboard PNG");
+        bytes.into_inner()
+    }
+
+    fn encode_jsonl(records: &[Value]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        for record in records {
+            serde_json::to_writer(&mut bytes, record).expect("serialize synthetic rollout record");
+            bytes.push(b'\n');
+        }
+        bytes
+    }
+
+    fn assert_line_has_no_private_patterns(line: &str) {
+        for pattern in ["/home/", "/data/", "http://", "https://", "file://"] {
+            assert!(
+                !line.contains(pattern),
+                "rollout debug line leaked a private pattern"
+            );
+        }
+    }
 
     fn thread_id(index: u8) -> ThreadId {
         ThreadId::from_string(&format!("01900000-0000-7000-8000-{index:012x}"))
@@ -1150,5 +1453,432 @@ mod tests {
         .expect("deserialize params");
         assert_eq!(params.note, None);
         assert!(params.screenshots.is_empty());
+    }
+
+    #[test]
+    fn validation_output_paths_require_canonical_temp_null_containment() {
+        let workspace = TempDir::new().expect("create validation path workspace");
+        let temp_null = workspace.path().join("temp/null");
+        let valid_parent = temp_null.join("valid");
+        let escaped_parent = workspace.path().join("temp/outside");
+        fs::create_dir_all(&valid_parent).expect("create valid validation parent");
+        fs::create_dir_all(&escaped_parent).expect("create escaped validation parent");
+
+        let valid = validation_target_under(&temp_null, &valid_parent.join("report.json"))
+            .expect("accept a canonically contained output");
+        assert_eq!(
+            valid,
+            valid_parent
+                .canonicalize()
+                .expect("canonicalize valid parent")
+                .join("report.json")
+        );
+
+        let escaped = temp_null.join("../outside/report.json");
+        assert!(
+            validation_target_under(&temp_null, &escaped).is_err(),
+            "a lexical temp/null prefix must not permit .. escape"
+        );
+        assert!(
+            validation_target_under(&temp_null, Path::new("relative/report.json")).is_err(),
+            "validation output paths must be absolute"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn validation_output_path_rejects_temp_null_symlink_escape() {
+        use std::os::unix::fs::symlink;
+
+        let workspace = TempDir::new().expect("create symlink validation workspace");
+        let temp_null = workspace.path().join("temp/null");
+        let outside = workspace.path().join("outside");
+        fs::create_dir_all(&temp_null).expect("create temp/null root");
+        fs::create_dir(&outside).expect("create outside directory");
+        symlink(&outside, temp_null.join("escape")).expect("create escape symlink");
+
+        assert!(
+            validation_target_under(&temp_null, &temp_null.join("escape/report.json")).is_err(),
+            "a symlinked parent must not escape canonical temp/null"
+        );
+    }
+
+    #[test]
+    fn staging_validation_output_requires_absent_directory() {
+        let workspace = TempDir::new().expect("create staging validation workspace");
+        let temp_null = workspace.path().join("temp/null");
+        fs::create_dir_all(&temp_null).expect("create temp/null root");
+        let output_dir = temp_null.join("staging");
+
+        let created = create_validation_output_dir_at(&temp_null, &output_dir)
+            .expect("create a fresh staging output directory");
+        assert_eq!(
+            created,
+            temp_null
+                .canonicalize()
+                .expect("canonicalize temp/null root")
+                .join("staging")
+        );
+        assert!(
+            create_validation_output_dir_at(&temp_null, &output_dir).is_err(),
+            "an existing staging output directory must be rejected"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires the private accepted 24-thread rollout corpus"]
+    fn real_corpus_bundle_matches_accepted_structure_and_privacy() {
+        let root_path = required_env_path("SPINE_FEEDBACK_REAL_CORPUS_ROOT");
+        let sessions_root = required_env_path("SPINE_FEEDBACK_REAL_CORPUS_SESSIONS_ROOT");
+        let output_path =
+            validation_output_file(&required_env_path("SPINE_FEEDBACK_REAL_CORPUS_OUTPUT"));
+
+        let corpus = discover_real_corpus(&root_path, &sessions_root);
+        assert_eq!(corpus.len(), ACCEPTED_REAL_CORPUS_THREADS);
+        let root_thread_id = corpus[0].thread_id;
+        assert_eq!(
+            corpus[0].parent_thread_id, None,
+            "accepted corpus root changed"
+        );
+        assert_eq!(
+            corpus
+                .iter()
+                .filter(|session| session.parent_thread_id == Some(root_thread_id))
+                .count(),
+            ACCEPTED_REAL_CORPUS_DIRECT_CHILDREN
+        );
+        assert!(
+            corpus[1..]
+                .iter()
+                .all(|session| session.parent_thread_id == Some(root_thread_id)),
+            "accepted corpus topology changed"
+        );
+
+        let raw_bytes = corpus
+            .iter()
+            .map(|session| session.metadata.len)
+            .sum::<u64>();
+        assert_eq!(raw_bytes, ACCEPTED_REAL_CORPUS_BYTES);
+        let source_records = corpus
+            .iter()
+            .map(|session| count_source_records(&session.path))
+            .sum::<u64>();
+        assert_eq!(source_records, ACCEPTED_REAL_CORPUS_RECORDS);
+
+        let before = corpus
+            .iter()
+            .map(|session| (session.path.clone(), session.metadata.clone()))
+            .collect::<Vec<_>>();
+        let parents = corpus
+            .iter()
+            .filter_map(|session| {
+                session
+                    .parent_thread_id
+                    .map(|parent_thread_id| (session.thread_id, parent_thread_id))
+            })
+            .collect::<HashMap<_, _>>();
+        let raw_thread_ids = corpus
+            .iter()
+            .map(|session| session.thread_id.to_string())
+            .collect::<Vec<_>>();
+        let captures = corpus
+            .iter()
+            .map(|session| {
+                let source = open_rollout_source(&session.path);
+                assert!(
+                    matches!(&source, CapturedSource::Ready { .. }),
+                    "accepted rollout source must remain ready"
+                );
+                CapturedThread {
+                    thread_id: session.thread_id,
+                    source,
+                }
+            })
+            .collect::<Vec<_>>();
+
+        let bundle = build_rollout_debug_attachment(
+            root_thread_id,
+            captures,
+            parents,
+            SPINE_FEEDBACK_MAX_ATTACHMENT_BYTES,
+            MAX_SOURCE_LINE_BYTES,
+        )
+        .expect("build accepted real-corpus attachment");
+        assert!(bundle.len() < SPINE_FEEDBACK_MAX_ATTACHMENT_BYTES);
+
+        let mut reader = BufReader::new(GzDecoder::new(bundle.as_slice()));
+        let mut line = String::new();
+        reader
+            .read_line(&mut line)
+            .expect("read rollout debug manifest");
+        let manifest: Value = serde_json::from_str(&line).expect("parse rollout debug manifest");
+        assert_eq!(manifest["record_type"], "manifest");
+        assert_eq!(manifest["schema"], ROLLOUT_DEBUG_SCHEMA);
+        assert_eq!(manifest["thread_count"], ACCEPTED_REAL_CORPUS_THREADS);
+        let manifest_threads = manifest["threads"]
+            .as_array()
+            .expect("manifest threads must be an array");
+        assert_eq!(manifest_threads.len(), ACCEPTED_REAL_CORPUS_THREADS);
+        assert_eq!(
+            manifest_threads
+                .iter()
+                .filter(|thread| thread["parent"]["state"] == "root")
+                .count(),
+            1
+        );
+        assert_eq!(
+            manifest_threads
+                .iter()
+                .filter(|thread| {
+                    thread["parent"]["state"] == "known" && thread["parent"]["thread_local_id"] == 0
+                })
+                .count(),
+            ACCEPTED_REAL_CORPUS_DIRECT_CHILDREN
+        );
+        assert_eq!(
+            manifest_threads
+                .iter()
+                .map(|thread| {
+                    assert_eq!(thread["source"]["state"], "ready");
+                    thread["source"]["captured_bytes"]
+                        .as_u64()
+                        .expect("captured byte count")
+                })
+                .sum::<u64>(),
+            ACCEPTED_REAL_CORPUS_BYTES
+        );
+        assert_line_has_no_private_patterns(&line);
+        for raw_thread_id in &raw_thread_ids {
+            assert!(
+                !line.contains(raw_thread_id),
+                "manifest leaked a raw thread id"
+            );
+        }
+
+        let mut expected_ordinals = HashMap::<u64, u64>::new();
+        let mut emitted_records = 0_u64;
+        loop {
+            line.clear();
+            if reader
+                .read_line(&mut line)
+                .expect("read rollout debug record")
+                == 0
+            {
+                break;
+            }
+            assert_line_has_no_private_patterns(&line);
+            for raw_thread_id in &raw_thread_ids {
+                assert!(
+                    !line.contains(raw_thread_id),
+                    "record leaked a raw thread id"
+                );
+            }
+            let record: Value =
+                serde_json::from_str(&line).expect("parse rollout debug thread record");
+            assert_eq!(record["record_type"], "thread_record");
+            let local_id = record["thread_local_id"].as_u64().expect("thread local id");
+            let ordinal = record["ordinal"].as_u64().expect("record ordinal");
+            let expected = expected_ordinals.entry(local_id).or_default();
+            assert_eq!(ordinal, *expected, "record ordinals must remain contiguous");
+            *expected = expected.saturating_add(1);
+            assert!(
+                !matches!(
+                    record["item"]["record_type"].as_str(),
+                    Some("unknown_redacted" | "malformed_redacted" | "oversized_redacted")
+                ),
+                "accepted corpus unexpectedly emitted a positional placeholder"
+            );
+            emitted_records = emitted_records.saturating_add(1);
+        }
+        assert_eq!(emitted_records, ACCEPTED_REAL_CORPUS_RECORDS);
+
+        create_new_file(&output_path, &bundle);
+
+        for (path, expected) in before {
+            assert_eq!(
+                source_metadata(&path),
+                expected,
+                "real-corpus validation must not mutate rollout sources"
+            );
+        }
+
+        let digest = Sha256::digest(&bundle);
+        println!(
+            "real-corpus package sha256={digest:x} bytes={} threads={} records={emitted_records}",
+            bundle.len(),
+            ACCEPTED_REAL_CORPUS_THREADS
+        );
+    }
+
+    #[test]
+    #[ignore = "performs one explicit synthetic upload to the SpineCodex Sentry project"]
+    fn spine_feedback_staging_upload() {
+        assert!(
+            matches!(std::env::var("SPINE_FEEDBACK_STAGING").as_deref(), Ok("1")),
+            "SPINE_FEEDBACK_STAGING=1 is required for this ignored test"
+        );
+        let output_dir =
+            create_validation_output_dir(&required_env_path("SPINE_FEEDBACK_STAGING_OUTPUT"));
+        let synthetic_dir = output_dir.join("synthetic-source");
+        fs::create_dir(&synthetic_dir).expect("create owned synthetic source directory");
+
+        let root_thread_id =
+            ThreadId::from_string(STAGING_UUID_ROOT).expect("valid staging root thread id");
+        let child_thread_id =
+            ThreadId::from_string(STAGING_UUID_CHILD).expect("valid staging child thread id");
+        let root_records = encode_jsonl(&[
+            json!({
+                "timestamp": STAGING_SECRET,
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "id": STAGING_UUID_ROOT,
+                    "role": "user",
+                    "content": [{
+                        "type": "input_text",
+                        "text": format!(
+                            "{STAGING_SECRET} {STAGING_HOME_PATH} {STAGING_HTTP_URL}"
+                        )
+                    }]
+                }
+            }),
+            json!({
+                "timestamp": STAGING_SECRET,
+                "type": "event_msg",
+                "payload": {
+                    "type": "user_message",
+                    "message": format!("{STAGING_DATA_PATH} {STAGING_FILE_URL}")
+                }
+            }),
+        ]);
+        let child_records = encode_jsonl(&[json!({
+            "timestamp": STAGING_SECRET,
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "id": STAGING_UUID_CHILD,
+                "role": "assistant",
+                "content": [{
+                    "type": "output_text",
+                    "text": format!(
+                        "{STAGING_SECRET} {STAGING_HOME_PATH} {STAGING_DATA_PATH}"
+                    )
+                }]
+            }
+        })]);
+        let root_source_path = synthetic_dir.join("root.jsonl");
+        let child_source_path = synthetic_dir.join("child.jsonl");
+        create_new_file(&root_source_path, &root_records);
+        create_new_file(&child_source_path, &child_records);
+        let root_source = open_rollout_source(&root_source_path);
+        let child_source = open_rollout_source(&child_source_path);
+        assert!(matches!(&root_source, CapturedSource::Ready { .. }));
+        assert!(matches!(&child_source, CapturedSource::Ready { .. }));
+
+        let bundle = build_rollout_debug_attachment(
+            root_thread_id,
+            vec![
+                CapturedThread {
+                    thread_id: root_thread_id,
+                    source: root_source,
+                },
+                CapturedThread {
+                    thread_id: child_thread_id,
+                    source: child_source,
+                },
+            ],
+            HashMap::from([(child_thread_id, root_thread_id)]),
+            SPINE_FEEDBACK_MAX_ATTACHMENT_BYTES,
+            MAX_SOURCE_LINE_BYTES,
+        )
+        .expect("build synthetic staging attachment");
+        let mut decoded = String::new();
+        GzDecoder::new(bundle.as_slice())
+            .read_to_string(&mut decoded)
+            .expect("decode synthetic staging attachment");
+        let decoded_lines = decoded
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).expect("parse staging debug line"))
+            .collect::<Vec<_>>();
+        assert_eq!(decoded_lines.len(), 4);
+        assert_eq!(decoded_lines[0]["record_type"], "manifest");
+        assert_eq!(decoded_lines[0]["thread_count"], 2);
+        assert_eq!(decoded_lines[0]["threads"][0]["parent"]["state"], "root");
+        assert_eq!(decoded_lines[0]["threads"][1]["parent"]["state"], "known");
+        assert_eq!(
+            decoded_lines[0]["threads"][1]["parent"]["thread_local_id"],
+            0
+        );
+        for canary in [
+            STAGING_UUID_ROOT,
+            STAGING_UUID_CHILD,
+            STAGING_HOME_PATH,
+            STAGING_DATA_PATH,
+            STAGING_HTTP_URL,
+            STAGING_FILE_URL,
+            STAGING_SECRET,
+            "/home/",
+            "/data/",
+            "http://",
+            "https://",
+            "file://",
+        ] {
+            assert!(
+                !decoded.contains(canary),
+                "synthetic staging bundle leaked a canary class"
+            );
+        }
+
+        let screenshots = normalize_screenshots(vec![SpineFeedbackScreenshot {
+            png_base64: BASE64_STANDARD.encode(checkerboard_png()),
+        }])
+        .expect("normalize staging checkerboard");
+        assert_eq!(screenshots.len(), 1);
+        let screenshot = screenshots[0].buffer.clone();
+        let rollout_path = output_dir.join(SPINE_ROLLOUT_DEBUG_ATTACHMENT_FILENAME);
+        let screenshot_path = output_dir.join(SCREENSHOT_FILENAMES[0]);
+        create_new_file(&rollout_path, &bundle);
+        create_new_file(&screenshot_path, &screenshot);
+
+        let mut attachments = vec![FeedbackAttachment {
+            filename: SPINE_ROLLOUT_DEBUG_ATTACHMENT_FILENAME.to_string(),
+            content_type: Some(ROLLOUT_DEBUG_CONTENT_TYPE.to_string()),
+            buffer: bundle,
+        }];
+        attachments.extend(screenshots);
+        let note = format!("Spine feedback staging validation {STAGING_NONCE}");
+        let report_id = upload_spine_feedback(SpineFeedbackUpload {
+            note: Some(&note),
+            attachments: &attachments,
+        })
+        .expect("submit synthetic Spine feedback staging report");
+        assert_eq!(report_id.len(), 32);
+        assert!(report_id.bytes().all(|byte| byte.is_ascii_hexdigit()));
+
+        println!(
+            "staging report_id={report_id} rollout_bytes={} screenshot_bytes={}",
+            attachments[0].buffer.len(),
+            screenshot.len()
+        );
+
+        let receipt = json!({
+            "schema": "spine.feedback.staging-receipt.v1",
+            "report_id": &report_id,
+            "attachments": attachments
+                .iter()
+                .map(|attachment| json!({
+                    "filename": attachment.filename.as_str(),
+                    "bytes": attachment.buffer.len(),
+                }))
+                .collect::<Vec<_>>(),
+            "local_privacy": {
+                "canary_classes_absent": true,
+                "checked": ["thread_uuid", "absolute_path", "http_url", "file_url", "secret"],
+            },
+            "synthetic_source_recyclable": true,
+            "sentry_ui_verification_required": true,
+        });
+        let receipt_bytes = serde_json::to_vec_pretty(&receipt).expect("serialize staging receipt");
+        create_new_file(&output_dir.join("receipt.json"), &receipt_bytes);
     }
 }

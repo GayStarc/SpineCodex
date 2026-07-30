@@ -148,6 +148,7 @@ Codex CLI or the official `@openai/codex` npm package.
 - [Issues](https://github.com/GhabiX/SpineCodex/issues)
 - [Contributing](./docs/contributing.md)
 - [Installing and building from source](./docs/install.md)
+- [Spine feedback and privacy](./docs/spine-feedback.md)
 - [Upstream Codex documentation](https://developers.openai.com/codex)
 
 SpineCodex is licensed under the [Apache-2.0 License](LICENSE). OpenAI Codex
