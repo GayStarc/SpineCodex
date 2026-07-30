@@ -3,6 +3,7 @@ use codex_config::config_toml::ConfigLockfileToml;
 use codex_config::config_toml::ConfigToml;
 use codex_config::config_toml::OrchestratorFeatureToml;
 use codex_config::config_toml::OrchestratorToml;
+use codex_config::config_toml::SpineSpawnConfigToml;
 use codex_config::types::MemoriesToml;
 use codex_features::CurrentTimeReminderConfigToml;
 use codex_features::Feature;
@@ -10,7 +11,6 @@ use codex_features::FeatureToml;
 use codex_features::FeaturesToml;
 use codex_features::MultiAgentV2ConfigToml;
 use codex_features::RolloutBudgetConfigToml;
-use codex_features::SpineSpawnConfigToml;
 use codex_features::TokenBudgetConfigToml;
 use codex_protocol::ThreadId;
 
@@ -154,10 +154,10 @@ fn save_config_resolved_fields(
         resolved_config_to_toml(&config.multi_agent_v2, "features.multi_agent_v2")?;
     multi_agent_v2.enabled = Some(config.features.enabled(Feature::MultiAgentV2));
     features.multi_agent_v2 = Some(FeatureToml::Config(multi_agent_v2));
-    let mut spine_spawn: SpineSpawnConfigToml =
-        resolved_config_to_toml(&config.spine_spawn, "features.spine_spawn")?;
-    spine_spawn.enabled = Some(config.features.enabled(Feature::SpineSpawn));
-    features.spine_spawn = Some(FeatureToml::Config(spine_spawn));
+    lock_config.spine_spawn = Some(resolved_config_to_toml::<SpineSpawnConfigToml>(
+        &config.spine_spawn,
+        "spine_spawn",
+    )?);
     if let Some(token_budget) = config.token_budget.as_ref() {
         let mut token_budget: TokenBudgetConfigToml =
             resolved_config_to_toml(token_budget, "features.token_budget")?;
@@ -344,11 +344,10 @@ mod tests {
         ));
 
         assert_eq!(
-            features.spine_spawn,
-            Some(FeatureToml::Config(SpineSpawnConfigToml {
-                enabled: Some(true),
+            lock.spine_spawn,
+            Some(SpineSpawnConfigToml {
                 max_concurrent_threads_per_session: Some(6),
-            }))
+            })
         );
 
         assert_eq!(

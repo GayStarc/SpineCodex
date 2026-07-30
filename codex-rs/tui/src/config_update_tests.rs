@@ -64,16 +64,27 @@ fn disabling_default_disabled_spine_spawn_clears_the_override() {
 }
 
 #[test]
-fn spine_spawn_settings_use_one_structured_upsert() {
+fn spine_spawn_settings_use_a_boolean_feature_and_rebuild_the_top_level_table() {
     assert_eq!(
-        build_spine_spawn_settings_edit(/*enabled*/ false, /*max_threads*/ 10),
-        ConfigEdit {
-            key_path: "features.spine_spawn".to_string(),
-            value: serde_json::json!({
-                "enabled": false,
-                "max_concurrent_threads_per_session": 10,
-            }),
-            merge_strategy: MergeStrategy::Upsert,
-        }
+        build_spine_spawn_settings_edits(/*enabled*/ true, /*max_threads*/ 10),
+        vec![
+            ConfigEdit {
+                key_path: "features.spine_spawn".to_string(),
+                value: serde_json::json!(true),
+                merge_strategy: MergeStrategy::Replace,
+            },
+            ConfigEdit {
+                key_path: "spine_spawn".to_string(),
+                value: serde_json::Value::Null,
+                merge_strategy: MergeStrategy::Replace,
+            },
+            ConfigEdit {
+                key_path: "spine_spawn".to_string(),
+                value: serde_json::json!({
+                    "max_concurrent_threads_per_session": 10,
+                }),
+                merge_strategy: MergeStrategy::Replace,
+            },
+        ]
     );
 }

@@ -507,7 +507,7 @@ impl App {
             feature_updates_to_apply.push((feature, effective_enabled));
             config_edits.extend(feature_edits);
             if feature == Feature::SpineSpawn {
-                config_edits.push(crate::config_update::build_spine_spawn_settings_edit(
+                config_edits.extend(crate::config_update::build_spine_spawn_settings_edits(
                     effective_enabled,
                     next_config.spine_spawn.max_concurrent_threads_per_session,
                 ));
@@ -1149,14 +1149,12 @@ fn spine_spawn_max_threads_from_effective_config(effective_config: &ConfigReadRe
     effective_config
         .config
         .additional
-        .get("features")
-        .and_then(features_toml_from_json)
-        .and_then(|features| match features.spine_spawn {
-            Some(codex_features::FeatureToml::Config(config)) => {
-                config.max_concurrent_threads_per_session
-            }
-            Some(codex_features::FeatureToml::Enabled(_)) | None => None,
+        .get("spine_spawn")
+        .and_then(|value| {
+            serde_json::from_value::<codex_config::config_toml::SpineSpawnConfigToml>(value.clone())
+                .ok()
         })
+        .and_then(|config| config.max_concurrent_threads_per_session)
         .unwrap_or_else(|| {
             crate::legacy_core::config::SpineSpawnConfig::default()
                 .max_concurrent_threads_per_session
@@ -1230,6 +1228,31 @@ mod tests {
     use crossterm::event::KeyEvent;
     use pretty_assertions::assert_eq;
     use tempfile::tempdir;
+
+    #[test]
+    fn spine_spawn_quota_reads_from_top_level_effective_config() -> Result<()> {
+        let effective_config: ConfigReadResponse = serde_json::from_value(serde_json::json!({
+            "config": {
+                "features": {
+                    "spine_spawn": false,
+                },
+                "spine_spawn": {
+                    "max_concurrent_threads_per_session": 7,
+                },
+            },
+            "origins": {},
+        }))?;
+
+        assert_eq!(
+            spine_spawn_max_threads_from_effective_config(&effective_config),
+            7
+        );
+        assert!(!feature_enabled_from_effective_config(
+            &effective_config,
+            Feature::SpineSpawn
+        ));
+        Ok(())
+    }
 
     #[tokio::test]
     async fn update_reasoning_effort_updates_collaboration_mode() {

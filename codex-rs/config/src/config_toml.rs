@@ -148,6 +148,15 @@ pub struct OrchestratorFeatureToml {
     pub enabled: Option<bool>,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SpineSpawnConfigToml {
+    /// Maximum concurrent threads in one SpineSpawn session, including the root thread.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1))]
+    pub max_concurrent_threads_per_session: Option<usize>,
+}
+
 /// Base config deserialized from ~/.codex/config.toml.
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, JsonSchema)]
 #[schemars(deny_unknown_fields)]
@@ -438,6 +447,9 @@ pub struct ConfigToml {
 
     /// Agent-related settings (thread limits, etc.).
     pub agents: Option<AgentsToml>,
+
+    /// Settings for child threads created through `spine.spawn`.
+    pub spine_spawn: Option<SpineSpawnConfigToml>,
 
     /// Memories subsystem settings.
     pub memories: Option<MemoriesToml>,

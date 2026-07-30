@@ -3253,13 +3253,13 @@ async fn open_agent_picker_prompts_to_enable_multi_agent_when_disabled() -> Resu
 }
 
 #[tokio::test]
-async fn update_spine_spawn_settings_persists_structured_static_config() -> Result<()> {
+async fn update_spine_spawn_settings_persists_native_compatible_config() -> Result<()> {
     let (mut app, _app_event_rx, mut op_rx) = Box::pin(make_test_app_with_channels()).await;
     let codex_home = tempdir()?;
     app.config.codex_home = codex_home.path().to_path_buf().abs();
     std::fs::write(
         codex_home.path().join("config.toml"),
-        "[features]\nspine_spawn = true\n",
+        "spine_spawn = { max_concurrent_threads_per_session = 10 }\n\n[features]\nspine_spawn = true\n",
     )?;
     let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(&app.config)).await?;
 
@@ -3287,15 +3287,28 @@ async fn update_spine_spawn_settings_persists_structured_static_config() -> Resu
     );
 
     let config = std::fs::read_to_string(codex_home.path().join("config.toml"))?;
+    assert!(
+        config.contains("[spine_spawn]\n"),
+        "SpineSpawn settings must use an explicit top-level TOML table, got:\n{config}"
+    );
+    assert!(
+        !config.contains("spine_spawn = {"),
+        "SpineSpawn settings must not use an inline TOML table, got:\n{config}"
+    );
     let config_value = toml::from_str::<TomlValue>(&config)?;
-    let spine_spawn = config_value
+    let root = config_value
         .as_table()
-        .and_then(|table| table.get("features"))
+        .expect("config should be a TOML table");
+    assert_eq!(
+        root.get("features")
+            .and_then(TomlValue::as_table)
+            .and_then(|features| features.get("spine_spawn")),
+        Some(&TomlValue::Boolean(true))
+    );
+    let spine_spawn = root
+        .get("spine_spawn")
         .and_then(TomlValue::as_table)
-        .and_then(|features| features.get("spine_spawn"))
-        .and_then(TomlValue::as_table)
-        .expect("SpineSpawn bool should be upgraded to a table");
-    assert_eq!(spine_spawn.get("enabled"), Some(&TomlValue::Boolean(true)));
+        .expect("SpineSpawn inline config should be rewritten as an explicit top-level table");
     assert_eq!(
         spine_spawn.get("max_concurrent_threads_per_session"),
         Some(&TomlValue::Integer(10))

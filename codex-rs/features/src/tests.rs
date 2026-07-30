@@ -97,34 +97,21 @@ fn spine_spawn_is_experimental_disabled_by_default_and_explicitly_enableable() {
 }
 
 #[test]
-fn spine_spawn_feature_config_deserializes_boolean_toggle_and_table() {
+fn spine_spawn_feature_deserializes_as_a_boolean_toggle() {
     let enabled: FeaturesToml =
         toml::from_str("spine_spawn = true").expect("boolean feature should deserialize");
     assert_eq!(
         enabled.entries(),
         BTreeMap::from([("spine_spawn".to_string(), true)])
     );
-    assert_eq!(enabled.spine_spawn, Some(FeatureToml::Enabled(true)));
 
-    let configured: FeaturesToml = toml::from_str(
+    let configured = toml::from_str::<FeaturesToml>(
         r#"
 [spine_spawn]
-enabled = true
 max_concurrent_threads_per_session = 6
 "#,
-    )
-    .expect("structured feature should deserialize");
-    assert_eq!(
-        configured.entries(),
-        BTreeMap::from([("spine_spawn".to_string(), true)])
     );
-    assert_eq!(
-        configured.spine_spawn,
-        Some(FeatureToml::Config(crate::SpineSpawnConfigToml {
-            enabled: Some(true),
-            max_concurrent_threads_per_session: Some(6),
-        }))
-    );
+    assert!(configured.is_err(), "feature values must remain boolean");
 }
 
 #[test]
@@ -793,10 +780,6 @@ fn materialize_resolved_enabled_writes_all_features_and_preserves_custom_config(
             min_wait_timeout_ms: Some(2500),
             ..Default::default()
         })),
-        spine_spawn: Some(FeatureToml::Config(crate::SpineSpawnConfigToml {
-            enabled: Some(false),
-            max_concurrent_threads_per_session: Some(6),
-        })),
         network_proxy: Some(FeatureToml::Config(crate::NetworkProxyConfigToml {
             enabled: Some(false),
             proxy_url: Some("http://127.0.0.1:43128".to_string()),
@@ -823,13 +806,6 @@ fn materialize_resolved_enabled_writes_all_features_and_preserves_custom_config(
             enabled: Some(true),
             min_wait_timeout_ms: Some(2500),
             ..Default::default()
-        }))
-    );
-    assert_eq!(
-        features_toml.spine_spawn,
-        Some(FeatureToml::Config(crate::SpineSpawnConfigToml {
-            enabled: Some(true),
-            max_concurrent_threads_per_session: Some(6),
         }))
     );
     assert_eq!(

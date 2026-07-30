@@ -68,7 +68,6 @@ use codex_features::Features;
 use codex_features::FeaturesToml;
 use codex_features::MultiAgentV2ConfigToml;
 use codex_features::NetworkProxyConfigToml;
-use codex_features::SpineSpawnConfigToml;
 use codex_features::TokenBudgetConfigToml;
 use codex_git_utils::resolve_root_git_project_for_trust;
 use codex_http_client::HttpClientFactory;
@@ -2582,7 +2581,9 @@ fn resolve_multi_agent_v2_config(config_toml: &ConfigToml) -> MultiAgentV2Config
 
 fn resolve_spine_spawn_config(config_toml: &ConfigToml) -> SpineSpawnConfig {
     SpineSpawnConfig {
-        max_concurrent_threads_per_session: spine_spawn_toml_config(config_toml.features.as_ref())
+        max_concurrent_threads_per_session: config_toml
+            .spine_spawn
+            .as_ref()
             .and_then(|config| config.max_concurrent_threads_per_session)
             .unwrap_or(DEFAULT_MULTI_AGENT_V2_MAX_CONCURRENT_THREADS_PER_SESSION),
     }
@@ -2777,13 +2778,6 @@ fn code_mode_toml_config(features: Option<&FeaturesToml>) -> Option<&CodeModeCon
 
 fn multi_agent_v2_toml_config(features: Option<&FeaturesToml>) -> Option<&MultiAgentV2ConfigToml> {
     match features?.multi_agent_v2.as_ref()? {
-        FeatureToml::Enabled(_) => None,
-        FeatureToml::Config(config) => Some(config),
-    }
-}
-
-fn spine_spawn_toml_config(features: Option<&FeaturesToml>) -> Option<&SpineSpawnConfigToml> {
-    match features?.spine_spawn.as_ref()? {
         FeatureToml::Enabled(_) => None,
         FeatureToml::Config(config) => Some(config),
     }
