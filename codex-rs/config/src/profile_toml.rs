@@ -3,7 +3,6 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
 
-use crate::config_toml::SpineSpawnConfigToml;
 use crate::config_toml::ToolsToml;
 use crate::types::AnalyticsConfigToml;
 use crate::types::ApprovalsReviewer;
@@ -68,8 +67,6 @@ pub struct ConfigProfile {
     // Injects known feature keys into the schema and forbids unknown keys.
     #[schemars(schema_with = "crate::schema::features_schema")]
     pub features: Option<FeaturesToml>,
-    /// Settings for child threads created through `spine.spawn`.
-    pub spine_spawn: Option<SpineSpawnConfigToml>,
     pub oss_provider: Option<String>,
 }
 

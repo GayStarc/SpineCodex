@@ -10327,37 +10327,6 @@ max_concurrent_threads_per_session = 6
     assert_eq!(config.effective_spine_spawn_max_threads(), 5);
     assert_eq!(config.multi_agent_v2.max_concurrent_threads_per_session, 2);
 
-    let profile_codex_home = TempDir::new()?;
-    std::fs::write(
-        profile_codex_home.path().join(CONFIG_TOML_FILE),
-        r#"profile = "spawn"
-
-[features]
-spine_spawn = false
-
-[spine_spawn]
-max_concurrent_threads_per_session = 3
-
-[profiles.spawn.features]
-spine_spawn = true
-
-[profiles.spawn.spine_spawn]
-max_concurrent_threads_per_session = 8
-"#,
-    )?;
-    let profile_config = ConfigBuilder::without_managed_config_for_tests()
-        .codex_home(profile_codex_home.path().to_path_buf())
-        .fallback_cwd(Some(profile_codex_home.path().to_path_buf()))
-        .build()
-        .await?;
-    assert!(profile_config.features.enabled(Feature::SpineSpawn));
-    assert_eq!(
-        profile_config
-            .spine_spawn
-            .max_concurrent_threads_per_session,
-        8
-    );
-
     let default_codex_home = TempDir::new()?;
     let defaults = ConfigBuilder::without_managed_config_for_tests()
         .codex_home(default_codex_home.path().to_path_buf())
@@ -10370,6 +10339,32 @@ max_concurrent_threads_per_session = 8
     assert_eq!(defaults.spine_spawn.max_concurrent_threads_per_session, 4);
     assert_eq!(defaults.effective_spine_spawn_max_threads(), 3);
 
+    Ok(())
+}
+
+#[tokio::test]
+async fn spine_spawn_rejects_zero_session_capacity() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    std::fs::write(
+        codex_home.path().join(CONFIG_TOML_FILE),
+        r#"[spine_spawn]
+max_concurrent_threads_per_session = 0
+"#,
+    )?;
+
+    let error = ConfigBuilder::without_managed_config_for_tests()
+        .codex_home(codex_home.path().to_path_buf())
+        .fallback_cwd(Some(codex_home.path().to_path_buf()))
+        .build()
+        .await
+        .expect_err("zero SpineSpawn session capacity must be rejected");
+
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+    assert!(
+        error
+            .to_string()
+            .contains("spine_spawn.max_concurrent_threads_per_session must be at least 1")
+    );
     Ok(())
 }
 

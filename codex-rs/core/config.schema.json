@@ -800,14 +800,6 @@
           "description": "Optional explicit service tier request id for new turns (for example `default`, `priority`, or `flex`; legacy `fast` also works).",
           "type": "string"
         },
-        "spine_spawn": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/SpineSpawnConfigToml"
-            }
-          ],
-          "description": "Settings for child threads created through `spine.spawn`."
-        },
         "tools": {
           "$ref": "#/definitions/ToolsToml"
         },

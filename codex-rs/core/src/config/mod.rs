@@ -3490,6 +3490,12 @@ impl Config {
                 "features.multi_agent_v2.max_concurrent_threads_per_session must be at least 1",
             ));
         }
+        if spine_spawn.max_concurrent_threads_per_session == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "spine_spawn.max_concurrent_threads_per_session must be at least 1",
+            ));
+        }
         validate_multi_agent_v2_wait_timeout(
             "features.multi_agent_v2.min_wait_timeout_ms",
             multi_agent_v2.min_wait_timeout_ms,
