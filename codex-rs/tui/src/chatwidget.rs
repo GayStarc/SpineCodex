@@ -1004,6 +1004,26 @@ impl ChatWidget {
         self.request_redraw();
     }
 
+    pub(crate) fn open_spine_feedback(&mut self, thread_id: ThreadId) {
+        let view = crate::bottom_pane::SpineFeedbackView::new(thread_id, self.app_event_tx.clone());
+        self.bottom_pane.show_view(Box::new(view));
+        self.request_redraw();
+    }
+
+    pub(crate) fn reopen_spine_feedback(
+        &mut self,
+        draft: crate::bottom_pane::SpineFeedbackDraft,
+        error: String,
+    ) {
+        let view = crate::bottom_pane::SpineFeedbackView::with_draft(
+            draft,
+            Some(error),
+            self.app_event_tx.clone(),
+        );
+        self.bottom_pane.show_view(Box::new(view));
+        self.request_redraw();
+    }
+
     pub(crate) fn open_app_link_view(&mut self, params: crate::bottom_pane::AppLinkViewParams) {
         let view = crate::bottom_pane::AppLinkView::new_with_keymap(
             params,

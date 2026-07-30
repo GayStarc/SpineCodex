@@ -1352,6 +1352,12 @@ impl App {
                 self.handle_feedback_submitted(origin_thread_id, category, include_logs, result)
                     .await;
             }
+            AppEvent::SubmitSpineFeedback { draft } => {
+                self.submit_spine_feedback(app_server, draft);
+            }
+            AppEvent::SpineFeedbackSubmitted { draft, result } => {
+                self.handle_spine_feedback_submitted(draft, result).await;
+            }
             AppEvent::LaunchExternalEditor => {
                 if self.chat_widget.external_editor_state() == ExternalEditorState::Active {
                     self.launch_external_editor(tui).await;

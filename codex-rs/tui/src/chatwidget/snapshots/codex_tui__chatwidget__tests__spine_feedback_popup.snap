@@ -1,0 +1,16 @@
+---
+source: tui/src/chatwidget/tests/popups_and_settings.rs
+expression: popup
+---
+  Send Spine feedback
+  Describe the problem and optionally attach screenshots.
+  Do not include passwords, API keys, access tokens, or other secrets.
+
+  Feedback note (optional)
+  › Describe what went wrong (optional)
+
+  Screenshots (0/3)
+    None attached. Use Ctrl/Alt+V or paste a PNG, JPEG, or static WebP path.
+
+  Enter review · modified Enter newline · Ctrl/Alt+V screenshot · Tab select ·
+  Esc cancel

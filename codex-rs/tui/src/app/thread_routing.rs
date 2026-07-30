@@ -95,7 +95,7 @@ impl App {
         let receiver = channel.receiver.take()?;
         let mut store = channel.store.lock().await;
         store.active = true;
-        let snapshot = store.snapshot();
+        let snapshot = store.snapshot_for_activation();
         Some((receiver, snapshot))
     }
 

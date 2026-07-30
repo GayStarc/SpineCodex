@@ -1031,6 +1031,17 @@ pub(crate) enum AppEvent {
         result: Result<String, String>,
     },
 
+    /// Submit a Spine feedback draft through the redacted subtree RPC.
+    SubmitSpineFeedback {
+        draft: crate::bottom_pane::SpineFeedbackDraft,
+    },
+
+    /// Result of a Spine feedback upload request initiated by the TUI.
+    SpineFeedbackSubmitted {
+        draft: crate::bottom_pane::SpineFeedbackDraft,
+        result: Result<String, String>,
+    },
+
     /// Launch the external editor after a normal draw has completed.
     LaunchExternalEditor,
 

@@ -3841,12 +3841,30 @@ async fn auto_model_advertising_advanced_effort_opens_reasoning_picker() {
 #[tokio::test]
 async fn feedback_selection_popup_snapshot() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.set_feature_enabled(Feature::SpineJit, /*enabled*/ false);
+    chat.set_feature_enabled(Feature::SpineTrim, /*enabled*/ false);
+    chat.set_feature_enabled(Feature::SpineSpawn, /*enabled*/ false);
 
     // Open the feedback category selection popup via slash command.
     chat.dispatch_command(SlashCommand::Feedback);
 
     let popup = render_bottom_popup(&chat, /*width*/ 80);
     assert_chatwidget_snapshot!("feedback_selection_popup", popup);
+}
+
+#[tokio::test]
+async fn spine_feedback_popup_snapshot() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.set_feature_enabled(Feature::SpineJit, /*enabled*/ true);
+
+    chat.dispatch_command(SlashCommand::Feedback);
+
+    assert_eq!(chat.bottom_pane.active_view_id(), Some("spine-feedback"));
+    let popup = render_bottom_popup(&chat, /*width*/ 80);
+    assert!(popup.contains("Send Spine feedback"));
+    assert!(popup.contains("Do not include passwords"));
+    assert_chatwidget_snapshot!("spine_feedback_popup", popup);
 }
 
 #[tokio::test]

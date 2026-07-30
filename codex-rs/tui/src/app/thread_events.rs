@@ -6,6 +6,7 @@
 //! together with the replay behavior that consumes them.
 
 use super::*;
+use crate::bottom_pane::SpineFeedbackDraft;
 use crate::multi_agents::AgentActivityPathDisplay;
 use crate::multi_agents::AgentActivityPreview;
 
@@ -26,11 +27,30 @@ pub(super) enum ThreadBufferedEvent {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct FeedbackThreadEvent {
-    pub(super) category: FeedbackCategory,
-    pub(super) include_logs: bool,
-    pub(super) feedback_audience: FeedbackAudience,
-    pub(super) result: Result<String, String>,
+pub(super) enum FeedbackThreadEvent {
+    Base {
+        category: FeedbackCategory,
+        include_logs: bool,
+        feedback_audience: FeedbackAudience,
+        result: Result<String, String>,
+    },
+    SpineSuccess {
+        report_id: String,
+    },
+    SpineFailure {
+        draft: SpineFeedbackDraft,
+        error: String,
+    },
+}
+
+impl FeedbackThreadEvent {
+    pub(super) fn persists_after_live_delivery(&self) -> bool {
+        !matches!(self, Self::SpineFailure { .. })
+    }
+
+    pub(super) fn is_one_shot_replay(&self) -> bool {
+        matches!(self, Self::SpineFailure { .. })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,6 +69,7 @@ pub(super) struct ThreadEventStore {
     pub(super) input_state: Option<ThreadInputState>,
     pub(super) capacity: usize,
     pub(super) active: bool,
+    pending_spine_feedback_failure: Option<FeedbackThreadEvent>,
 }
 
 impl ThreadEventStore {
@@ -94,6 +115,7 @@ impl ThreadEventStore {
             input_state: None,
             capacity,
             active: false,
+            pending_spine_feedback_failure: None,
         }
     }
 
@@ -232,8 +254,30 @@ impl ThreadEventStore {
     pub(super) fn apply_thread_rollback(&mut self, response: &ThreadRollbackResponse) {
         self.turns = response.thread.turns.clone();
         self.buffer.clear();
+        self.pending_spine_feedback_failure = None;
         self.pending_interactive_replay = PendingInteractiveReplayState::default();
         self.active_turn_id = None;
+    }
+
+    /// Keep successful/base feedback in transcript replay order, while failed
+    /// Spine drafts use one bounded replacement slot per thread. A draft can
+    /// contain up to 10 MiB of screenshots, so it must not accumulate in the
+    /// general replay queue.
+    pub(super) fn buffer_feedback_event(&mut self, event: FeedbackThreadEvent) {
+        if event.is_one_shot_replay() {
+            self.pending_spine_feedback_failure = Some(event);
+            return;
+        }
+
+        self.buffer
+            .push_back(ThreadBufferedEvent::FeedbackSubmission(event));
+        if self.buffer.len() > self.capacity
+            && let Some(removed) = self.buffer.pop_front()
+            && let ThreadBufferedEvent::Request(request) = &removed
+        {
+            self.pending_interactive_replay
+                .note_evicted_server_request(request);
+        }
     }
 
     pub(super) fn snapshot(&self) -> ThreadEventSnapshot {
@@ -257,6 +301,19 @@ impl ThreadEventStore {
                 .collect(),
             input_state: self.input_state.clone(),
         }
+    }
+
+    /// Clone the replay snapshot, then consume feedback failures that should
+    /// reopen a preserved draft exactly once when this thread next becomes
+    /// active. Successful submissions remain replayable as transcript cells.
+    pub(super) fn snapshot_for_activation(&mut self) -> ThreadEventSnapshot {
+        let mut snapshot = self.snapshot();
+        if let Some(failure) = self.pending_spine_feedback_failure.take() {
+            snapshot
+                .events
+                .push(ThreadBufferedEvent::FeedbackSubmission(failure));
+        }
+        snapshot
     }
 
     pub(super) fn note_outbound_op<T>(&mut self, op: T)
@@ -667,5 +724,71 @@ mod tests {
             serde_json::to_value(actual).expect("MCP notification should serialize"),
             serde_json::to_value(notification).expect("MCP notification should serialize"),
         );
+    }
+
+    #[test]
+    fn spine_feedback_failure_uses_one_slot_while_success_remains_replayable() {
+        let thread_id = ThreadId::new();
+        let first_failure = FeedbackThreadEvent::SpineFailure {
+            draft: SpineFeedbackDraft {
+                thread_id,
+                note: "older draft".to_string(),
+                screenshots: Vec::new(),
+            },
+            error: "timed out".to_string(),
+        };
+        let latest_failure = FeedbackThreadEvent::SpineFailure {
+            draft: SpineFeedbackDraft {
+                thread_id,
+                note: "keep this draft".to_string(),
+                screenshots: Vec::new(),
+            },
+            error: "rate limited".to_string(),
+        };
+        let success = FeedbackThreadEvent::SpineSuccess {
+            report_id: "0123456789abcdef0123456789abcdef".to_string(),
+        };
+        let expected_draft = match &latest_failure {
+            FeedbackThreadEvent::SpineFailure { draft, .. } => draft.clone(),
+            _ => unreachable!(),
+        };
+        let expected_report_id = match &success {
+            FeedbackThreadEvent::SpineSuccess { report_id } => report_id.clone(),
+            _ => unreachable!(),
+        };
+        assert!(!first_failure.persists_after_live_delivery());
+        assert!(!latest_failure.persists_after_live_delivery());
+        assert!(success.persists_after_live_delivery());
+
+        let mut store = ThreadEventStore::new(/*capacity*/ 8);
+        store.buffer_feedback_event(first_failure);
+        store.buffer_feedback_event(success.clone());
+        store.buffer_feedback_event(latest_failure);
+
+        let activation = store.snapshot_for_activation();
+        assert_eq!(activation.events.len(), 2);
+        assert!(matches!(
+            &activation.events[0],
+            ThreadBufferedEvent::FeedbackSubmission(FeedbackThreadEvent::SpineSuccess {
+                report_id,
+            }) if report_id == "0123456789abcdef0123456789abcdef"
+        ));
+        assert!(matches!(
+            &activation.events[1],
+            ThreadBufferedEvent::FeedbackSubmission(FeedbackThreadEvent::SpineFailure {
+                draft,
+                error,
+            }) if draft == &expected_draft && error == "rate limited"
+        ));
+
+        let remaining = store.snapshot();
+        assert_eq!(remaining.events.len(), 1);
+        assert!(matches!(
+            &remaining.events[0],
+            ThreadBufferedEvent::FeedbackSubmission(FeedbackThreadEvent::SpineSuccess {
+                report_id,
+            }) if report_id == &expected_report_id
+        ));
+        assert_eq!(store.snapshot_for_activation().events.len(), 1);
     }
 }
