@@ -4,7 +4,7 @@ SpineCodex carries two intentionally separate version identities:
 
 - The product version is the workspace package version. It is the value shown
   by `codex --version` and used by npm packages, GitHub release tags, update
-  checks, and product telemetry. The current product version is `0.2.1`.
+  checks, and product telemetry. The current product version is `0.2.2`.
 - The Codex compatibility version is the upstream client baseline used by
   protocol-facing requests. It is recorded in
   `[workspace.metadata.spinecodex]` in `codex-rs/Cargo.toml` and projected by
