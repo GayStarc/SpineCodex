@@ -2858,6 +2858,13 @@ async fn open_agent_picker_shows_visible_spine_spawn_child_in_native_picker() ->
     app.open_agent_picker(&mut app_server).await;
 
     let rendered = render_bottom_popup(&app.chat_widget, /*width*/ 100);
+    let (_, picker) = rendered
+        .split_once("  Subagents")
+        .expect("rendered picker should contain its title");
+    assert_app_snapshot!(
+        "spine_agent_picker_prefers_spawn_summary",
+        format!("  Subagents{picker}")
+    );
     assert!(rendered.contains("Subagents"), "{rendered}");
     assert!(rendered.contains("Audit cache invalidation"), "{rendered}");
     assert!(

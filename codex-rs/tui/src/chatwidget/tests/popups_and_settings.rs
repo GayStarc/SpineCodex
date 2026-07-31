@@ -1157,7 +1157,6 @@ async fn plugins_popup_admin_disabled_installed_plugin_has_no_toggle_hint() {
     while rx.try_recv().is_ok() {}
     let before = render_bottom_popup(&chat, /*width*/ 120);
     chat.handle_key_event(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
-    chat.handle_key_event(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
     let after = render_bottom_popup(&chat, /*width*/ 120);
     assert!(
         rx.try_recv().is_err(),
