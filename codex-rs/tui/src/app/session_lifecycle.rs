@@ -355,6 +355,9 @@ impl App {
                 entry.agent_role.clone(),
             );
         }
+        for thread_id in self.spine_feedback_in_flight.keys().copied() {
+            chat_widget.set_spine_feedback_in_flight(thread_id, /*in_flight*/ true);
+        }
         let selected_thread_id = chat_widget.thread_id();
         self.chat_widget = chat_widget;
         if selected_thread_id.is_some() {

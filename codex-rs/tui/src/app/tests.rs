@@ -7752,16 +7752,19 @@ async fn replay_thread_snapshot_replays_turn_history_in_order() {
 }
 
 #[tokio::test]
-async fn replace_chat_widget_reseeds_collab_agent_metadata_for_replay() {
+async fn replace_chat_widget_reseeds_app_owned_state_for_replay() {
     let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
     let receiver_thread_id =
         ThreadId::from_string("019cff70-2599-75e2-af72-b958ce5dc1cc").expect("valid thread");
+    let feedback_thread_id =
+        ThreadId::from_string("019cff70-2599-75e2-af72-b958ce5dc1cd").expect("valid thread");
     app.agent_navigation.upsert(
         receiver_thread_id,
         Some("Robie".to_string()),
         Some("explorer".to_string()),
         /*is_closed*/ false,
     );
+    app.spine_feedback_in_flight.insert(feedback_thread_id, 7);
 
     let replacement = ChatWidget::new_with_app_event(ChatWidgetInit {
         config: app.config.clone(),
@@ -7788,6 +7791,11 @@ async fn replace_chat_widget_reseeds_collab_agent_metadata_for_replay() {
         session_telemetry: app.session_telemetry.clone(),
     });
     app.replace_chat_widget(replacement);
+    assert!(
+        app.chat_widget
+            .is_spine_feedback_in_flight(feedback_thread_id),
+        "thread switching must preserve the app-owned upload guard"
+    );
 
     app.replay_thread_snapshot(
         ThreadEventSnapshot {
