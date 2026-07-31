@@ -10,6 +10,7 @@ use codex_app_server_protocol::SpineTreeNode;
 use codex_app_server_protocol::SpineTreeNodeKind;
 use codex_app_server_protocol::SpineTreeNodeStatus;
 use codex_app_server_protocol::SpineTreeUpdatedNotification;
+use codex_protocol::ThreadId;
 use std::collections::HashSet;
 use std::time::Duration;
 use std::time::Instant;
@@ -239,6 +240,38 @@ impl SpineTreeViewState {
             matched.push((signature, overlay.clone()));
         }
         Some(matched)
+    }
+
+    pub(crate) fn settling_spawn_root_thread_ids(
+        &self,
+        turn_id: &str,
+        call_ids: &[String],
+    ) -> Vec<ThreadId> {
+        self.settlement_overlays_for(turn_id, call_ids)
+            .unwrap_or_default()
+            .into_iter()
+            .flat_map(|(_, overlay)| {
+                overlay
+                    .child_thread_ids()
+                    .filter_map(|thread_id| ThreadId::from_string(thread_id).ok())
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    pub(crate) fn incomplete_spawn_root_thread_ids(&self, turn_id: Option<&str>) -> Vec<ThreadId> {
+        let overlays = self.overlays.iter().chain(
+            self.pending_handoff
+                .iter()
+                .flat_map(|pending| pending.overlays.iter()),
+        );
+        overlays
+            .filter(|overlay| turn_id.is_none_or(|turn_id| overlay.turn_id() == turn_id))
+            .flat_map(SpineSpawnOverlay::child_thread_ids)
+            .filter_map(|thread_id| ThreadId::from_string(thread_id).ok())
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect()
     }
 
     fn settled_visuals_for(overlays: &[SpineSpawnOverlay]) -> Option<Vec<SettledTaskVisual>> {

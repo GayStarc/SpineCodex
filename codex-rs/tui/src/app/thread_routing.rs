@@ -1169,6 +1169,12 @@ impl App {
         };
         let agent_path =
             super::loaded_threads::thread_spawn_agent_path(&notification.thread.source);
+        if let Some(parent_thread_id) =
+            super::loaded_threads::thread_spawn_parent_thread_id(&notification.thread.source)
+        {
+            self.agent_navigation
+                .record_spawn_parent(thread_id, parent_thread_id);
+        }
         self.upsert_agent_picker_thread(
             thread_id,
             notification.thread.agent_nickname.clone(),

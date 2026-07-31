@@ -171,6 +171,36 @@ impl App {
         self.sync_active_agent_label();
     }
 
+    pub(super) async fn retire_spine_spawn_subtrees(
+        &mut self,
+        tui: &mut tui::Tui,
+        app_server: &mut AppServerSession,
+        owner_thread_id: ThreadId,
+        roots: &[ThreadId],
+    ) {
+        let retired = self.agent_navigation.retire_spawn_subtrees(roots);
+        let displayed_thread_retired = self
+            .chat_widget
+            .thread_id()
+            .is_some_and(|thread_id| retired.contains(&thread_id));
+        for thread_id in retired {
+            self.discard_thread_local_state(thread_id).await;
+        }
+        if displayed_thread_retired
+            && let Err(error) = self
+                .select_agent_thread(tui, app_server, owner_thread_id)
+                .await
+        {
+            tracing::warn!(
+                thread_id = %owner_thread_id,
+                "failed to return from settled Spine branch: {error}"
+            );
+            self.chat_widget.add_error_message(format!(
+                "Failed to return to the parent session after Spine branch settlement: {error}"
+            ));
+        }
+    }
+
     pub(super) async fn refresh_agent_picker_thread_liveness(
         &mut self,
         app_server: &mut AppServerSession,
@@ -690,6 +720,8 @@ impl App {
 
         for thread in find_loaded_subagent_threads_for_primary(threads, primary_thread_id) {
             let agent_path = thread.agent_path;
+            self.agent_navigation
+                .record_spawn_parent(thread.thread_id, thread.parent_thread_id);
             self.upsert_agent_picker_thread(
                 thread.thread_id,
                 thread.agent_nickname,

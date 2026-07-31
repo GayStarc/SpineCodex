@@ -1815,6 +1815,56 @@ async fn app_owned_spawn_projection_removes_overlay_only_on_tree_commit() -> Res
 }
 
 #[tokio::test]
+async fn committed_spine_spawn_retires_its_navigation_subtree() -> Result<()> {
+    let (mut app, _app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let parent_thread_id = ThreadId::new();
+    let branch_thread_id = ThreadId::new();
+    let descendant_thread_id = ThreadId::new();
+    let native_thread_id = ThreadId::new();
+    display_test_thread(&mut app, parent_thread_id);
+    for thread_id in [branch_thread_id, descendant_thread_id, native_thread_id] {
+        app.agent_navigation.upsert(
+            thread_id, /*agent_nickname*/ None, /*agent_role*/ None,
+            /*is_closed*/ false,
+        );
+    }
+    app.agent_navigation
+        .record_spawn_parent(branch_thread_id, parent_thread_id);
+    app.agent_navigation
+        .record_spawn_parent(descendant_thread_id, branch_thread_id);
+    app.agent_navigation
+        .record_spawn_parent(native_thread_id, parent_thread_id);
+    install_live_spawn_overlay(
+        &mut app,
+        parent_thread_id,
+        "spawn-settled",
+        &[(
+            branch_thread_id,
+            "/root/spawn-runtime",
+            "Settle this branch",
+        )],
+    );
+
+    let mut settled = app_spine_snapshot(parent_thread_id, "turn-spawn", 2, None);
+    settled.settled_spawn_call_ids = vec!["spawn-settled".to_string()];
+    let mut tui = crate::tui::test_support::make_test_tui().expect("test tui");
+    let mut app_server =
+        crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
+    app.handle_event(
+        &mut tui,
+        &mut app_server,
+        AppEvent::UpsertSpineTreeCell { snapshot: settled },
+    )
+    .await?;
+
+    assert!(app.agent_navigation.get(&branch_thread_id).is_none());
+    assert!(app.agent_navigation.get(&descendant_thread_id).is_none());
+    assert!(app.agent_navigation.get(&native_thread_id).is_some());
+    app_server.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn incomplete_parent_turn_clears_only_its_unsettled_spawn_overlays() -> Result<()> {
     let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
     let parent_thread_id = ThreadId::new();
@@ -2892,8 +2942,8 @@ async fn open_agent_picker_shows_spine_child_from_unfocused_overlay() -> Result<
 }
 
 #[tokio::test]
-async fn open_agent_picker_keeps_native_format_after_spawn_cancel() -> Result<()> {
-    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+async fn completed_spine_spawn_removes_cancelled_branch_from_picker() -> Result<()> {
+    let (mut app, _app_event_rx, _op_rx) = make_test_app_with_channels().await;
     let mut app_server =
         crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
     let parent_thread_id = ThreadId::new();
@@ -2911,30 +2961,27 @@ async fn open_agent_picker_keeps_native_format_after_spawn_cancel() -> Result<()
         )],
     );
 
-    app.mark_agent_picker_thread_closed(child_thread_id);
+    let roots = app
+        .spine_tree_views
+        .get(&parent_thread_id)
+        .expect("missing Spine tree view")
+        .incomplete_spawn_root_thread_ids(Some("turn-spawn"));
     app.spine_tree_views
         .get_mut(&parent_thread_id)
         .expect("missing Spine tree view")
         .clear_incomplete_spawn_overlays(Some("turn-spawn"));
 
-    app.open_agent_picker(&mut app_server).await;
-
-    let rendered = render_bottom_popup(&app.chat_widget, /*width*/ 100);
-    assert!(rendered.contains("Subagents"), "{rendered}");
-    assert!(rendered.contains("/root/cancelled-child"), "{rendered}");
-    assert!(!rendered.contains("Sub-agents running"), "{rendered}");
-
-    app.chat_widget
-        .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert_eq!(
-        next_selected_agent_thread(&mut app_event_rx),
-        Some(child_thread_id)
-    );
+    let mut tui = crate::tui::test_support::make_test_tui().expect("test tui");
+    app.retire_spine_spawn_subtrees(&mut tui, &mut app_server, parent_thread_id, &roots)
+        .await;
+    assert!(app.agent_navigation.get(&child_thread_id).is_none());
+    assert!(!app.thread_event_channels.contains_key(&child_thread_id));
+    app_server.shutdown().await?;
     Ok(())
 }
 
 #[tokio::test]
-async fn open_agent_picker_keeps_native_format_after_spine_spawn_settles() -> Result<()> {
+async fn completed_spine_spawn_removes_settled_branch_from_picker() -> Result<()> {
     let (mut app, _app_event_rx, _op_rx) = make_test_app_with_channels().await;
     let mut app_server =
         crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
@@ -2954,17 +3001,22 @@ async fn open_agent_picker_keeps_native_format_after_spine_spawn_settles() -> Re
     );
     let mut settled = app_spine_snapshot(parent_thread_id, "turn-spawn", 2, None);
     settled.settled_spawn_call_ids = vec!["spawn-settled".to_string()];
+    let roots = app
+        .spine_tree_views
+        .get(&parent_thread_id)
+        .expect("missing Spine tree view")
+        .settling_spawn_root_thread_ids("turn-spawn", &settled.settled_spawn_call_ids);
     app.spine_tree_views
         .get_mut(&parent_thread_id)
         .expect("missing Spine tree view")
         .apply_tree_update(settled);
 
-    app.open_agent_picker(&mut app_server).await;
-
-    let rendered = render_bottom_popup(&app.chat_widget, /*width*/ 100);
-    assert!(rendered.contains("Subagents"), "{rendered}");
-    assert!(rendered.contains("/root/settled-child"), "{rendered}");
-    assert!(!rendered.contains("Sub-agents running"), "{rendered}");
+    let mut tui = crate::tui::test_support::make_test_tui().expect("test tui");
+    app.retire_spine_spawn_subtrees(&mut tui, &mut app_server, parent_thread_id, &roots)
+        .await;
+    assert!(app.agent_navigation.get(&child_thread_id).is_none());
+    assert!(!app.thread_event_channels.contains_key(&child_thread_id));
+    app_server.shutdown().await?;
     Ok(())
 }
 

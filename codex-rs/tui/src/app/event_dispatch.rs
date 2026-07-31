@@ -252,19 +252,29 @@ impl App {
                 let is_active = self.chat_widget.thread_id() == Some(parent_thread_id);
                 let can_publish = is_active && self.initial_history_replay_buffer.is_none();
                 let animations_enabled = self.config.animations;
-                let (history, live) = {
+                let (history, live, settled_roots) = {
                     let state = self
                         .spine_tree_views
                         .entry(parent_thread_id)
                         .or_insert_with(|| {
                             crate::history_cell::SpineTreeViewState::new(animations_enabled)
                         });
+                    let settled_roots = state.settling_spawn_root_thread_ids(
+                        &snapshot.turn_id,
+                        &snapshot.settled_spawn_call_ids,
+                    );
                     state.apply_tree_update(snapshot);
                     let history = can_publish
                         .then(|| state.take_pending_history_cell())
                         .flatten();
-                    (history, (state.snapshot().cloned(), state.render_cell()))
+                    (
+                        history,
+                        (state.snapshot().cloned(), state.render_cell()),
+                        settled_roots,
+                    )
                 };
+                self.retire_spine_spawn_subtrees(tui, app_server, parent_thread_id, &settled_roots)
+                    .await;
                 if can_publish {
                     if let Some(cell) = history {
                         self.upsert_spine_tree_history(tui, cell)?;
@@ -296,6 +306,13 @@ impl App {
                             .map(|_| task.thread_id.clone())
                     })
                     .collect::<Vec<_>>();
+                for child_thread_id in &child_threads {
+                    self.agent_navigation.record_spawn_parent(
+                        ThreadId::from_string(child_thread_id)
+                            .expect("progress task thread_id was validated above"),
+                        parent_thread_id,
+                    );
+                }
                 let mut seeds = Vec::new();
                 for child_thread_id in child_threads {
                     if let Some(notifications) = self
@@ -378,11 +395,13 @@ impl App {
                 }
                 let is_active = self.chat_widget.thread_id() == Some(parent_thread_id);
                 let can_publish = is_active && self.initial_history_replay_buffer.is_none();
-                let update = self
+                let (update, retired_roots) = self
                     .spine_tree_views
                     .get_mut(&parent_thread_id)
-                    .and_then(|state| {
-                        state
+                    .map(|state| {
+                        let retired_roots =
+                            state.incomplete_spawn_root_thread_ids(turn_id.as_deref());
+                        let update = state
                             .clear_incomplete_spawn_overlays(turn_id.as_deref())
                             .then(|| {
                                 (
@@ -392,8 +411,12 @@ impl App {
                                     state.snapshot().cloned(),
                                     state.render_cell(),
                                 )
-                            })
-                    });
+                            });
+                        (update, retired_roots)
+                    })
+                    .unwrap_or_default();
+                self.retire_spine_spawn_subtrees(tui, app_server, parent_thread_id, &retired_roots)
+                    .await;
                 if can_publish && let Some((history, snapshot, live_cell)) = update {
                     if let Some(cell) = history {
                         self.upsert_spine_tree_history(tui, cell)?;
@@ -414,14 +437,19 @@ impl App {
                 }
                 let is_active = self.chat_widget.thread_id() == Some(parent_thread_id);
                 let can_publish = is_active && self.initial_history_replay_buffer.is_none();
-                let update = self
+                let (update, retired_roots) = self
                     .spine_tree_views
                     .get_mut(&parent_thread_id)
-                    .and_then(|state| {
-                        state
+                    .map(|state| {
+                        let retired_roots = state.incomplete_spawn_root_thread_ids(Some(&turn_id));
+                        let update = state
                             .clear_completed_spawn_overlays(&turn_id)
-                            .then(|| (state.snapshot().cloned(), state.render_cell()))
-                    });
+                            .then(|| (state.snapshot().cloned(), state.render_cell()));
+                        (update, retired_roots)
+                    })
+                    .unwrap_or_default();
+                self.retire_spine_spawn_subtrees(tui, app_server, parent_thread_id, &retired_roots)
+                    .await;
                 if can_publish && let Some((snapshot, live_cell)) = update {
                     self.chat_widget.set_spine_tree_view(snapshot, live_cell);
                     tui.frame_requester().schedule_frame();

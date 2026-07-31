@@ -125,23 +125,61 @@ impl AgentControl {
         &self,
         roots: &[ThreadId],
     ) -> CodexResult<()> {
+        // Linearize transaction settlement after every in-flight native spawn/resume topology
+        // writer and before any later writer. Explicit Native resume remains available after this
+        // guard is released.
+        let _settlement = self.state.begin_spine_spawn_settlement().await;
         let state = self.upgrade()?;
         let mut failures = Vec::new();
+        let mut transaction_threads = HashSet::new();
         loop {
-            let mut seen = HashSet::new();
-            let mut live = Vec::new();
             for root in roots {
-                for thread_id in
-                    std::iter::once(*root).chain(self.live_thread_spawn_descendants(*root).await?)
-                {
-                    if seen.insert(thread_id) && state.get_thread(thread_id).await.is_ok() {
-                        live.push(thread_id);
+                transaction_threads.insert(*root);
+                if let Some(agent_graph_store) = state.agent_graph_store() {
+                    match agent_graph_store
+                        .list_thread_spawn_descendants(*root, /*status_filter*/ None)
+                        .await
+                    {
+                        Ok(descendants) => transaction_threads.extend(descendants),
+                        Err(error) => failures.push(format!(
+                            "{root}: failed to load persisted spawn descendants: {error}"
+                        )),
+                    }
+                }
+                transaction_threads.extend(self.live_thread_spawn_descendants(*root).await?);
+            }
+
+            // Closing is deliberately repeated on every fixed-point round. A descendant can
+            // become visible in the live tree before its Open edge finishes persisting, so a
+            // one-shot status update could be overwritten while teardown is still draining it.
+            let mut edge_close_failed = false;
+            if let Some(agent_graph_store) = state.agent_graph_store() {
+                let mut current_threads = transaction_threads.iter().copied().collect::<Vec<_>>();
+                current_threads.sort_by_key(std::string::ToString::to_string);
+                for thread_id in current_threads {
+                    if let Err(error) = agent_graph_store
+                        .set_thread_spawn_edge_status(
+                            thread_id,
+                            codex_agent_graph_store::ThreadSpawnEdgeStatus::Closed,
+                        )
+                        .await
+                    {
+                        edge_close_failed = true;
+                        failures.push(format!(
+                            "{thread_id}: failed to close persisted spawn edge: {error}"
+                        ));
                     }
                 }
             }
-            if live.is_empty() {
-                break;
+
+            let mut live = Vec::new();
+            for thread_id in &transaction_threads {
+                if state.get_thread(*thread_id).await.is_ok() {
+                    live.push(*thread_id);
+                }
             }
+            let had_live_threads = !live.is_empty();
+            live.sort_by_key(std::string::ToString::to_string);
             for thread_id in live {
                 match self
                     .shutdown_live_agent_for_spine_spawn(&state, thread_id)
@@ -152,6 +190,39 @@ impl AgentControl {
                     Err(error) => failures.push(format!("{thread_id}: {error}")),
                 }
             }
+            if had_live_threads {
+                continue;
+            }
+
+            // The live tree is quiescent. Require the persisted transaction subtree to be
+            // quiescent as well before the Spawn receipt can return.
+            if let Some(agent_graph_store) = state.agent_graph_store() {
+                let mut open_descendants = HashSet::new();
+                let mut current_threads = transaction_threads.iter().copied().collect::<Vec<_>>();
+                current_threads.sort_by_key(std::string::ToString::to_string);
+                for thread_id in current_threads {
+                    match agent_graph_store
+                        .list_thread_spawn_children(
+                            thread_id,
+                            Some(codex_agent_graph_store::ThreadSpawnEdgeStatus::Open),
+                        )
+                        .await
+                    {
+                        Ok(children) => open_descendants.extend(children),
+                        Err(error) => failures.push(format!(
+                            "{thread_id}: failed to verify persisted spawn children: {error}"
+                        )),
+                    }
+                }
+                if !open_descendants.is_empty() {
+                    transaction_threads.extend(open_descendants);
+                    if edge_close_failed {
+                        break;
+                    }
+                    continue;
+                }
+            }
+            break;
         }
         if failures.is_empty() {
             Ok(())

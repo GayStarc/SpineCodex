@@ -44,6 +44,7 @@ use codex_thread_store::LocalThreadStore;
 use codex_thread_store::LocalThreadStoreConfig;
 use codex_thread_store::ThreadStore;
 use codex_utils_path_uri::PathUri;
+use futures::poll;
 use pretty_assertions::assert_eq;
 use std::collections::HashSet;
 use tempfile::TempDir;
@@ -3136,6 +3137,12 @@ async fn shutdown_spine_spawn_subtrees_closes_pathless_native_descendants() {
 
     harness
         .control
+        .shutdown_live_agent(grandchild_thread_id)
+        .await
+        .expect("unloaded grandchild shutdown should succeed");
+
+    harness
+        .control
         .shutdown_spine_spawn_subtrees(&[branch_thread_id])
         .await
         .expect("Spine transaction subtree shutdown should succeed");
@@ -3150,6 +3157,27 @@ async fn shutdown_spine_spawn_subtrees_closes_pathless_native_descendants() {
             AgentStatus::NotFound
         );
     }
+    let state_db = harness.state_db.as_ref().expect("state db");
+    assert_eq!(
+        state_db
+            .list_thread_spawn_descendants_with_status(
+                origin_thread_id,
+                codex_state::DirectionalThreadSpawnEdgeStatus::Open,
+            )
+            .await
+            .expect("open descendants should load"),
+        Vec::<ThreadId>::new()
+    );
+    assert_eq!(
+        state_db
+            .list_thread_spawn_descendants_with_status(
+                origin_thread_id,
+                codex_state::DirectionalThreadSpawnEdgeStatus::Closed,
+            )
+            .await
+            .expect("closed descendants should load"),
+        vec![branch_thread_id, child_thread_id, grandchild_thread_id]
+    );
 
     let shutdown_ids = harness
         .manager
@@ -3161,6 +3189,163 @@ async fn shutdown_spine_spawn_subtrees_closes_pathless_native_descendants() {
         shutdown_ids,
         HashSet::from([branch_thread_id, child_thread_id, grandchild_thread_id,])
     );
+}
+
+#[tokio::test]
+async fn spine_spawn_settlement_waits_for_inflight_topology_writer() {
+    let harness = AgentControlHarness::new().await;
+    let (origin_thread_id, _origin_thread) = harness.start_thread().await;
+    let branch_thread_id = harness
+        .control
+        .spawn_agent(
+            harness.config.clone(),
+            text_input("hello branch"),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: origin_thread_id,
+                depth: 1,
+                agent_path: Some(
+                    AgentPath::try_from("/root/spawn_transaction_0").expect("agent path"),
+                ),
+                agent_nickname: None,
+                agent_role: Some("branch".to_string()),
+            })),
+        )
+        .await
+        .expect("branch spawn should succeed");
+
+    let topology_update = harness
+        .control
+        .state
+        .begin_thread_spawn_topology_update()
+        .await;
+    let control = harness.control.clone();
+    let roots = [branch_thread_id];
+    let settlement = control.shutdown_spine_spawn_subtrees(&roots);
+    tokio::pin!(settlement);
+    assert!(
+        poll!(&mut settlement).is_pending(),
+        "settlement must wait for an in-flight topology writer"
+    );
+
+    let state_db = harness.state_db.as_ref().expect("state db");
+    state_db
+        .upsert_thread_spawn_edge(
+            origin_thread_id,
+            branch_thread_id,
+            codex_state::DirectionalThreadSpawnEdgeStatus::Open,
+        )
+        .await
+        .expect("late Open edge should persist");
+    drop(topology_update);
+    timeout(Duration::from_secs(5), &mut settlement)
+        .await
+        .expect("settlement should finish after the writer leaves")
+        .expect("settlement should succeed");
+
+    assert_eq!(
+        state_db
+            .list_thread_spawn_descendants_with_status(
+                origin_thread_id,
+                codex_state::DirectionalThreadSpawnEdgeStatus::Open,
+            )
+            .await
+            .expect("open descendants should load"),
+        Vec::<ThreadId>::new()
+    );
+}
+
+#[tokio::test]
+async fn resumed_spine_transaction_root_does_not_reopen_closed_descendants() {
+    let harness = AgentControlHarness::new().await;
+    let (origin_thread_id, _origin_thread) = harness.start_thread().await;
+    let branch_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        parent_thread_id: origin_thread_id,
+        depth: 1,
+        agent_path: Some(AgentPath::try_from("/root/spawn_transaction_0").expect("agent path")),
+        agent_nickname: None,
+        agent_role: Some("branch".to_string()),
+    });
+
+    let branch_thread_id = harness
+        .control
+        .spawn_agent(
+            harness.config.clone(),
+            text_input("hello branch"),
+            Some(branch_source.clone()),
+        )
+        .await
+        .expect("branch spawn should succeed");
+    let child_thread_id = harness
+        .control
+        .spawn_agent(
+            harness.config.clone(),
+            text_input("hello child"),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: branch_thread_id,
+                depth: 2,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: Some("worker".to_string()),
+            })),
+        )
+        .await
+        .expect("child spawn should succeed");
+
+    let branch_thread = harness
+        .manager
+        .get_thread(branch_thread_id)
+        .await
+        .expect("branch thread should exist");
+    let child_thread = harness
+        .manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("child thread should exist");
+    persist_thread_for_tree_resume(&branch_thread, "branch persisted").await;
+    persist_thread_for_tree_resume(&child_thread, "child persisted").await;
+
+    harness
+        .control
+        .shutdown_spine_spawn_subtrees(&[branch_thread_id])
+        .await
+        .expect("Spine transaction subtree shutdown should succeed");
+
+    let topology_settlement = harness.control.state.begin_spine_spawn_settlement().await;
+    let control = harness.control.clone();
+    let config = harness.config.clone();
+    let resume = control.resume_agent_from_rollout(config, branch_thread_id, branch_source);
+    tokio::pin!(resume);
+    assert!(
+        poll!(&mut resume).is_pending(),
+        "native resume must join the topology-writer epoch"
+    );
+    drop(topology_settlement);
+    let resumed_branch_thread_id = timeout(Duration::from_secs(5), &mut resume)
+        .await
+        .expect("resume should finish after settlement")
+        .expect("explicit branch resume should succeed");
+    assert_eq!(resumed_branch_thread_id, branch_thread_id);
+    assert_eq!(
+        harness.control.get_status(child_thread_id).await,
+        AgentStatus::NotFound
+    );
+    let state_db = harness.state_db.as_ref().expect("state db");
+    assert_eq!(
+        state_db
+            .list_thread_spawn_descendants_with_status(
+                branch_thread_id,
+                codex_state::DirectionalThreadSpawnEdgeStatus::Open,
+            )
+            .await
+            .expect("open descendants should load"),
+        Vec::<ThreadId>::new()
+    );
+
+    harness
+        .control
+        .shutdown_spine_spawn_subtrees(&[branch_thread_id])
+        .await
+        .expect("resumed branch cleanup should succeed");
 }
 
 #[tokio::test]

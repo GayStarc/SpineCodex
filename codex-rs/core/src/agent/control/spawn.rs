@@ -373,6 +373,7 @@ impl AgentControl {
             self.touch_loaded_v2_residency(&state, thread_id).await;
             return Ok(());
         }
+        let _topology_update = self.state.begin_thread_spawn_topology_update().await;
         if self.state.agent_metadata_for_thread(thread_id).is_none() {
             return Err(CodexErr::ThreadNotFound(thread_id));
         }
@@ -536,6 +537,7 @@ impl AgentControl {
         initial_input: SpawnInitialInput,
         prepared: PreparedAgentSpawn,
     ) -> CodexResult<LiveAgent> {
+        let topology_update = self.state.begin_thread_spawn_topology_update().await;
         let PreparedAgentSpawn {
             config,
             options,
@@ -645,6 +647,7 @@ impl AgentControl {
             notification_source.as_ref(),
         )
         .await;
+        drop(topology_update);
 
         let initial_input_result = match initial_input {
             SpawnInitialInput::UserInput(input) => {
@@ -874,6 +877,7 @@ impl AgentControl {
         thread_id: ThreadId,
         session_source: SessionSource,
     ) -> CodexResult<ThreadId> {
+        let _topology_update = self.state.begin_thread_spawn_topology_update().await;
         let root_depth = thread_spawn_depth(&session_source).unwrap_or(0);
         let (resumed_thread_id, resumed_multi_agent_version) = Box::pin(
             self.resume_single_agent_from_rollout(config.clone(), thread_id, session_source),

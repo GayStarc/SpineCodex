@@ -12,6 +12,9 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
+use tokio::sync::RwLock;
+use tokio::sync::RwLockReadGuard;
+use tokio::sync::RwLockWriteGuard;
 
 /// This structure is used to add some limits on the multi-agent capabilities for Codex. In
 /// the current implementation, it limits:
@@ -23,6 +26,7 @@ use std::sync::atomic::Ordering;
 pub(crate) struct AgentRegistry {
     active_agents: Mutex<ActiveAgents>,
     total_count: AtomicUsize,
+    thread_spawn_topology: RwLock<()>,
 }
 
 #[derive(Default)]
@@ -78,6 +82,16 @@ pub(crate) fn exceeds_thread_spawn_depth_limit(depth: i32, max_depth: i32) -> bo
 }
 
 impl AgentRegistry {
+    /// Join the shared topology-writer epoch used by native spawn and resume.
+    pub(crate) async fn begin_thread_spawn_topology_update(&self) -> RwLockReadGuard<'_, ()> {
+        self.thread_spawn_topology.read().await
+    }
+
+    /// Wait for current topology writers and exclude new ones while a Spine transaction settles.
+    pub(crate) async fn begin_spine_spawn_settlement(&self) -> RwLockWriteGuard<'_, ()> {
+        self.thread_spawn_topology.write().await
+    }
+
     pub(crate) fn reserve_spawn_slot(
         self: &Arc<Self>,
         max_threads: Option<usize>,

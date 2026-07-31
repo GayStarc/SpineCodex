@@ -181,6 +181,13 @@ impl SpineSpawnOverlay {
             .filter(|summary| !summary.is_empty())
     }
 
+    pub(crate) fn child_thread_ids(&self) -> impl Iterator<Item = &str> {
+        self.notification
+            .tasks
+            .iter()
+            .map(|task| task.thread_id.as_str())
+    }
+
     pub(crate) fn has_activity(&self, thread_id: &str) -> bool {
         self.visuals
             .get(thread_id)

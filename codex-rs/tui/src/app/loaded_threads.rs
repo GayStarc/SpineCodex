@@ -26,6 +26,7 @@ use std::collections::HashSet;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LoadedSubagentThread {
     pub(crate) thread_id: ThreadId,
+    pub(crate) parent_thread_id: ThreadId,
     pub(crate) agent_nickname: Option<String>,
     pub(crate) agent_role: Option<String>,
     pub(crate) agent_path: Option<String>,
@@ -85,6 +86,8 @@ pub(crate) fn find_loaded_subagent_threads_for_primary(
                 .remove(&thread_id)
                 .map(|thread| LoadedSubagentThread {
                     thread_id,
+                    parent_thread_id: thread_spawn_parent_thread_id(&thread.source)
+                        .expect("loaded subagent was selected by its thread-spawn parent"),
                     agent_nickname: thread.agent_nickname,
                     agent_role: thread.agent_role,
                     agent_path: thread_spawn_agent_path(&thread.source),
@@ -105,7 +108,7 @@ pub(super) fn thread_spawn_agent_path(source: &SessionSource) -> Option<String> 
     }
 }
 
-fn thread_spawn_parent_thread_id(source: &SessionSource) -> Option<ThreadId> {
+pub(super) fn thread_spawn_parent_thread_id(source: &SessionSource) -> Option<ThreadId> {
     match source {
         SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
             parent_thread_id, ..
@@ -220,12 +223,14 @@ mod tests {
             vec![
                 LoadedSubagentThread {
                     thread_id: child_thread_id,
+                    parent_thread_id: primary_thread_id,
                     agent_nickname: Some("Scout".to_string()),
                     agent_role: Some("explorer".to_string()),
                     agent_path: None,
                 },
                 LoadedSubagentThread {
                     thread_id: grandchild_thread_id,
+                    parent_thread_id: child_thread_id,
                     agent_nickname: Some("Atlas".to_string()),
                     agent_role: Some("worker".to_string()),
                     agent_path: None,
