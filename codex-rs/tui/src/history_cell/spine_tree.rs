@@ -359,6 +359,11 @@ impl SpineTreeViewState {
         ))
     }
 
+    pub(crate) fn spawn_summary_for_child_thread(&self, thread_id: &str) -> Option<&str> {
+        let index = self.unique_overlay_index(|overlay| overlay.has_child_thread(thread_id))?;
+        self.overlays[index].summary_for_child_thread(thread_id)
+    }
+
     pub(crate) fn is_activity_seeded(&self, turn_id: &str, call_id: &str, thread_id: &str) -> bool {
         self.unique_overlay_index(|overlay| {
             overlay.turn_id() == turn_id

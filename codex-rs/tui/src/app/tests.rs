@@ -2745,7 +2745,7 @@ fn install_live_spawn_overlay(
     app: &mut App,
     parent_thread_id: ThreadId,
     call_id: &str,
-    children: &[(ThreadId, &str)],
+    children: &[(ThreadId, &str, &str)],
 ) {
     let state = app.spine_tree_views.entry(parent_thread_id).or_default();
     state.apply_tree_update(app_spine_snapshot(parent_thread_id, "turn-spawn", 1, None));
@@ -2757,9 +2757,9 @@ fn install_live_spawn_overlay(
             .iter()
             .enumerate()
             .map(
-                |(ordinal, (thread_id, agent_path))| SpineSpawnTaskProgress {
+                |(ordinal, (thread_id, agent_path, summary))| SpineSpawnTaskProgress {
                     ordinal: ordinal.try_into().expect("test task ordinal fits u32"),
-                    summary: format!("worker {ordinal}"),
+                    summary: (*summary).to_string(),
                     thread_id: thread_id.to_string(),
                     agent_path: Some((*agent_path).to_string()),
                     status: CollabAgentStatus::Running,
@@ -2798,14 +2798,22 @@ async fn open_agent_picker_shows_visible_spine_spawn_child_in_native_picker() ->
         &mut app,
         parent_thread_id,
         "spawn-visible",
-        &[(child_thread_id, "/root/spawn-child")],
+        &[(
+            child_thread_id,
+            "/root/spawn_callpfyuxzsfzi8dz0oa_2",
+            "Audit cache invalidation",
+        )],
     );
 
     app.open_agent_picker(&mut app_server).await;
 
     let rendered = render_bottom_popup(&app.chat_widget, /*width*/ 100);
     assert!(rendered.contains("Subagents"), "{rendered}");
-    assert!(rendered.contains("/root/spawn-child"), "{rendered}");
+    assert!(rendered.contains("Audit cache invalidation"), "{rendered}");
+    assert!(
+        !rendered.contains("/root/spawn_callpfyuxzsfzi8dz0oa_2"),
+        "{rendered}"
+    );
     assert!(!rendered.contains("Sub-agents running"), "{rendered}");
 
     app.chat_widget
@@ -2832,17 +2840,18 @@ async fn open_agent_picker_shows_spine_and_native_children_once() -> Result<()> 
         &mut app,
         parent_thread_id,
         "spawn-visible",
-        &[(spine_child_thread_id, "/root/spawn-child")],
+        &[(
+            spine_child_thread_id,
+            "/root/spawn-child",
+            "Trace the Spine branch",
+        )],
     );
 
     app.open_agent_picker(&mut app_server).await;
 
     let rendered = render_bottom_popup(&app.chat_widget, /*width*/ 100);
-    assert_eq!(
-        rendered.matches("/root/spawn-child").count(),
-        1,
-        "{rendered}"
-    );
+    assert!(rendered.contains("Trace the Spine branch"), "{rendered}");
+    assert!(!rendered.contains("/root/spawn-child"), "{rendered}");
     assert_eq!(
         rendered.matches("/root/native-child").count(),
         1,
@@ -2866,13 +2875,18 @@ async fn open_agent_picker_shows_spine_child_from_unfocused_overlay() -> Result<
         &mut app,
         inactive_parent_thread_id,
         "spawn-inactive",
-        &[(child_thread_id, "/root/background-child")],
+        &[(
+            child_thread_id,
+            "/root/background-child",
+            "Inspect background state",
+        )],
     );
 
     app.open_agent_picker(&mut app_server).await;
 
     let rendered = render_bottom_popup(&app.chat_widget, /*width*/ 100);
-    assert!(rendered.contains("/root/background-child"), "{rendered}");
+    assert!(rendered.contains("Inspect background state"), "{rendered}");
+    assert!(!rendered.contains("/root/background-child"), "{rendered}");
     assert!(!rendered.contains("Sub-agents running"), "{rendered}");
     Ok(())
 }
@@ -2890,7 +2904,11 @@ async fn open_agent_picker_keeps_native_format_after_spawn_cancel() -> Result<()
         &mut app,
         parent_thread_id,
         "spawn-cancelled",
-        &[(child_thread_id, "/root/cancelled-child")],
+        &[(
+            child_thread_id,
+            "/root/cancelled-child",
+            "Investigate cancellation",
+        )],
     );
 
     app.mark_agent_picker_thread_closed(child_thread_id);
@@ -2928,7 +2946,11 @@ async fn open_agent_picker_keeps_native_format_after_spine_spawn_settles() -> Re
         &mut app,
         parent_thread_id,
         "spawn-settled",
-        &[(child_thread_id, "/root/settled-child")],
+        &[(
+            child_thread_id,
+            "/root/settled-child",
+            "Inspect settled state",
+        )],
     );
     let mut settled = app_spine_snapshot(parent_thread_id, "turn-spawn", 2, None);
     settled.settled_spawn_call_ids = vec!["spawn-settled".to_string()];
@@ -2966,17 +2988,29 @@ async fn open_agent_picker_shows_nested_spine_descendant_and_selects_it() -> Res
         &mut app,
         parent_thread_id,
         "spawn-nested",
-        &[(child_thread_id, "/root/replay-child")],
+        &[(
+            child_thread_id,
+            "/root/replay-child",
+            "Own the parent branch",
+        )],
+    );
+    install_live_spawn_overlay(
+        &mut app,
+        child_thread_id,
+        "spawn-descendant",
+        &[(
+            descendant_thread_id,
+            "/root/replay-child/sub-child",
+            "Inspect the nested branch",
+        )],
     );
 
     app.open_agent_picker(&mut app_server).await;
 
     let rendered = render_bottom_popup(&app.chat_widget, /*width*/ 100);
-    assert!(rendered.contains("/root/replay-child"), "{rendered}");
-    assert!(
-        rendered.contains("/root/replay-child/sub-child"),
-        "{rendered}"
-    );
+    assert!(rendered.contains("Own the parent branch"), "{rendered}");
+    assert!(rendered.contains("Inspect the nested branch"), "{rendered}");
+    assert!(!rendered.contains("/root/replay-child"), "{rendered}");
 
     app.chat_widget
         .handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
@@ -3003,14 +3037,15 @@ async fn open_agent_picker_keeps_native_format_during_history_replay() -> Result
         &mut app,
         parent_thread_id,
         "spawn-during-replay",
-        &[(child_thread_id, "/root/replay-child")],
+        &[(child_thread_id, "/root/replay-child", "Replay the branch")],
     );
 
     app.open_agent_picker(&mut app_server).await;
 
     let rendered = render_bottom_popup(&app.chat_widget, /*width*/ 100);
     assert!(rendered.contains("Subagents"), "{rendered}");
-    assert!(rendered.contains("/root/replay-child"), "{rendered}");
+    assert!(rendered.contains("Replay the branch"), "{rendered}");
+    assert!(!rendered.contains("/root/replay-child"), "{rendered}");
     assert!(!rendered.contains("Sub-agents running"), "{rendered}");
     Ok(())
 }

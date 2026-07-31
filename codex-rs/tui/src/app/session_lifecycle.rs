@@ -83,11 +83,17 @@ impl App {
                     is_primary,
                 );
                 let uuid = thread_id.to_string();
-                let description = entry
-                    .agent_path
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|path| !path.is_empty())
+                let description = self
+                    .spine_tree_views
+                    .values()
+                    .find_map(|state| state.spawn_summary_for_child_thread(&uuid))
+                    .or_else(|| {
+                        entry
+                            .agent_path
+                            .as_deref()
+                            .map(str::trim)
+                            .filter(|path| !path.is_empty())
+                    })
                     .unwrap_or(&uuid)
                     .to_string();
                 SelectionItem {
