@@ -38,7 +38,7 @@ use super::textarea::TextAreaState;
 
 const SPINE_FEEDBACK_MAX_NOTE_BYTES: usize = 8 * 1024;
 const NOTE_INPUT_MAX_HEIGHT: u16 = 6;
-const SPINE_FEEDBACK_VIEW_ID: &str = "spine-feedback";
+pub(crate) const SPINE_FEEDBACK_VIEW_ID: &str = "spine-feedback";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SpineFeedbackDraft {
@@ -465,7 +465,7 @@ impl SpineFeedbackView {
         lines.push(Line::from(""));
         push_wrapped(&mut lines, Line::from("Sends:".bold()), content_width);
         for item in [
-            "optional feedback note, when entered".to_string(),
+            "optional feedback note, trimmed and not redacted, when entered".to_string(),
             "redacted rollout structure for this thread and all known spawned descendants"
                 .to_string(),
             format!(
@@ -845,10 +845,11 @@ mod tests {
     }
 
     #[test]
-    fn consent_copy_distinguishes_screenshot_pixels_from_rollout_redaction() {
+    fn consent_copy_distinguishes_unredacted_inputs_from_rollout_redaction() {
         let (mut view, _rx) = make_view();
         view.enter_consent();
         let zero = render(&view, 80);
+        assert!(zero.contains("optional feedback note, trimmed and not redacted"));
         assert!(zero.contains("redacted rollout structure"));
         assert!(zero.contains("0 screenshots, whose pixels are not redacted"));
 

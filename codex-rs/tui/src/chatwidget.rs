@@ -640,6 +640,10 @@ pub(crate) struct ChatWidget {
     #[cfg(test)]
     pet_image_support_override: Option<crate::pets::PetImageSupport>,
     thread_id: Option<ThreadId>,
+    /// Stable authority of the currently attached app-server thread.
+    spine_feedback_enabled: Option<bool>,
+    /// UI projection of App-owned per-thread upload guards.
+    spine_feedback_in_flight: HashSet<ThreadId>,
     last_spine_tree_snapshot: Option<SpineTreeUpdatedNotification>,
     live_spine_tree_cell: Option<history_cell::SpineTreeUpdateCell>,
     /// Nudge dismissals that should survive draft edits within the current thread scope.
@@ -1010,6 +1014,22 @@ impl ChatWidget {
         self.request_redraw();
     }
 
+    pub(crate) fn set_spine_feedback_in_flight(&mut self, thread_id: ThreadId, in_flight: bool) {
+        if in_flight {
+            self.spine_feedback_in_flight.insert(thread_id);
+        } else {
+            self.spine_feedback_in_flight.remove(&thread_id);
+        }
+    }
+
+    pub(crate) fn is_spine_feedback_in_flight(&self, thread_id: ThreadId) -> bool {
+        self.spine_feedback_in_flight.contains(&thread_id)
+    }
+
+    pub(crate) fn clear_spine_feedback_in_flight(&mut self) {
+        self.spine_feedback_in_flight.clear();
+    }
+
     pub(crate) fn reopen_spine_feedback(
         &mut self,
         draft: crate::bottom_pane::SpineFeedbackDraft,
@@ -1020,7 +1040,8 @@ impl ChatWidget {
             Some(error),
             self.app_event_tx.clone(),
         );
-        self.bottom_pane.show_view(Box::new(view));
+        self.bottom_pane
+            .replace_view_by_id(crate::bottom_pane::SPINE_FEEDBACK_VIEW_ID, Box::new(view));
         self.request_redraw();
     }
 

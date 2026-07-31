@@ -84,6 +84,7 @@ impl App {
                 // thread-scoped state from the currently active session.
                 session.collaboration_mode = None;
                 session.personality = None;
+                session.spine_feedback_enabled = None;
             }
             session
         } else {
@@ -95,6 +96,7 @@ impl App {
                 model: self.chat_widget.current_model().to_string(),
                 model_provider_id: self.config.model_provider_id.clone(),
                 service_tier: self.chat_widget.current_service_tier().map(str::to_string),
+                spine_feedback_enabled: None,
                 approval_policy: AskForApproval::from(
                     self.config.permissions.approval_policy.value(),
                 ),
@@ -179,6 +181,7 @@ mod tests {
             model: "gpt-test".to_string(),
             model_provider_id: "test-provider".to_string(),
             service_tier: None,
+            spine_feedback_enabled: Some(false),
             approval_policy: AskForApproval::Never,
             approvals_reviewer: ApprovalsReviewer::User,
             permission_profile: PermissionProfile::read_only(),
@@ -452,6 +455,10 @@ mod tests {
             app.config.permissions.permission_profile().clone(),
             "thread/read fallback must use the active widget permissions rather than stale app \
              config defaults"
+        );
+        assert_eq!(
+            session.spine_feedback_enabled, None,
+            "thread/read does not carry feedback authority"
         );
     }
 }

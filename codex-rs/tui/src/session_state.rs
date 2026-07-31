@@ -35,6 +35,11 @@ pub(crate) struct ThreadSessionState {
     pub(crate) model: String,
     pub(crate) model_provider_id: String,
     pub(crate) service_tier: Option<String>,
+    /// Stable feedback authority captured from the app-server thread lifecycle response.
+    ///
+    /// This is session-scoped and must not be recomputed from mutable process
+    /// config. `None` means the lifecycle evidence did not carry authority.
+    pub(crate) spine_feedback_enabled: Option<bool>,
     pub(crate) approval_policy: AskForApproval,
     pub(crate) approvals_reviewer: codex_protocol::config_types::ApprovalsReviewer,
     /// Permission snapshot used by TUI display surfaces. Legacy app-server

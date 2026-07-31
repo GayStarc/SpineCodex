@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fs::File;
+use std::fs::Metadata;
 use std::fs::OpenOptions;
 use std::io;
 use std::io::BufRead;
@@ -62,6 +63,9 @@ const MAX_SCREENSHOT_PIXELS: u64 = 16_000_000;
 const MAX_SCREENSHOT_DECODE_ALLOC_BYTES: u64 = MAX_SCREENSHOT_PIXELS * 8;
 const MAX_SCREENSHOT_BASE64_BYTES: usize = ((MAX_SCREENSHOT_BYTES + 2) / 3) * 4 + 4;
 const MAX_SOURCE_LINE_BYTES: usize = 8 * 1024 * 1024;
+const MAX_PACKAGE_SOURCE_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_PACKAGE_TRACKED_THREAD_IDS: usize = 131_072;
+const MAX_PACKAGE_SOURCE_RECORDS: u64 = MAX_PACKAGE_TRACKED_THREAD_IDS as u64;
 const ROLLOUT_READER_CAPACITY: usize = 64 * 1024;
 
 pub(super) async fn spine_feedback_upload(
@@ -115,11 +119,13 @@ pub(super) async fn spine_feedback_upload(
         .list_agent_subtree_thread_ids(root_thread_id)
         .await
         .map_err(|err| internal_error(format!("failed to snapshot Spine thread subtree: {err}")))?;
+    validate_subtree_thread_count(subtree_thread_ids.len()).map_err(map_bundle_error)?;
     let subtree_thread_ids = normalize_subtree_thread_ids(root_thread_id, subtree_thread_ids);
     let parent_thread_ids =
         resolve_parent_thread_ids(&thread_manager, state_db.as_ref(), &subtree_thread_ids).await;
-    let captures =
-        capture_rollout_sources(&thread_manager, state_db.as_ref(), &subtree_thread_ids).await;
+    let captures = capture_rollout_sources(&thread_manager, state_db.as_ref(), &subtree_thread_ids)
+        .await
+        .map_err(map_bundle_error)?;
 
     let rollout_limit = SPINE_FEEDBACK_MAX_ATTACHMENT_BYTES
         .checked_sub(screenshot_bytes)
@@ -129,8 +135,7 @@ pub(super) async fn spine_feedback_upload(
             root_thread_id,
             captures,
             parent_thread_ids,
-            rollout_limit,
-            MAX_SOURCE_LINE_BYTES,
+            BundleBuildLimits::production(rollout_limit),
         )
     })
     .await
@@ -157,7 +162,7 @@ pub(super) async fn spine_feedback_upload(
     upload_result_to_response(upload_result)
 }
 
-fn spine_feedback_enabled(thread: &codex_core::CodexThread) -> bool {
+pub(super) fn spine_feedback_enabled(thread: &codex_core::CodexThread) -> bool {
     spine_feedback_enabled_by(|feature| thread.enabled(feature))
 }
 
@@ -183,6 +188,16 @@ fn normalize_subtree_thread_ids(
     normalized.push(root_thread_id);
     normalized.extend(descendants);
     normalized
+}
+
+fn validate_subtree_thread_count(thread_count: usize) -> Result<(), BundleBuildError> {
+    if thread_count > MAX_PACKAGE_TRACKED_THREAD_IDS {
+        return Err(BundleBuildError::SourceWorkLimitExceeded {
+            resource: "thread identifiers",
+            limit: MAX_PACKAGE_TRACKED_THREAD_IDS as u64,
+        });
+    }
+    Ok(())
 }
 
 async fn resolve_parent_thread_ids(
@@ -222,15 +237,31 @@ async fn capture_rollout_sources(
     thread_manager: &ThreadManager,
     state_db: Option<&StateDbHandle>,
     thread_ids: &[ThreadId],
-) -> Vec<CapturedThread> {
+) -> Result<Vec<CapturedThread>, BundleBuildError> {
+    capture_rollout_sources_with_limit(
+        thread_manager,
+        state_db,
+        thread_ids,
+        MAX_PACKAGE_SOURCE_BYTES,
+    )
+    .await
+}
+
+async fn capture_rollout_sources_with_limit(
+    thread_manager: &ThreadManager,
+    state_db: Option<&StateDbHandle>,
+    thread_ids: &[ThreadId],
+    source_bytes_limit: u64,
+) -> Result<Vec<CapturedThread>, BundleBuildError> {
     let mut captures = Vec::with_capacity(thread_ids.len());
+    let mut captured_source_bytes = 0_u64;
     for thread_id in thread_ids {
         let source = match thread_manager.get_thread(*thread_id).await {
             Ok(thread) => {
                 if thread.flush_rollout().await.is_err() {
                     CapturedSource::FlushFailed
                 } else if let Some(path) = thread.rollout_path() {
-                    capture_path(path).await
+                    capture_path(path).await?
                 } else {
                     CapturedSource::Missing
                 }
@@ -240,29 +271,43 @@ async fn capture_rollout_sources(
                     .find_rollout_path_by_id(*thread_id, /*archived_only*/ None)
                     .await
                 {
-                    Ok(Some(path)) => capture_path(path).await,
+                    Ok(Some(path)) => capture_path(path).await?,
                     Ok(None) => CapturedSource::Missing,
                     Err(_) => CapturedSource::Unavailable,
                 },
                 None => CapturedSource::Unavailable,
             },
         };
+        if let CapturedSource::Ready(snapshot) = &source {
+            captured_source_bytes = captured_source_bytes
+                .checked_add(snapshot.captured_bytes)
+                .ok_or(BundleBuildError::SourceWorkLimitExceeded {
+                    resource: "captured bytes",
+                    limit: source_bytes_limit,
+                })?;
+            if captured_source_bytes > source_bytes_limit {
+                return Err(BundleBuildError::SourceWorkLimitExceeded {
+                    resource: "captured bytes",
+                    limit: source_bytes_limit,
+                });
+            }
+        }
         captures.push(CapturedThread {
             thread_id: *thread_id,
             source,
         });
     }
-    captures
+    Ok(captures)
 }
 
-async fn capture_path(path: PathBuf) -> CapturedSource {
-    match tokio::task::spawn_blocking(move || open_rollout_source(&path)).await {
+async fn capture_path(path: PathBuf) -> Result<CapturedSource, BundleBuildError> {
+    match tokio::task::spawn_blocking(move || snapshot_rollout_source(&path)).await {
         Ok(source) => source,
-        Err(_) => CapturedSource::Unavailable,
+        Err(_) => Ok(CapturedSource::Unavailable),
     }
 }
 
-fn open_rollout_source(path: &Path) -> CapturedSource {
+fn rollout_source_open_options() -> OpenOptions {
     let mut options = OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
@@ -271,22 +316,80 @@ fn open_rollout_source(path: &Path) -> CapturedSource {
 
         options.custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW);
     }
+    options
+}
 
-    let file = match options.open(path) {
+fn snapshot_rollout_source(path: &Path) -> Result<CapturedSource, BundleBuildError> {
+    let file = match rollout_source_open_options().open(path) {
         Ok(file) => file,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return CapturedSource::Missing,
-        Err(_) => return CapturedSource::Unreadable,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(CapturedSource::Missing),
+        Err(err) if is_source_capture_resource_exhaustion(&err) => {
+            return Err(BundleBuildError::SourceCaptureResourceExhausted(err));
+        }
+        Err(_) => return Ok(CapturedSource::Unreadable),
     };
-    let Ok(metadata) = file.metadata() else {
-        return CapturedSource::Unreadable;
+    let metadata = match file.metadata() {
+        Ok(metadata) => metadata,
+        Err(err) if is_source_capture_resource_exhaustion(&err) => {
+            return Err(BundleBuildError::SourceCaptureResourceExhausted(err));
+        }
+        Err(_) => return Ok(CapturedSource::Unreadable),
     };
     if !metadata.is_file() {
-        return CapturedSource::Unreadable;
+        return Ok(CapturedSource::Unreadable);
     }
-    CapturedSource::Ready {
-        file,
+    let identity = RolloutSourceIdentity::from_metadata(&metadata)
+        .map_err(BundleBuildError::SourceIdentityUnavailable)?;
+    Ok(CapturedSource::Ready(CapturedFileSnapshot {
+        path: path.to_path_buf(),
         captured_bytes: metadata.len(),
+        identity,
+    }))
+}
+
+fn is_source_capture_resource_exhaustion(error: &io::Error) -> bool {
+    if error.kind() == io::ErrorKind::OutOfMemory {
+        return true;
     }
+    #[cfg(unix)]
+    {
+        return matches!(
+            error.raw_os_error(),
+            Some(libc::EMFILE | libc::ENFILE | libc::ENOMEM)
+        );
+    }
+    #[cfg(windows)]
+    {
+        return matches!(error.raw_os_error(), Some(4 | 8 | 14));
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        false
+    }
+}
+
+fn reopen_rollout_source(snapshot: &CapturedFileSnapshot) -> io::Result<File> {
+    let file = rollout_source_open_options().open(&snapshot.path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "captured rollout source is no longer a regular file",
+        ));
+    }
+    if RolloutSourceIdentity::from_metadata(&metadata)? != snapshot.identity {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "captured rollout source identity changed",
+        ));
+    }
+    if metadata.len() < snapshot.captured_bytes {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "captured rollout source shrank",
+        ));
+    }
+    Ok(file)
 }
 
 #[derive(Debug)]
@@ -297,11 +400,65 @@ struct CapturedThread {
 
 #[derive(Debug)]
 enum CapturedSource {
-    Ready { file: File, captured_bytes: u64 },
+    Ready(CapturedFileSnapshot),
     Missing,
     FlushFailed,
     Unavailable,
     Unreadable,
+}
+
+#[derive(Debug)]
+struct CapturedFileSnapshot {
+    path: PathBuf,
+    captured_bytes: u64,
+    identity: RolloutSourceIdentity,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RolloutSourceIdentity {
+    #[cfg(unix)]
+    Unix { device: u64, inode: u64 },
+}
+
+impl RolloutSourceIdentity {
+    fn from_metadata(metadata: &Metadata) -> io::Result<Self> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+
+            Ok(Self::Unix {
+                device: metadata.dev(),
+                inode: metadata.ino(),
+            })
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = metadata;
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "stable rollout source identity is unavailable on this platform",
+            ))
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct BundleBuildLimits {
+    output_bytes: usize,
+    source_line_bytes: usize,
+    source_bytes: u64,
+    source_records: u64,
+}
+
+impl BundleBuildLimits {
+    const fn production(output_bytes: usize) -> Self {
+        Self {
+            output_bytes,
+            source_line_bytes: MAX_SOURCE_LINE_BYTES,
+            source_bytes: MAX_PACKAGE_SOURCE_BYTES,
+            source_records: MAX_PACKAGE_SOURCE_RECORDS,
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -352,9 +509,30 @@ fn build_rollout_debug_attachment(
     root_thread_id: ThreadId,
     captures: Vec<CapturedThread>,
     parent_thread_ids: HashMap<ThreadId, ThreadId>,
-    output_limit: usize,
-    source_line_limit: usize,
+    limits: BundleBuildLimits,
 ) -> Result<Vec<u8>, BundleBuildError> {
+    let total_captured_bytes = captures.iter().try_fold(0_u64, |total, capture| {
+        let captured_bytes = match &capture.source {
+            CapturedSource::Ready(snapshot) => snapshot.captured_bytes,
+            CapturedSource::Missing
+            | CapturedSource::FlushFailed
+            | CapturedSource::Unavailable
+            | CapturedSource::Unreadable => 0,
+        };
+        total
+            .checked_add(captured_bytes)
+            .ok_or(BundleBuildError::SourceWorkLimitExceeded {
+                resource: "captured bytes",
+                limit: limits.source_bytes,
+            })
+    })?;
+    if total_captured_bytes > limits.source_bytes {
+        return Err(BundleBuildError::SourceWorkLimitExceeded {
+            resource: "captured bytes",
+            limit: limits.source_bytes,
+        });
+    }
+
     let mut redactor = RolloutDebugRedactor::default();
     let mut local_thread_ids = HashMap::with_capacity(captures.len());
     for capture in &captures {
@@ -387,27 +565,38 @@ fn build_rollout_debug_attachment(
     };
 
     let exceeded = Arc::new(AtomicBool::new(false));
-    let capped = CappedWriter::new(output_limit, Arc::clone(&exceeded));
+    let capped = CappedWriter::new(limits.output_bytes, Arc::clone(&exceeded));
     let mut gzip = GzBuilder::new()
         .mtime(0)
         .write(capped, Compression::default());
-    write_json_line(&mut gzip, &manifest, output_limit, &exceeded)?;
+    write_json_line(&mut gzip, &manifest, limits.output_bytes, &exceeded)?;
 
+    let mut source_records = 0_u64;
     for capture in captures {
-        let CapturedSource::Ready {
-            file,
-            captured_bytes,
-        } = capture.source
-        else {
+        let CapturedSource::Ready(snapshot) = capture.source else {
             continue;
         };
+        let file = reopen_rollout_source(&snapshot).map_err(BundleBuildError::SourceRead)?;
         let mut reader = BufReader::with_capacity(ROLLOUT_READER_CAPACITY, file);
-        let mut remaining = captured_bytes;
+        let mut remaining = snapshot.captured_bytes;
         let mut ordinal = 0_u64;
         while let Some(line) =
-            read_bounded_source_line(&mut reader, &mut remaining, source_line_limit)
+            read_bounded_source_line(&mut reader, &mut remaining, limits.source_line_bytes)
                 .map_err(BundleBuildError::SourceRead)?
         {
+            source_records =
+                source_records
+                    .checked_add(1)
+                    .ok_or(BundleBuildError::SourceWorkLimitExceeded {
+                        resource: "records",
+                        limit: limits.source_records,
+                    })?;
+            if source_records > limits.source_records {
+                return Err(BundleBuildError::SourceWorkLimitExceeded {
+                    resource: "records",
+                    limit: limits.source_records,
+                });
+            }
             let item = match line {
                 BoundedSourceLine::Retained(line) => redactor
                     .redact_json_line_to_value(line.as_slice())
@@ -420,7 +609,7 @@ fn build_rollout_debug_attachment(
                 ordinal,
                 item,
             };
-            write_json_line(&mut gzip, &record, output_limit, &exceeded)?;
+            write_json_line(&mut gzip, &record, limits.output_bytes, &exceeded)?;
             ordinal = ordinal.saturating_add(1);
         }
         if remaining != 0 {
@@ -434,7 +623,7 @@ fn build_rollout_debug_attachment(
     let capped = gzip.finish().map_err(|err| {
         if exceeded.load(Ordering::Relaxed) {
             BundleBuildError::AttachmentTooLarge {
-                limit: output_limit,
+                limit: limits.output_bytes,
             }
         } else {
             BundleBuildError::Encoding(err)
@@ -465,8 +654,8 @@ fn manifest_parent(
 
 fn manifest_source(source: &CapturedSource) -> ManifestSource {
     match source {
-        CapturedSource::Ready { captured_bytes, .. } => ManifestSource::Ready {
-            captured_bytes: *captured_bytes,
+        CapturedSource::Ready(snapshot) => ManifestSource::Ready {
+            captured_bytes: snapshot.captured_bytes,
         },
         CapturedSource::Missing => ManifestSource::Missing,
         CapturedSource::FlushFailed => ManifestSource::FlushFailed,
@@ -605,6 +794,12 @@ impl Write for CappedWriter {
 enum BundleBuildError {
     #[error("rollout debug attachment exceeds {limit} bytes")]
     AttachmentTooLarge { limit: usize },
+    #[error("rollout debug source {resource} exceeds package limit {limit}")]
+    SourceWorkLimitExceeded { resource: &'static str, limit: u64 },
+    #[error("rollout source capture exhausted process resources")]
+    SourceCaptureResourceExhausted(#[source] io::Error),
+    #[error("stable rollout source identity is unavailable")]
+    SourceIdentityUnavailable(#[source] io::Error),
     #[error("failed to read captured rollout source")]
     SourceRead(#[source] io::Error),
     #[error("failed to encode rollout debug attachment")]
@@ -617,8 +812,11 @@ enum BundleBuildError {
 
 fn map_bundle_error(error: BundleBuildError) -> JSONRPCErrorError {
     match error {
-        BundleBuildError::AttachmentTooLarge { .. } => invalid_request(error.to_string()),
+        BundleBuildError::AttachmentTooLarge { .. }
+        | BundleBuildError::SourceWorkLimitExceeded { .. } => invalid_request(error.to_string()),
         BundleBuildError::SourceRead(_)
+        | BundleBuildError::SourceCaptureResourceExhausted(_)
+        | BundleBuildError::SourceIdentityUnavailable(_)
         | BundleBuildError::Encoding(_)
         | BundleBuildError::Serialization(_)
         | BundleBuildError::Redaction(_) => internal_error(error.to_string()),
@@ -750,7 +948,6 @@ mod tests {
     use std::collections::HashMap;
     use std::collections::HashSet;
     use std::fs;
-    use std::fs::Metadata;
     use std::fs::OpenOptions;
     use std::io;
     use std::io::BufRead;
@@ -790,6 +987,14 @@ mod tests {
     const STAGING_FILE_URL: &str = "file:///home/spine-feedback-staging/private.rs";
     const STAGING_SECRET: &str = "spine-feedback-staging-secret-canary";
     const STAGING_NONCE: &str = "v1";
+
+    fn bundle_limits(output_bytes: usize, source_line_bytes: usize) -> BundleBuildLimits {
+        BundleBuildLimits {
+            output_bytes,
+            source_line_bytes,
+            ..BundleBuildLimits::production(output_bytes)
+        }
+    }
 
     #[derive(Debug)]
     struct TestSessionFile {
@@ -1077,8 +1282,8 @@ mod tests {
     fn write_source(tempdir: &TempDir, name: &str, bytes: &[u8]) -> CapturedSource {
         let path = tempdir.path().join(name);
         std::fs::write(&path, bytes).expect("write source");
-        match open_rollout_source(&path) {
-            source @ CapturedSource::Ready { .. } => source,
+        match snapshot_rollout_source(&path).expect("snapshot source") {
+            source @ CapturedSource::Ready(_) => source,
             source => panic!("expected ready source, got {source:?}"),
         }
     }
@@ -1128,8 +1333,13 @@ mod tests {
         let late_child = thread_id(10);
         parents.insert(late_child, root);
 
-        let first = build_rollout_debug_attachment(root, captures, parents, 1024 * 1024, 512)
-            .expect("build attachment");
+        let first = build_rollout_debug_attachment(
+            root,
+            captures,
+            parents,
+            bundle_limits(1024 * 1024, 512),
+        )
+        .expect("build attachment");
         let lines = decode_lines(&first);
         let decompressed = serde_json::to_string(&lines).expect("serialize lines");
         assert!(!decompressed.contains(SECRET));
@@ -1151,32 +1361,25 @@ mod tests {
     }
 
     #[test]
-    fn captured_handle_excludes_appended_suffix_and_path_replacement() {
+    fn captured_snapshot_excludes_appended_suffix() {
         let tempdir = tempfile::tempdir().expect("tempdir");
         let root = thread_id(0);
         let source_path = tempdir.path().join("captured.jsonl");
-        let moved_path = tempdir.path().join("captured-original.jsonl");
         let original = b"{\"timestamp\":\"x\"}\n";
         std::fs::write(&source_path, original).expect("write original source");
-        let source = open_rollout_source(&source_path);
+        let source = snapshot_rollout_source(&source_path).expect("snapshot original source");
 
-        std::fs::rename(&source_path, &moved_path).expect("move captured inode");
         OpenOptions::new()
             .append(true)
-            .open(&moved_path)
+            .open(&source_path)
             .expect("open original inode for append")
             .write_all(
                 format!(
                     "{{\"timestamp\":\"x\",\"type\":\"future\",\"payload\":{{\"secret\":\"{SECRET}\"}}}}\n"
-                )
-                .as_bytes(),
             )
-            .expect("append after capture boundary");
-        std::fs::write(
-            &source_path,
-            b"{\"timestamp\":\"x\",\"type\":\"future\",\"payload\":{}}\n",
+            .as_bytes(),
         )
-        .expect("write replacement inode");
+        .expect("append after capture boundary");
 
         let bytes = build_rollout_debug_attachment(
             root,
@@ -1185,10 +1388,9 @@ mod tests {
                 source,
             }],
             HashMap::new(),
-            1024 * 1024,
-            1024,
+            bundle_limits(1024 * 1024, 1024),
         )
-        .expect("build from captured handle");
+        .expect("build from captured snapshot");
         let lines = decode_lines(&bytes);
         let encoded = serde_json::to_string(&lines).expect("serialize output");
 
@@ -1203,14 +1405,44 @@ mod tests {
     }
 
     #[test]
-    fn rollout_source_requires_an_opened_regular_file() {
+    fn captured_snapshot_rejects_path_replacement() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let root = thread_id(0);
+        let source_path = tempdir.path().join("captured.jsonl");
+        let moved_path = tempdir.path().join("captured-original.jsonl");
+        std::fs::write(&source_path, b"{\"timestamp\":\"x\"}\n").expect("write original source");
+        let source = snapshot_rollout_source(&source_path).expect("snapshot original source");
+
+        std::fs::rename(&source_path, &moved_path).expect("move captured inode");
+        std::fs::write(
+            &source_path,
+            b"{\"timestamp\":\"x\",\"type\":\"future\",\"payload\":{}}\n",
+        )
+        .expect("write replacement inode");
+
+        let error = build_rollout_debug_attachment(
+            root,
+            vec![CapturedThread {
+                thread_id: root,
+                source,
+            }],
+            HashMap::new(),
+            bundle_limits(1024 * 1024, 1024),
+        )
+        .expect_err("path replacement must invalidate the package");
+        assert!(matches!(error, BundleBuildError::SourceRead(_)));
+    }
+
+    #[test]
+    fn rollout_source_requires_a_regular_file_snapshot() {
         let tempdir = tempfile::tempdir().expect("tempdir");
         assert!(matches!(
-            open_rollout_source(tempdir.path()),
+            snapshot_rollout_source(tempdir.path()).expect("snapshot directory"),
             CapturedSource::Unreadable
         ));
         assert!(matches!(
-            open_rollout_source(&tempdir.path().join("missing.jsonl")),
+            snapshot_rollout_source(&tempdir.path().join("missing.jsonl"))
+                .expect("snapshot missing source"),
             CapturedSource::Missing
         ));
     }
@@ -1230,7 +1462,7 @@ mod tests {
         std::fs::write(&target, b"{}\n").expect("write symlink target");
         symlink(&target, &link).expect("create symlink");
         assert!(matches!(
-            open_rollout_source(&link),
+            snapshot_rollout_source(&link).expect("snapshot symlink"),
             CapturedSource::Unreadable
         ));
 
@@ -1243,12 +1475,21 @@ mod tests {
         assert_eq!(result, 0);
         let started = Instant::now();
         assert!(matches!(
-            open_rollout_source(&fifo),
+            snapshot_rollout_source(&fifo).expect("snapshot FIFO"),
             CapturedSource::Unreadable
         ));
         assert!(
             started.elapsed() < Duration::from_secs(1),
             "FIFO open must not block"
+        );
+
+        assert!(
+            is_source_capture_resource_exhaustion(&io::Error::from_raw_os_error(libc::EMFILE)),
+            "descriptor exhaustion must fail the package rather than become Unreadable"
+        );
+        assert!(
+            is_source_capture_resource_exhaustion(&io::Error::from_raw_os_error(libc::ENFILE)),
+            "system descriptor exhaustion must fail the package"
         );
     }
 
@@ -1264,19 +1505,81 @@ mod tests {
             }]
         };
 
-        let first =
-            build_rollout_debug_attachment(root, make_captures(), HashMap::new(), 4096, 4096)
-                .expect("first build");
-        let second =
-            build_rollout_debug_attachment(root, make_captures(), HashMap::new(), 4096, 4096)
-                .expect("second build");
+        let first = build_rollout_debug_attachment(
+            root,
+            make_captures(),
+            HashMap::new(),
+            bundle_limits(4096, 4096),
+        )
+        .expect("first build");
+        let second = build_rollout_debug_attachment(
+            root,
+            make_captures(),
+            HashMap::new(),
+            bundle_limits(4096, 4096),
+        )
+        .expect("second build");
         assert_eq!(first, second);
 
-        let error = build_rollout_debug_attachment(root, make_captures(), HashMap::new(), 1, 4096)
-            .expect_err("tiny output cap must fail");
+        let error = build_rollout_debug_attachment(
+            root,
+            make_captures(),
+            HashMap::new(),
+            bundle_limits(1, 4096),
+        )
+        .expect_err("tiny output cap must fail");
         assert!(matches!(
             error,
             BundleBuildError::AttachmentTooLarge { limit: 1 }
+        ));
+    }
+
+    #[test]
+    fn bundle_fails_closed_on_package_source_byte_and_record_limits() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let root = thread_id(0);
+        let source = b"{}\n{}\n{}\n";
+        let make_captures = || {
+            vec![CapturedThread {
+                thread_id: root,
+                source: write_source(&tempdir, "work-limits.jsonl", source),
+            }]
+        };
+
+        let byte_error = build_rollout_debug_attachment(
+            root,
+            make_captures(),
+            HashMap::new(),
+            BundleBuildLimits {
+                source_bytes: u64::try_from(source.len() - 1).expect("source length fits u64"),
+                ..bundle_limits(4096, 4096)
+            },
+        )
+        .expect_err("captured byte budget must fail before source scanning");
+        assert!(matches!(
+            byte_error,
+            BundleBuildError::SourceWorkLimitExceeded {
+                resource: "captured bytes",
+                ..
+            }
+        ));
+
+        let record_error = build_rollout_debug_attachment(
+            root,
+            make_captures(),
+            HashMap::new(),
+            BundleBuildLimits {
+                source_records: 2,
+                ..bundle_limits(4096, 4096)
+            },
+        )
+        .expect_err("record work budget must fail the entire package");
+        assert!(matches!(
+            record_error,
+            BundleBuildError::SourceWorkLimitExceeded {
+                resource: "records",
+                limit: 2
+            }
         ));
     }
 
@@ -1415,6 +1718,33 @@ mod tests {
             normalized,
             vec![root, thread_id(1), thread_id(2), thread_id(3)]
         );
+    }
+
+    #[test]
+    fn subtree_thread_count_fails_before_unbounded_package_work() {
+        validate_subtree_thread_count(MAX_PACKAGE_TRACKED_THREAD_IDS)
+            .expect("the tracked-ID boundary is accepted");
+
+        let error = validate_subtree_thread_count(MAX_PACKAGE_TRACKED_THREAD_IDS + 1)
+            .expect_err("a subtree larger than the tracked-ID budget must fail");
+        assert!(matches!(
+            error,
+            BundleBuildError::SourceWorkLimitExceeded {
+                resource: "thread identifiers",
+                limit,
+            } if limit == MAX_PACKAGE_TRACKED_THREAD_IDS as u64
+        ));
+    }
+
+    #[cfg(not(unix))]
+    #[test]
+    fn platform_without_stable_file_identity_fails_closed() {
+        let file = tempfile::tempfile().expect("create temporary source");
+        let metadata = file.metadata().expect("read source metadata");
+
+        let error = RolloutSourceIdentity::from_metadata(&metadata)
+            .expect_err("weak metadata must not stand in for file identity");
+        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
     }
 
     #[test]
@@ -1584,9 +1914,10 @@ mod tests {
         let captures = corpus
             .iter()
             .map(|session| {
-                let source = open_rollout_source(&session.path);
+                let source =
+                    snapshot_rollout_source(&session.path).expect("snapshot accepted source");
                 assert!(
-                    matches!(&source, CapturedSource::Ready { .. }),
+                    matches!(&source, CapturedSource::Ready(_)),
                     "accepted rollout source must remain ready"
                 );
                 CapturedThread {
@@ -1600,8 +1931,7 @@ mod tests {
             root_thread_id,
             captures,
             parents,
-            SPINE_FEEDBACK_MAX_ATTACHMENT_BYTES,
-            MAX_SOURCE_LINE_BYTES,
+            BundleBuildLimits::production(SPINE_FEEDBACK_MAX_ATTACHMENT_BYTES),
         )
         .expect("build accepted real-corpus attachment");
         assert!(bundle.len() < SPINE_FEEDBACK_MAX_ATTACHMENT_BYTES);
@@ -1770,10 +2100,12 @@ mod tests {
         let child_source_path = synthetic_dir.join("child.jsonl");
         create_new_file(&root_source_path, &root_records);
         create_new_file(&child_source_path, &child_records);
-        let root_source = open_rollout_source(&root_source_path);
-        let child_source = open_rollout_source(&child_source_path);
-        assert!(matches!(&root_source, CapturedSource::Ready { .. }));
-        assert!(matches!(&child_source, CapturedSource::Ready { .. }));
+        let root_source =
+            snapshot_rollout_source(&root_source_path).expect("snapshot staging root");
+        let child_source =
+            snapshot_rollout_source(&child_source_path).expect("snapshot staging child");
+        assert!(matches!(&root_source, CapturedSource::Ready(_)));
+        assert!(matches!(&child_source, CapturedSource::Ready(_)));
 
         let bundle = build_rollout_debug_attachment(
             root_thread_id,
@@ -1788,8 +2120,7 @@ mod tests {
                 },
             ],
             HashMap::from([(child_thread_id, root_thread_id)]),
-            SPINE_FEEDBACK_MAX_ATTACHMENT_BYTES,
-            MAX_SOURCE_LINE_BYTES,
+            BundleBuildLimits::production(SPINE_FEEDBACK_MAX_ATTACHMENT_BYTES),
         )
         .expect("build synthetic staging attachment");
         let mut decoded = String::new();

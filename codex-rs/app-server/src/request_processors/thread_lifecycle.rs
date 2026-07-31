@@ -619,6 +619,8 @@ pub(super) async fn handle_pending_thread_resume_request(
     }
 
     let config_snapshot = pending.config_snapshot;
+    let spine_feedback_enabled =
+        super::spine_feedback_processor::spine_feedback_enabled(conversation.as_ref());
     let cwd = config_snapshot.cwd().clone();
     let ThreadConfigSnapshot {
         model,
@@ -645,6 +647,7 @@ pub(super) async fn handle_pending_thread_resume_request(
         model,
         model_provider: model_provider_id,
         service_tier,
+        spine_feedback_enabled: Some(spine_feedback_enabled),
         cwd,
         runtime_workspace_roots: workspace_roots,
         instruction_sources,

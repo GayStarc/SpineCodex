@@ -6101,6 +6101,7 @@ async fn render_clear_ui_header_after_long_transcript_for_snapshot() -> String {
             model: "gpt-test".to_string(),
             model_provider_id: "test-provider".to_string(),
             service_tier: None,
+            spine_feedback_enabled: Some(false),
             approval_policy: AskForApproval::Never,
             approvals_reviewer: ApprovalsReviewer::User,
             permission_profile: PermissionProfile::read_only(),
@@ -6274,6 +6275,9 @@ async fn make_test_app() -> App {
         last_subagent_backfill_attempt: None,
         primary_session_configured: None,
         pending_primary_events: VecDeque::new(),
+        spine_feedback_in_flight: HashMap::new(),
+        spine_feedback_latest_generation: HashMap::new(),
+        next_spine_feedback_request_generation: 1,
         pending_app_server_requests: PendingAppServerRequests::default(),
         pending_startup_thread_start: false,
         pending_plugin_enabled_writes: HashMap::new(),
@@ -6341,6 +6345,9 @@ async fn make_test_app_with_channels() -> (
             last_subagent_backfill_attempt: None,
             primary_session_configured: None,
             pending_primary_events: VecDeque::new(),
+            spine_feedback_in_flight: HashMap::new(),
+            spine_feedback_latest_generation: HashMap::new(),
+            next_spine_feedback_request_generation: 1,
             pending_app_server_requests: PendingAppServerRequests::default(),
             pending_startup_thread_start: false,
             pending_plugin_enabled_writes: HashMap::new(),
@@ -6580,6 +6587,7 @@ fn test_thread_session(thread_id: ThreadId, cwd: PathBuf) -> ThreadSessionState 
         model: "gpt-test".to_string(),
         model_provider_id: "test-provider".to_string(),
         service_tier: None,
+        spine_feedback_enabled: Some(false),
         approval_policy: AskForApproval::Never,
         approvals_reviewer: ApprovalsReviewer::User,
         permission_profile: PermissionProfile::read_only(),
@@ -7388,6 +7396,7 @@ async fn backtrack_selection_with_duplicate_history_targets_unique_turn() {
             model: "gpt-test".to_string(),
             model_provider_id: "test-provider".to_string(),
             service_tier: None,
+            spine_feedback_enabled: Some(false),
             approval_policy: AskForApproval::Never,
             approvals_reviewer: ApprovalsReviewer::User,
             permission_profile: PermissionProfile::read_only(),
@@ -7454,6 +7463,7 @@ async fn backtrack_selection_with_duplicate_history_targets_unique_turn() {
             model: "gpt-test".to_string(),
             model_provider_id: "test-provider".to_string(),
             service_tier: None,
+            spine_feedback_enabled: Some(false),
             approval_policy: AskForApproval::Never,
             approvals_reviewer: ApprovalsReviewer::User,
             permission_profile: PermissionProfile::read_only(),
@@ -7604,6 +7614,7 @@ async fn backtrack_resubmit_preserves_data_image_urls_in_user_turn() {
             model: "gpt-test".to_string(),
             model_provider_id: "test-provider".to_string(),
             service_tier: None,
+            spine_feedback_enabled: Some(false),
             approval_policy: AskForApproval::Never,
             approvals_reviewer: ApprovalsReviewer::User,
             permission_profile: PermissionProfile::read_only(),
@@ -8240,6 +8251,7 @@ async fn new_session_requests_shutdown_for_previous_conversation() {
             model: "gpt-test".to_string(),
             model_provider_id: "test-provider".to_string(),
             service_tier: None,
+            spine_feedback_enabled: Some(false),
             approval_policy: AskForApproval::Never,
             approvals_reviewer: ApprovalsReviewer::User,
             permission_profile: PermissionProfile::read_only(),
@@ -8654,6 +8666,7 @@ async fn clear_only_ui_reset_preserves_chat_session_state() {
             model: "gpt-test".to_string(),
             model_provider_id: "test-provider".to_string(),
             service_tier: None,
+            spine_feedback_enabled: Some(false),
             approval_policy: AskForApproval::Never,
             approvals_reviewer: ApprovalsReviewer::User,
             permission_profile: PermissionProfile::read_only(),
@@ -8727,6 +8740,157 @@ async fn clear_only_ui_reset_allows_active_skill_warning_to_render_again() {
             .newly_active_errors(std::slice::from_ref(&error)),
         vec![error]
     );
+}
+
+#[tokio::test]
+async fn stale_spine_feedback_completion_cannot_clear_new_generation() {
+    let mut app = make_test_app().await;
+    let thread_id = ThreadId::new();
+    let current_generation = 2;
+    app.spine_feedback_in_flight
+        .insert(thread_id, current_generation);
+    app.chat_widget
+        .set_spine_feedback_in_flight(thread_id, /*in_flight*/ true);
+    let draft = crate::bottom_pane::SpineFeedbackDraft {
+        thread_id,
+        note: "current draft".to_string(),
+        screenshots: Vec::new(),
+    };
+
+    app.handle_spine_feedback_submitted(
+        /*request_generation*/ 1,
+        draft,
+        Err("stale failure".to_string()),
+    )
+    .await;
+
+    assert_eq!(
+        app.spine_feedback_in_flight.get(&thread_id),
+        Some(&current_generation)
+    );
+    assert!(app.chat_widget.is_spine_feedback_in_flight(thread_id));
+}
+
+#[tokio::test]
+async fn feedback_request_generation_survives_thread_state_reset() {
+    let mut app = make_test_app().await;
+    app.next_spine_feedback_request_generation = 9;
+    let thread_id = ThreadId::new();
+    app.spine_feedback_in_flight.insert(thread_id, 8);
+    app.spine_feedback_latest_generation.insert(thread_id, 8);
+
+    app.reset_thread_event_state();
+
+    assert!(app.spine_feedback_in_flight.is_empty());
+    assert!(app.spine_feedback_latest_generation.is_empty());
+    assert_eq!(app.next_spine_feedback_request_generation, 9);
+}
+
+#[tokio::test]
+async fn stale_spine_feedback_delivery_cannot_restore_an_older_draft() {
+    let mut app = make_test_app().await;
+    let thread_id = ThreadId::new();
+    app.spine_feedback_latest_generation.insert(thread_id, 2);
+    let draft = crate::bottom_pane::SpineFeedbackDraft {
+        thread_id,
+        note: "older draft".to_string(),
+        screenshots: Vec::new(),
+    };
+
+    app.handle_feedback_thread_event(FeedbackThreadEvent::SpineFailure {
+        request_generation: 1,
+        draft: draft.clone(),
+        error: "stale failure".to_string(),
+    });
+    assert!(app.chat_widget.no_modal_or_popup_active());
+
+    app.handle_feedback_thread_event(FeedbackThreadEvent::SpineFailure {
+        request_generation: 2,
+        draft,
+        error: "current failure".to_string(),
+    });
+    assert!(!app.chat_widget.no_modal_or_popup_active());
+}
+
+#[tokio::test]
+async fn spine_feedback_guard_remains_until_failure_delivery() {
+    let mut app = make_test_app().await;
+    let thread_id = ThreadId::new();
+    let request_generation = 3;
+    app.spine_feedback_in_flight
+        .insert(thread_id, request_generation);
+    app.spine_feedback_latest_generation
+        .insert(thread_id, request_generation);
+    app.chat_widget
+        .set_spine_feedback_in_flight(thread_id, /*in_flight*/ true);
+    let draft = crate::bottom_pane::SpineFeedbackDraft {
+        thread_id,
+        note: "restore after delivery".to_string(),
+        screenshots: Vec::new(),
+    };
+
+    app.handle_spine_feedback_submitted(
+        request_generation,
+        draft.clone(),
+        Err("queued failure".to_string()),
+    )
+    .await;
+
+    assert_eq!(
+        app.spine_feedback_in_flight.get(&thread_id),
+        Some(&request_generation)
+    );
+    assert!(app.chat_widget.is_spine_feedback_in_flight(thread_id));
+
+    app.handle_feedback_thread_event(FeedbackThreadEvent::SpineFailure {
+        request_generation,
+        draft,
+        error: "queued failure".to_string(),
+    });
+
+    assert!(!app.spine_feedback_in_flight.contains_key(&thread_id));
+    assert!(!app.chat_widget.is_spine_feedback_in_flight(thread_id));
+    assert!(!app.chat_widget.no_modal_or_popup_active());
+}
+
+#[tokio::test]
+async fn spine_feedback_guard_remains_until_success_delivery() {
+    let mut app = make_test_app().await;
+    let thread_id = ThreadId::new();
+    let request_generation = 4;
+    app.spine_feedback_in_flight
+        .insert(thread_id, request_generation);
+    app.spine_feedback_latest_generation
+        .insert(thread_id, request_generation);
+    app.chat_widget
+        .set_spine_feedback_in_flight(thread_id, /*in_flight*/ true);
+    let draft = crate::bottom_pane::SpineFeedbackDraft {
+        thread_id,
+        note: String::new(),
+        screenshots: Vec::new(),
+    };
+
+    app.handle_spine_feedback_submitted(
+        request_generation,
+        draft,
+        Ok("0123456789abcdef0123456789abcdef".to_string()),
+    )
+    .await;
+
+    assert_eq!(
+        app.spine_feedback_in_flight.get(&thread_id),
+        Some(&request_generation)
+    );
+    assert!(app.chat_widget.is_spine_feedback_in_flight(thread_id));
+
+    app.handle_feedback_thread_event(FeedbackThreadEvent::SpineSuccess {
+        thread_id,
+        request_generation,
+        report_id: "0123456789abcdef0123456789abcdef".to_string(),
+    });
+
+    assert!(!app.spine_feedback_in_flight.contains_key(&thread_id));
+    assert!(!app.chat_widget.is_spine_feedback_in_flight(thread_id));
 }
 
 #[tokio::test]

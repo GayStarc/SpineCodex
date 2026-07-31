@@ -2623,6 +2623,7 @@ mod tests {
                 model: "gpt-5".to_string(),
                 model_provider: "openai".to_string(),
                 service_tier: None,
+                spine_feedback_enabled: Some(true),
                 cwd,
                 runtime_workspace_roots: Vec::new(),
                 instruction_sources: vec![

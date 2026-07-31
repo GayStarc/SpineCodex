@@ -580,6 +580,15 @@ pub(crate) struct App {
     last_subagent_backfill_attempt: Option<ThreadId>,
     primary_session_configured: Option<ThreadSessionState>,
     pending_primary_events: VecDeque<ThreadBufferedEvent>,
+    /// Current redacted feedback upload generation for each thread.
+    spine_feedback_in_flight: HashMap<ThreadId, u64>,
+    /// Most recently submitted redacted feedback generation for each thread.
+    ///
+    /// This remains after the request leaves `spine_feedback_in_flight` so a
+    /// delayed thread-buffer delivery cannot restore an older draft.
+    spine_feedback_latest_generation: HashMap<ThreadId, u64>,
+    /// Monotonic process-local generation assigned to the next feedback upload.
+    next_spine_feedback_request_generation: u64,
     pending_app_server_requests: PendingAppServerRequests,
     pending_startup_thread_start: bool,
     // Serialize plugin enablement writes per plugin so stale completions cannot
@@ -1075,6 +1084,9 @@ See the Codex keymap documentation for supported actions and examples."
             last_subagent_backfill_attempt: None,
             primary_session_configured: None,
             pending_primary_events: VecDeque::new(),
+            spine_feedback_in_flight: HashMap::new(),
+            spine_feedback_latest_generation: HashMap::new(),
+            next_spine_feedback_request_generation: 1,
             pending_app_server_requests: PendingAppServerRequests::default(),
             pending_startup_thread_start,
             pending_plugin_enabled_writes: HashMap::new(),

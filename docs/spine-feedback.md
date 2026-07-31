@@ -7,7 +7,9 @@ flow unchanged.
 
 The Spine feedback form accepts:
 
-- An optional note of at most 8,192 UTF-8 bytes.
+- An optional note of at most 8,192 UTF-8 bytes. Leading and trailing
+  whitespace is trimmed; the remaining text is sent as entered and is not
+  redacted.
 - Zero to three screenshots.
 - An explicit confirmation before anything is sent.
 
@@ -15,8 +17,9 @@ The Spine feedback form accepts:
 
 Every Spine feedback report contains one `rollout-debug.jsonl.gz`. It covers
 the current thread and every recursively spawned descendant known when the
-request starts. There is no child-count limit. A child created after that
-snapshot belongs to a later report.
+request starts. There is no separate business child-count limit; the package
+resource budgets below apply to the complete subtree snapshot. A child created
+after that snapshot belongs to a later report.
 
 The attachment retains diagnostic structure:
 
@@ -30,9 +33,18 @@ raw thread and call IDs, paths, and URLs. Unknown, malformed, or over-8 MiB
 source lines remain in their original positions as redacted placeholders.
 Raw rollouts and generic logs are not attached.
 
-The redactor also has fixed budgets for package-local ID mappings and pending
-tool calls. If either budget is exhausted, attachment generation fails closed;
-SpineCodex does not send a partial debug package.
+Attachment generation has fixed resource budgets:
+
+- 65,536 JSON structure nodes per source record and 4,194,304 per package;
+- 131,072 subtree thread identifiers, 256 MiB of captured rollout source
+  bytes, and 131,072 source records;
+- 131,072 package-local ID mappings using at most 8 MiB of retained ID bytes;
+- 32,768 pending tool calls.
+
+If any budget is exhausted, attachment generation rejects the complete
+package. SpineCodex does not send a truncated or partial debug package.
+On a platform where the collector cannot verify a reopened rollout file with a
+stable file identity, attachment generation also fails closed.
 
 This file is observational diagnostic evidence. It cannot replay a session,
 restore Spine state, or recover the removed content.

@@ -16,7 +16,9 @@ expression: "render(&view, 24)"
   Sends:
     • optional
       feedback note,
-      when entered
+      trimmed and not
+      redacted, when
+      entered
     • redacted rollout
       structure for
       this thread and

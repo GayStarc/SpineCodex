@@ -8,7 +8,8 @@ use image::codecs::png::PngEncoder;
 use image::codecs::webp::WebPDecoder;
 use std::fs::File;
 use std::fs::OpenOptions;
-use std::io::BufReader;
+use std::io::Cursor;
+use std::io::Read;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
@@ -229,7 +230,7 @@ fn prepare_feedback_rgba(
 
 fn image_reader_for_feedback_path(
     path: &Path,
-) -> Result<ImageReader<BufReader<File>>, PasteImageError> {
+) -> Result<ImageReader<Cursor<Vec<u8>>>, PasteImageError> {
     let path_metadata =
         std::fs::metadata(path).map_err(|err| PasteImageError::IoError(err.to_string()))?;
     validate_feedback_source_metadata(&path_metadata)?;
@@ -247,16 +248,36 @@ fn image_reader_for_feedback_path(
     let file = options
         .open(path)
         .map_err(|err| PasteImageError::IoError(err.to_string()))?;
-    // Validate the object that was actually opened. This closes the
-    // check/open race and bounds decoders that buffer encoded input or EXIF.
-    validate_feedback_source_metadata(
-        &file
-            .metadata()
-            .map_err(|err| PasteImageError::IoError(err.to_string()))?,
-    )?;
-    ImageReader::new(BufReader::new(file))
+    // Validate the object that was actually opened, then capture exactly that
+    // descriptor length. Decoders see an immutable bounded snapshot even if
+    // another process appends to the source after this metadata read.
+    let opened_metadata = file
+        .metadata()
+        .map_err(|err| PasteImageError::IoError(err.to_string()))?;
+    validate_feedback_source_metadata(&opened_metadata)?;
+    let snapshot = read_feedback_source_snapshot(file, opened_metadata.len())?;
+    ImageReader::new(Cursor::new(snapshot))
         .with_guessed_format()
         .map_err(|err| PasteImageError::InvalidImage(err.to_string()))
+}
+
+fn read_feedback_source_snapshot(
+    mut file: File,
+    captured_bytes: u64,
+) -> Result<Vec<u8>, PasteImageError> {
+    if captured_bytes > SPINE_FEEDBACK_MAX_SOURCE_BYTES {
+        return Err(PasteImageError::InvalidImage(format!(
+            "screenshot source file must not exceed {} MiB",
+            SPINE_FEEDBACK_MAX_SOURCE_BYTES / (1024 * 1024)
+        )));
+    }
+    let captured_bytes = usize::try_from(captured_bytes).map_err(|_| {
+        PasteImageError::InvalidImage("screenshot source byte length is unsupported".to_string())
+    })?;
+    let mut snapshot = vec![0_u8; captured_bytes];
+    file.read_exact(&mut snapshot)
+        .map_err(|err| PasteImageError::IoError(err.to_string()))?;
+    Ok(snapshot)
 }
 
 fn validate_feedback_source_metadata(metadata: &std::fs::Metadata) -> Result<(), PasteImageError> {
@@ -728,7 +749,7 @@ pub fn pasted_image_format(path: &Path) -> EncodedImageFormat {
 #[cfg(test)]
 mod spine_feedback_image_tests {
     use super::*;
-    use std::io::Cursor;
+    use std::fs::OpenOptions;
     use tempfile::NamedTempFile;
 
     const ANIMATED_WEBP: &[u8] = &[
@@ -987,6 +1008,27 @@ mod spine_feedback_image_tests {
 
         assert!(error.contains("source file"), "{error}");
         assert!(error.contains("20 MiB"), "{error}");
+    }
+
+    #[test]
+    fn spine_feedback_source_snapshot_excludes_bytes_appended_after_capture() {
+        let source = encode_fixture(ImageFormat::Jpeg);
+        let mut file = write_temp(&source);
+        let captured_bytes = file.as_file().metadata().expect("source metadata").len();
+        file.as_file_mut()
+            .write_all(&vec![0x5a; 1024 * 1024])
+            .expect("append after captured boundary");
+        file.as_file_mut().flush().expect("flush appended bytes");
+
+        let reader = OpenOptions::new()
+            .read(true)
+            .open(file.path())
+            .expect("reopen appended source");
+        let snapshot = read_feedback_source_snapshot(reader, captured_bytes)
+            .expect("capture bounded source snapshot");
+
+        assert_eq!(snapshot, source);
+        assert_eq!(snapshot.len() as u64, captured_bytes);
     }
 }
 

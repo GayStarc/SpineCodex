@@ -45,6 +45,7 @@ fn configured_thread_session(thread_id: ThreadId) -> crate::session_state::Threa
         model: "gpt-5.2".to_string(),
         model_provider_id: "openai".to_string(),
         service_tier: None,
+        spine_feedback_enabled: Some(false),
         approval_policy: AskForApproval::Never,
         approvals_reviewer: ApprovalsReviewer::User,
         permission_profile: PermissionProfile::read_only(),

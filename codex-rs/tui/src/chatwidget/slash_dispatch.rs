@@ -38,12 +38,6 @@ const GOAL_USAGE_HINT: &str = "Example: /goal improve benchmark coverage";
 const RAW_USAGE: &str = "Usage: /raw [on|off]";
 const USAGE_CHATGPT_LOGIN_REQUIRED: &str = "Sign in with ChatGPT to use /usage.";
 
-fn spine_feedback_enabled(features: &codex_features::Features) -> bool {
-    [Feature::SpineJit, Feature::SpineTrim, Feature::SpineSpawn]
-        .into_iter()
-        .any(|feature| features.enabled(feature))
-}
-
 impl ChatWidget {
     /// Dispatch a bare slash command and record its staged local-history entry.
     ///
@@ -170,15 +164,32 @@ impl ChatWidget {
                     self.request_redraw();
                     return;
                 }
-                if spine_feedback_enabled(&self.config.features) {
-                    let Some(thread_id) = self.thread_id else {
+                match self.spine_feedback_enabled {
+                    Some(true) => {
+                        let Some(thread_id) = self.thread_id else {
+                            self.add_error_message(
+                                "Spine feedback is unavailable before the session starts."
+                                    .to_string(),
+                            );
+                            return;
+                        };
+                        if self.is_spine_feedback_in_flight(thread_id) {
+                            self.add_error_message(
+                                "Feedback is already being submitted for this thread.".to_string(),
+                            );
+                            return;
+                        }
+                        self.open_spine_feedback(thread_id);
+                        return;
+                    }
+                    Some(false) => {}
+                    None => {
                         self.add_error_message(
-                            "Spine feedback is unavailable before the session starts.".to_string(),
+                            "Feedback is unavailable because this thread's feedback mode could not be verified."
+                                .to_string(),
                         );
                         return;
-                    };
-                    self.open_spine_feedback(thread_id);
-                    return;
+                    }
                 }
                 // Step 1: pick a category (UI built in feedback_view)
                 let params =
@@ -1189,25 +1200,5 @@ impl ChatWidget {
         ));
         self.bottom_pane.drain_pending_submission_state();
         false
-    }
-}
-
-#[cfg(test)]
-mod spine_feedback_tests {
-    use super::*;
-
-    #[test]
-    fn spine_feedback_requires_any_spine_feature() {
-        let mut features = codex_features::Features::with_defaults();
-        features.disable(Feature::SpineJit);
-        features.disable(Feature::SpineTrim);
-        features.disable(Feature::SpineSpawn);
-        assert!(!spine_feedback_enabled(&features));
-
-        for feature in [Feature::SpineJit, Feature::SpineTrim, Feature::SpineSpawn] {
-            features.enable(feature);
-            assert!(spine_feedback_enabled(&features));
-            features.disable(feature);
-        }
     }
 }

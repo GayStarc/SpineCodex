@@ -710,3 +710,266 @@ fn pending_call_limit_fails_closed_and_completed_output_releases_slot() {
         redact_public(&mut reusable, function_call("private-call-b")).expect("released slot");
     assert_secret_absent(&second);
 }
+
+#[test]
+fn structural_node_limits_fail_closed_before_high_cardinality_expansion() {
+    let mut production_limits = RolloutDebugRedactor::default();
+    assert_eq!(
+        redact_public(
+            &mut production_limits,
+            line(
+                "response_item",
+                json!({
+                    "type": "function_call",
+                    "namespace": "spine",
+                    "name": "spawn",
+                    "arguments": serde_json::to_string(&json!({
+                        "tasks": vec![json!(0); 70_000]
+                    }))
+                    .expect("spawn arguments serialize"),
+                    "call_id": "spawn-production-limit"
+                }),
+            )
+        ),
+        Err(RolloutDebugRedactorError::ResourceLimitExceeded)
+    );
+
+    let cases = [
+        line(
+            "response_item",
+            json!({
+                "type": "function_call",
+                "namespace": "spine",
+                "name": "spawn",
+                "arguments": serde_json::to_string(&json!({
+                    "tasks": vec![json!(0); 256]
+                }))
+                .expect("spawn arguments serialize"),
+                "call_id": "spawn-many"
+            }),
+        ),
+        line(
+            "compacted",
+            json!({
+                "message": SECRET,
+                "replacement_history": vec![
+                    json!({
+                        "type": "message",
+                        "role": "assistant",
+                        "content": []
+                    });
+                    64
+                ]
+            }),
+        ),
+        line(
+            "response_item",
+            json!({
+                "type": "custom_tool_call_output",
+                "call_id": "code-mode-many",
+                "name": "spine.code_mode.output.v1",
+                "output": serde_json::to_string(&json!({
+                    "schema": "spine.code_mode.output.v1",
+                    "visible_body": "",
+                    "outer_success": false,
+                    "cell_id": "cell",
+                    "nested_spine_calls": vec![json!(0); 256]
+                }))
+                .expect("code mode carrier serializes")
+            }),
+        ),
+    ];
+
+    for value in cases {
+        let mut redactor = RolloutDebugRedactor::with_json_node_limits(128, 4096);
+        assert_eq!(
+            redact_public(&mut redactor, value),
+            Err(RolloutDebugRedactorError::ResourceLimitExceeded)
+        );
+        assert_eq!(
+            redact_public(&mut redactor, line("world_state", json!({"full": true}))),
+            Err(RolloutDebugRedactorError::ResourceLimitExceeded),
+            "the first structural failure must latch for the package"
+        );
+    }
+}
+
+#[test]
+fn later_nested_spawn_stops_after_structural_preflight_failure() {
+    let oversized_nested_arguments = serde_json::to_string(&json!({
+        "tasks": vec![
+            json!({
+                "summary": "branch",
+                "prompt": "work"
+            });
+            64
+        ]
+    }))
+    .expect("nested spawn arguments serialize");
+    let carrier = serde_json::to_string(&json!({
+        "schema": "spine.code_mode.output.v1",
+        "visible_body": "",
+        "outer_success": true,
+        "cell_id": "cell",
+        "nested_spine_calls": [
+            {
+                "runtime_call_id": "nested-spawn",
+                "invocation_ordinal": 0,
+                "name": "trim",
+                "arguments": oversized_nested_arguments,
+                "output": {
+                    "success": false,
+                    "body": "trim rejected"
+                }
+            },
+            {
+                "runtime_call_id": "nested-after-failure",
+                "invocation_ordinal": 1,
+                "name": "spawn",
+                "arguments": "{\"tasks\":[{\"summary\":\"a\",\"prompt\":\"a\"},{\"summary\":\"b\",\"prompt\":\"b\"}]}",
+                "output": {
+                    "success": true,
+                    "body": "{\"schema\":\"spine.spawn.result.v1\",\"results\":[]}"
+                }
+            }
+        ]
+    }))
+    .expect("Code Mode carrier serializes");
+    let mut redactor = RolloutDebugRedactor::with_json_node_limits(256, 4096);
+
+    assert_eq!(
+        redact_public(
+            &mut redactor,
+            line(
+                "response_item",
+                json!({
+                    "type": "custom_tool_call_output",
+                    "call_id": "code-mode-nested-spawn",
+                    "name": "spine.code_mode.output.v1",
+                    "output": carrier
+                }),
+            )
+        ),
+        Err(RolloutDebugRedactorError::ResourceLimitExceeded)
+    );
+    assert_eq!(
+        redact_public(&mut redactor, line("world_state", json!({"full": true}))),
+        Err(RolloutDebugRedactorError::ResourceLimitExceeded),
+        "the nested argument preflight failure must latch for the package"
+    );
+}
+
+#[test]
+fn nested_spawn_receipt_and_package_node_budgets_fail_closed() {
+    let mut receipt_limited = RolloutDebugRedactor::with_json_node_limits(128, 4096);
+    redact_public(
+        &mut receipt_limited,
+        line(
+            "response_item",
+            json!({
+                "type": "function_call",
+                "namespace": "spine",
+                "name": "spawn",
+                "arguments": serde_json::to_string(&json!({
+                    "tasks": [
+                        {"summary": "a", "prompt": "a"},
+                        {"summary": "b", "prompt": "b"}
+                    ]
+                }))
+                .expect("spawn arguments serialize"),
+                "call_id": "spawn-receipt-many"
+            }),
+        ),
+    )
+    .expect("small request fits");
+    assert_eq!(
+        redact_public(
+            &mut receipt_limited,
+            line(
+                "response_item",
+                json!({
+                    "type": "function_call_output",
+                    "call_id": "spawn-receipt-many",
+                    "output": serde_json::to_string(&json!({
+                        "schema": "spine.spawn.result.v1",
+                        "results": vec![json!(0); 256]
+                    }))
+                    .expect("spawn receipt serializes")
+                }),
+            )
+        ),
+        Err(RolloutDebugRedactorError::ResourceLimitExceeded)
+    );
+
+    let mut package_limited = RolloutDebugRedactor::with_json_node_limits(128, 12);
+    redact_public(
+        &mut package_limited,
+        line("world_state", json!({"full": true})),
+    )
+    .expect("first small record fits");
+    assert_eq!(
+        redact_public(
+            &mut package_limited,
+            line("world_state", json!({"full": true}))
+        ),
+        Err(RolloutDebugRedactorError::ResourceLimitExceeded)
+    );
+}
+
+#[test]
+fn duplicate_outstanding_call_id_is_ambiguous_but_completed_id_can_be_reused() {
+    let function_call = |name: &str, namespace: Option<&str>, call_id: &str| {
+        line(
+            "response_item",
+            json!({
+                "type": "function_call",
+                "namespace": namespace,
+                "name": name,
+                "arguments": serde_json::to_string(&json!({"summary": SECRET}))
+                    .expect("arguments serialize"),
+                "call_id": call_id
+            }),
+        )
+    };
+    let function_output = |call_id: &str| {
+        line(
+            "response_item",
+            json!({
+                "type": "function_call_output",
+                "call_id": call_id,
+                "output": "Spine open accepted."
+            }),
+        )
+    };
+
+    let mut ambiguous = RolloutDebugRedactor::default();
+    redact_public(
+        &mut ambiguous,
+        function_call("shell_command", None, "duplicate-call"),
+    )
+    .expect("first outstanding call");
+    assert_eq!(
+        redact_public(
+            &mut ambiguous,
+            function_call("open", Some("spine"), "duplicate-call")
+        ),
+        Err(RolloutDebugRedactorError::AmbiguousCallId)
+    );
+    assert_eq!(
+        redact_public(&mut ambiguous, function_output("duplicate-call")),
+        Err(RolloutDebugRedactorError::AmbiguousCallId)
+    );
+
+    let mut reusable = RolloutDebugRedactor::default();
+    redact_public(
+        &mut reusable,
+        function_call("open", Some("spine"), "reused-call"),
+    )
+    .expect("first call");
+    redact_public(&mut reusable, function_output("reused-call")).expect("completed output");
+    redact_public(
+        &mut reusable,
+        function_call("open", Some("spine"), "reused-call"),
+    )
+    .expect("completed call id can be reused");
+}

@@ -504,6 +504,7 @@ fn session_configured_event(model: &str) -> ThreadSessionState {
         model: model.to_string(),
         model_provider_id: "test-provider".to_string(),
         service_tier: None,
+        spine_feedback_enabled: Some(false),
         approval_policy: AskForApproval::Never,
         approvals_reviewer: codex_protocol::config_types::ApprovalsReviewer::User,
         permission_profile: PermissionProfile::read_only(),

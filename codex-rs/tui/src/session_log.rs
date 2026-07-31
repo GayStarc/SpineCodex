@@ -124,7 +124,10 @@ pub(crate) fn log_inbound_app_event(event: &AppEvent) {
     if !LOGGER.is_enabled() {
         return;
     }
+    log_inbound_app_event_to(&LOGGER, event);
+}
 
+fn log_inbound_app_event_to(logger: &SessionLogger, event: &AppEvent) {
     match event {
         AppEvent::NewSession => {
             let value = json!({
@@ -132,7 +135,7 @@ pub(crate) fn log_inbound_app_event(event: &AppEvent) {
                 "dir": "to_tui",
                 "kind": "new_session",
             });
-            LOGGER.write_json_line(value);
+            logger.write_json_line(value);
         }
         AppEvent::ClearUi => {
             let value = json!({
@@ -140,7 +143,7 @@ pub(crate) fn log_inbound_app_event(event: &AppEvent) {
                 "dir": "to_tui",
                 "kind": "clear_ui",
             });
-            LOGGER.write_json_line(value);
+            logger.write_json_line(value);
         }
         AppEvent::InsertHistoryCell(cell) => {
             let value = json!({
@@ -149,7 +152,7 @@ pub(crate) fn log_inbound_app_event(event: &AppEvent) {
                 "kind": "insert_history_cell",
                 "lines": cell.transcript_lines(u16::MAX).len(),
             });
-            LOGGER.write_json_line(value);
+            logger.write_json_line(value);
         }
         AppEvent::StartFileSearch(query) => {
             let value = json!({
@@ -158,7 +161,7 @@ pub(crate) fn log_inbound_app_event(event: &AppEvent) {
                 "kind": "file_search_start",
                 "query": query,
             });
-            LOGGER.write_json_line(value);
+            logger.write_json_line(value);
         }
         AppEvent::FileSearchResult { query, matches } => {
             let value = json!({
@@ -168,7 +171,7 @@ pub(crate) fn log_inbound_app_event(event: &AppEvent) {
                 "query": query,
                 "matches": matches.len(),
             });
-            LOGGER.write_json_line(value);
+            logger.write_json_line(value);
         }
         AppEvent::PetPreviewLoaded { request_id, result } => {
             let value = json!({
@@ -179,7 +182,7 @@ pub(crate) fn log_inbound_app_event(event: &AppEvent) {
                 "request_id": request_id,
                 "ok": result.is_ok(),
             });
-            LOGGER.write_json_line(value);
+            logger.write_json_line(value);
         }
         AppEvent::PetSelectionLoaded {
             request_id,
@@ -195,7 +198,24 @@ pub(crate) fn log_inbound_app_event(event: &AppEvent) {
                 "pet_id": pet_id,
                 "ok": result.is_ok(),
             });
-            LOGGER.write_json_line(value);
+            logger.write_json_line(value);
+        }
+        AppEvent::SubmitSpineFeedback { .. } => {
+            logger.write_json_line(json!({
+                "ts": now_ts(),
+                "dir": "to_tui",
+                "kind": "app_event",
+                "variant": "SubmitSpineFeedback",
+            }));
+        }
+        AppEvent::SpineFeedbackSubmitted { result, .. } => {
+            logger.write_json_line(json!({
+                "ts": now_ts(),
+                "dir": "to_tui",
+                "kind": "app_event",
+                "variant": "SpineFeedbackSubmitted",
+                "ok": result.is_ok(),
+            }));
         }
         // Noise or control flow – record variant only
         other => {
@@ -205,7 +225,7 @@ pub(crate) fn log_inbound_app_event(event: &AppEvent) {
                 "kind": "app_event",
                 "variant": format!("{other:?}").split('(').next().unwrap_or("app_event"),
             });
-            LOGGER.write_json_line(value);
+            logger.write_json_line(value);
         }
     }
 }
@@ -227,6 +247,58 @@ pub(crate) fn log_session_end() {
         "kind": "session_end",
     });
     LOGGER.write_json_line(value);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bottom_pane::SpineFeedbackDraft;
+    use crate::clipboard_paste::PreparedFeedbackScreenshot;
+    use codex_protocol::ThreadId;
+
+    #[test]
+    fn spine_feedback_events_do_not_persist_draft_contents() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("session.jsonl");
+        let logger = SessionLogger::new();
+        logger.open(path.clone()).expect("open session log");
+
+        let thread_id = ThreadId::new();
+        let note = "private-note-canary";
+        let png = vec![17, 34, 51, 68];
+        let draft = SpineFeedbackDraft {
+            thread_id,
+            note: note.to_string(),
+            screenshots: vec![PreparedFeedbackScreenshot {
+                png: png.clone(),
+                width: 1,
+                height: 1,
+            }],
+        };
+        log_inbound_app_event_to(
+            &logger,
+            &AppEvent::SubmitSpineFeedback {
+                draft: draft.clone(),
+            },
+        );
+        log_inbound_app_event_to(
+            &logger,
+            &AppEvent::SpineFeedbackSubmitted {
+                request_generation: 1,
+                draft,
+                result: Ok("report-id".to_string()),
+            },
+        );
+
+        let logged = std::fs::read_to_string(path).expect("read session log");
+        assert!(logged.contains("\"variant\":\"SubmitSpineFeedback\""));
+        assert!(logged.contains("\"variant\":\"SpineFeedbackSubmitted\""));
+        assert!(logged.contains("\"ok\":true"));
+        assert!(!logged.contains(note));
+        assert!(!logged.contains(&thread_id.to_string()));
+        assert!(!logged.contains("[17,34,51,68]"));
+        assert!(!logged.contains("report-id"));
+    }
 }
 
 fn write_record<T>(dir: &str, kind: &str, obj: &T)

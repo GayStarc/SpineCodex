@@ -592,6 +592,27 @@ impl App {
         app_server: &AppServerSession,
         draft: SpineFeedbackDraft,
     ) {
+        if self.spine_feedback_in_flight.contains_key(&draft.thread_id) {
+            self.chat_widget.add_error_message(
+                "Feedback is already being submitted for this thread.".to_string(),
+            );
+            return;
+        }
+        let request_generation = self.next_spine_feedback_request_generation;
+        let Some(next_generation) = request_generation.checked_add(1) else {
+            self.chat_widget.add_error_message(
+                "Feedback could not be submitted because the local request counter is exhausted."
+                    .to_string(),
+            );
+            return;
+        };
+        self.next_spine_feedback_request_generation = next_generation;
+        self.spine_feedback_in_flight
+            .insert(draft.thread_id, request_generation);
+        self.spine_feedback_latest_generation
+            .insert(draft.thread_id, request_generation);
+        self.chat_widget
+            .set_spine_feedback_in_flight(draft.thread_id, /*in_flight*/ true);
         let request_handle = app_server.request_handle();
         let app_event_tx = self.app_event_tx.clone();
         let params = build_spine_feedback_upload_params(&draft);
@@ -600,7 +621,11 @@ impl App {
                 .await
                 .map(|response| response.report_id)
                 .map_err(|err| err.to_string());
-            app_event_tx.send(AppEvent::SpineFeedbackSubmitted { draft, result });
+            app_event_tx.send(AppEvent::SpineFeedbackSubmitted {
+                request_generation,
+                draft,
+                result,
+            });
         });
     }
 
@@ -627,13 +652,58 @@ impl App {
                         "Failed to upload feedback: {err}"
                     ))),
             },
-            FeedbackThreadEvent::SpineSuccess { report_id } => self
-                .chat_widget
-                .add_to_history(spine_feedback_success_cell(&report_id)),
-            FeedbackThreadEvent::SpineFailure { draft, error } => self
-                .chat_widget
-                .reopen_spine_feedback(draft, format!("Could not submit feedback: {error}")),
+            FeedbackThreadEvent::SpineSuccess {
+                thread_id,
+                request_generation,
+                report_id,
+            } => {
+                if self.spine_feedback_latest_generation.get(&thread_id)
+                    != Some(&request_generation)
+                {
+                    tracing::warn!(
+                        thread_id = %thread_id,
+                        request_generation,
+                        "discarding stale Spine feedback success delivery"
+                    );
+                    return;
+                }
+                self.clear_spine_feedback_in_flight_generation(thread_id, request_generation);
+                self.chat_widget
+                    .add_to_history(spine_feedback_success_cell(&report_id));
+            }
+            FeedbackThreadEvent::SpineFailure {
+                request_generation,
+                draft,
+                error,
+            } => {
+                if self.spine_feedback_latest_generation.get(&draft.thread_id)
+                    != Some(&request_generation)
+                {
+                    tracing::warn!(
+                        thread_id = %draft.thread_id,
+                        request_generation,
+                        "discarding stale Spine feedback failure delivery"
+                    );
+                    return;
+                }
+                self.clear_spine_feedback_in_flight_generation(draft.thread_id, request_generation);
+                self.chat_widget
+                    .reopen_spine_feedback(draft, format!("Could not submit feedback: {error}"));
+            }
         }
+    }
+
+    fn clear_spine_feedback_in_flight_generation(
+        &mut self,
+        thread_id: ThreadId,
+        request_generation: u64,
+    ) {
+        if self.spine_feedback_in_flight.get(&thread_id) != Some(&request_generation) {
+            return;
+        }
+        self.spine_feedback_in_flight.remove(&thread_id);
+        self.chat_widget
+            .set_spine_feedback_in_flight(thread_id, /*in_flight*/ false);
     }
 
     pub(super) async fn enqueue_thread_feedback_event(
@@ -713,13 +783,30 @@ impl App {
 
     pub(super) async fn handle_spine_feedback_submitted(
         &mut self,
+        request_generation: u64,
         draft: SpineFeedbackDraft,
         result: Result<String, String>,
     ) {
         let thread_id = draft.thread_id;
+        if self.spine_feedback_in_flight.get(&thread_id) != Some(&request_generation) {
+            tracing::warn!(
+                thread_id = %thread_id,
+                request_generation,
+                "discarding stale Spine feedback completion"
+            );
+            return;
+        }
         let event = match result {
-            Ok(report_id) => FeedbackThreadEvent::SpineSuccess { report_id },
-            Err(error) => FeedbackThreadEvent::SpineFailure { draft, error },
+            Ok(report_id) => FeedbackThreadEvent::SpineSuccess {
+                thread_id,
+                request_generation,
+                report_id,
+            },
+            Err(error) => FeedbackThreadEvent::SpineFailure {
+                request_generation,
+                draft,
+                error,
+            },
         };
         self.enqueue_thread_feedback_event(thread_id, event).await;
     }
@@ -1720,6 +1807,7 @@ mod tests {
             screenshots: Vec::new(),
         };
         let event = FeedbackThreadEvent::SpineFailure {
+            request_generation: 7,
             draft: draft.clone(),
             error: "rate limited".to_string(),
         };
@@ -1727,6 +1815,7 @@ mod tests {
         assert_eq!(
             event,
             FeedbackThreadEvent::SpineFailure {
+                request_generation: 7,
                 draft,
                 error: "rate limited".to_string(),
             }

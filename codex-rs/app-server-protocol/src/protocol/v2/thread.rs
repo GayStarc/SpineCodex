@@ -172,6 +172,11 @@ pub struct ThreadStartResponse {
     pub model: String,
     pub model_provider: String,
     pub service_tier: Option<String>,
+    /// Whether this thread is authorized to use the redacted Spine feedback flow.
+    #[experimental("thread/start.spineFeedbackEnabled")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional = nullable)]
+    pub spine_feedback_enabled: Option<bool>,
     pub cwd: AbsolutePathBuf,
     /// Thread-scoped runtime workspace roots used to materialize
     /// `:workspace_roots`.
@@ -405,6 +410,11 @@ pub struct ThreadResumeResponse {
     pub model: String,
     pub model_provider: String,
     pub service_tier: Option<String>,
+    /// Whether this thread is authorized to use the redacted Spine feedback flow.
+    #[experimental("thread/resume.spineFeedbackEnabled")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional = nullable)]
+    pub spine_feedback_enabled: Option<bool>,
     pub cwd: AbsolutePathBuf,
     /// Thread-scoped runtime workspace roots used to materialize
     /// `:workspace_roots`.
@@ -571,6 +581,11 @@ pub struct ThreadForkResponse {
     pub model: String,
     pub model_provider: String,
     pub service_tier: Option<String>,
+    /// Whether this thread is authorized to use the redacted Spine feedback flow.
+    #[experimental("thread/fork.spineFeedbackEnabled")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional = nullable)]
+    pub spine_feedback_enabled: Option<bool>,
     pub cwd: AbsolutePathBuf,
     /// Thread-scoped runtime workspace roots used to materialize
     /// `:workspace_roots`.

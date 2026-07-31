@@ -118,7 +118,9 @@ fn upload_spine_feedback_with_config(
         bail!("Spine feedback envelope is too large: {} bytes", body.len());
     }
 
-    let mut client_builder = reqwest::blocking::Client::builder().timeout(config.timeout);
+    let mut client_builder = reqwest::blocking::Client::builder()
+        .timeout(config.timeout)
+        .redirect(reqwest::redirect::Policy::none());
     if config.disable_proxy {
         client_builder = client_builder.no_proxy();
     }
@@ -208,11 +210,13 @@ fn require_content_type(attachment: &FeedbackAttachment, expected: &str) -> Resu
 
 #[cfg(test)]
 mod tests {
+    use std::io::ErrorKind;
     use std::io::Read;
     use std::io::Write;
     use std::net::TcpListener;
     use std::thread;
     use std::time::Duration;
+    use std::time::Instant;
 
     use super::super::FeedbackAttachment;
     use super::SpineFeedbackTransportConfig;
@@ -262,39 +266,7 @@ mod tests {
         let address = listener.local_addr().expect("test server address");
         let handle = thread::spawn(move || {
             let (mut stream, _) = listener.accept().expect("accept test request");
-            let mut request = Vec::new();
-            let mut chunk = [0_u8; 8192];
-            let header_end = loop {
-                let read = stream.read(&mut chunk).expect("read test request");
-                if read == 0 {
-                    break request.len();
-                }
-                request.extend_from_slice(&chunk[..read]);
-                if let Some(end) = request.windows(4).position(|window| window == b"\r\n\r\n") {
-                    break end + 4;
-                }
-            };
-            let content_length = request[..header_end]
-                .split(|byte| *byte == b'\n')
-                .find_map(|line| {
-                    let line = line.strip_suffix(b"\r")?;
-                    let colon = line.iter().position(|byte| *byte == b':')?;
-                    let (name, value) = line.split_at(colon);
-                    let value = value.get(1..)?;
-                    if name.eq_ignore_ascii_case(b"content-length") {
-                        std::str::from_utf8(value).ok()?.trim().parse().ok()
-                    } else {
-                        None
-                    }
-                })
-                .unwrap_or(0);
-            while request.len() < header_end + content_length {
-                let read = stream.read(&mut chunk).expect("read test body");
-                if read == 0 {
-                    break;
-                }
-                request.extend_from_slice(&chunk[..read]);
-            }
+            let request = read_request(&mut stream);
             if !response_delay.is_zero() {
                 thread::sleep(response_delay);
             }
@@ -304,6 +276,85 @@ mod tests {
             request
         });
         (format!("{TEST_DSN_PREFIX}{address}/42"), handle)
+    }
+
+    fn read_request(stream: &mut std::net::TcpStream) -> Vec<u8> {
+        let mut request = Vec::new();
+        let mut chunk = [0_u8; 8192];
+        let header_end = loop {
+            let read = stream.read(&mut chunk).expect("read test request");
+            if read == 0 {
+                break request.len();
+            }
+            request.extend_from_slice(&chunk[..read]);
+            if let Some(end) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+                break end + 4;
+            }
+        };
+        let content_length = request[..header_end]
+            .split(|byte| *byte == b'\n')
+            .find_map(|line| {
+                let line = line.strip_suffix(b"\r")?;
+                let colon = line.iter().position(|byte| *byte == b':')?;
+                let (name, value) = line.split_at(colon);
+                let value = value.get(1..)?;
+                if name.eq_ignore_ascii_case(b"content-length") {
+                    std::str::from_utf8(value).ok()?.trim().parse().ok()
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(0);
+        while request.len() < header_end + content_length {
+            let read = stream.read(&mut chunk).expect("read test body");
+            if read == 0 {
+                break;
+            }
+            request.extend_from_slice(&chunk[..read]);
+        }
+        request
+    }
+
+    fn spawn_redirect_server(status: u16, location: &str) -> (String, thread::JoinHandle<Vec<u8>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind redirect server");
+        let address = listener.local_addr().expect("redirect server address");
+        let location = location.to_string();
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept redirect request");
+            let request = read_request(&mut stream);
+            let response = format!(
+                "HTTP/1.1 {status} Redirect\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write redirect response");
+            request
+        });
+        (format!("{TEST_DSN_PREFIX}{address}/42"), handle)
+    }
+
+    fn spawn_redirect_destination() -> (String, thread::JoinHandle<Option<Vec<u8>>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind redirect destination");
+        let address = listener.local_addr().expect("redirect destination address");
+        listener
+            .set_nonblocking(true)
+            .expect("set redirect destination nonblocking");
+        let handle = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_millis(500);
+            loop {
+                match listener.accept() {
+                    Ok((mut stream, _)) => return Some(read_request(&mut stream)),
+                    Err(err) if err.kind() == ErrorKind::WouldBlock => {
+                        if Instant::now() >= deadline {
+                            return None;
+                        }
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(err) => panic!("accept redirect destination: {err}"),
+                }
+            }
+        });
+        (format!("http://{address}/redirect-target"), handle)
     }
 
     #[test]
@@ -341,6 +392,35 @@ mod tests {
             let result = upload(&dsn, Duration::from_secs(1), None, &attachments);
             let _request = server.join().expect("server should finish");
             assert!(result.is_err(), "status {status} must fail");
+        }
+    }
+
+    #[test]
+    fn rejects_307_and_308_without_contacting_redirect_destination() {
+        for status in [307, 308] {
+            let (location, destination) = spawn_redirect_destination();
+            let (dsn, redirect_server) = spawn_redirect_server(status, &location);
+            let attachments = valid_attachments();
+
+            let result = upload(
+                &dsn,
+                Duration::from_secs(1),
+                Some("do not redirect"),
+                &attachments,
+            );
+            let original_request = redirect_server
+                .join()
+                .expect("redirect server should finish");
+            let redirected_request = destination
+                .join()
+                .expect("redirect destination should finish");
+
+            assert!(result.is_err(), "status {status} must fail");
+            assert!(!original_request.is_empty());
+            assert!(
+                redirected_request.is_none(),
+                "status {status} must not forward the envelope"
+            );
         }
     }
 

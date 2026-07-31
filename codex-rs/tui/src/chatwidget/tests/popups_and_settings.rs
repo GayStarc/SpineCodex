@@ -3841,13 +3841,13 @@ async fn auto_model_advertising_advanced_effort_opens_reasoning_picker() {
 #[tokio::test]
 async fn feedback_selection_popup_snapshot() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-    chat.set_feature_enabled(Feature::SpineJit, /*enabled*/ false);
-    chat.set_feature_enabled(Feature::SpineTrim, /*enabled*/ false);
-    chat.set_feature_enabled(Feature::SpineSpawn, /*enabled*/ false);
+    chat.set_feature_enabled(Feature::SpineJit, /*enabled*/ true);
+    chat.spine_feedback_enabled = Some(false);
 
-    // Open the feedback category selection popup via slash command.
+    // Mutable process config does not change the authority of the attached Base thread.
     chat.dispatch_command(SlashCommand::Feedback);
 
+    assert_ne!(chat.bottom_pane.active_view_id(), Some("spine-feedback"));
     let popup = render_bottom_popup(&chat, /*width*/ 80);
     assert_chatwidget_snapshot!("feedback_selection_popup", popup);
 }
@@ -3856,8 +3856,12 @@ async fn feedback_selection_popup_snapshot() {
 async fn spine_feedback_popup_snapshot() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.thread_id = Some(ThreadId::new());
-    chat.set_feature_enabled(Feature::SpineJit, /*enabled*/ true);
+    chat.set_feature_enabled(Feature::SpineJit, /*enabled*/ false);
+    chat.set_feature_enabled(Feature::SpineTrim, /*enabled*/ false);
+    chat.set_feature_enabled(Feature::SpineSpawn, /*enabled*/ false);
+    chat.spine_feedback_enabled = Some(true);
 
+    // Disabling the next-session defaults does not downgrade the attached Spine thread.
     chat.dispatch_command(SlashCommand::Feedback);
 
     assert_eq!(chat.bottom_pane.active_view_id(), Some("spine-feedback"));
@@ -3865,6 +3869,32 @@ async fn spine_feedback_popup_snapshot() {
     assert!(popup.contains("Send Spine feedback"));
     assert!(popup.contains("Do not include passwords"));
     assert_chatwidget_snapshot!("spine_feedback_popup", popup);
+}
+
+#[tokio::test]
+async fn feedback_is_disabled_when_thread_authority_is_unknown() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.spine_feedback_enabled = None;
+
+    chat.dispatch_command(SlashCommand::Feedback);
+
+    assert!(chat.bottom_pane.no_modal_or_popup_active());
+    assert_ne!(chat.bottom_pane.active_view_id(), Some("spine-feedback"));
+}
+
+#[tokio::test]
+async fn spine_feedback_form_cannot_reopen_while_upload_is_in_flight() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let thread_id = ThreadId::new();
+    chat.thread_id = Some(thread_id);
+    chat.spine_feedback_enabled = Some(true);
+    chat.set_spine_feedback_in_flight(thread_id, /*in_flight*/ true);
+
+    chat.dispatch_command(SlashCommand::Feedback);
+
+    assert!(chat.bottom_pane.no_modal_or_popup_active());
+    assert_ne!(chat.bottom_pane.active_view_id(), Some("spine-feedback"));
 }
 
 #[tokio::test]

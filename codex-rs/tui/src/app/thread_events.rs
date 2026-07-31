@@ -35,9 +35,12 @@ pub(super) enum FeedbackThreadEvent {
         result: Result<String, String>,
     },
     SpineSuccess {
+        thread_id: ThreadId,
+        request_generation: u64,
         report_id: String,
     },
     SpineFailure {
+        request_generation: u64,
         draft: SpineFeedbackDraft,
         error: String,
     },
@@ -453,6 +456,7 @@ mod tests {
             model: "gpt-test".to_string(),
             model_provider_id: "test-provider".to_string(),
             service_tier: None,
+            spine_feedback_enabled: Some(false),
             approval_policy: AskForApproval::Never,
             approvals_reviewer: ApprovalsReviewer::User,
             permission_profile: PermissionProfile::read_only(),
@@ -730,6 +734,7 @@ mod tests {
     fn spine_feedback_failure_uses_one_slot_while_success_remains_replayable() {
         let thread_id = ThreadId::new();
         let first_failure = FeedbackThreadEvent::SpineFailure {
+            request_generation: 1,
             draft: SpineFeedbackDraft {
                 thread_id,
                 note: "older draft".to_string(),
@@ -738,6 +743,7 @@ mod tests {
             error: "timed out".to_string(),
         };
         let latest_failure = FeedbackThreadEvent::SpineFailure {
+            request_generation: 2,
             draft: SpineFeedbackDraft {
                 thread_id,
                 note: "keep this draft".to_string(),
@@ -746,6 +752,8 @@ mod tests {
             error: "rate limited".to_string(),
         };
         let success = FeedbackThreadEvent::SpineSuccess {
+            thread_id,
+            request_generation: 3,
             report_id: "0123456789abcdef0123456789abcdef".to_string(),
         };
         let expected_draft = match &latest_failure {
@@ -753,7 +761,7 @@ mod tests {
             _ => unreachable!(),
         };
         let expected_report_id = match &success {
-            FeedbackThreadEvent::SpineSuccess { report_id } => report_id.clone(),
+            FeedbackThreadEvent::SpineSuccess { report_id, .. } => report_id.clone(),
             _ => unreachable!(),
         };
         assert!(!first_failure.persists_after_live_delivery());
@@ -770,15 +778,22 @@ mod tests {
         assert!(matches!(
             &activation.events[0],
             ThreadBufferedEvent::FeedbackSubmission(FeedbackThreadEvent::SpineSuccess {
+                thread_id: actual_thread_id,
+                request_generation,
                 report_id,
-            }) if report_id == "0123456789abcdef0123456789abcdef"
+            }) if *actual_thread_id == thread_id
+                && *request_generation == 3
+                && report_id == "0123456789abcdef0123456789abcdef"
         ));
         assert!(matches!(
             &activation.events[1],
             ThreadBufferedEvent::FeedbackSubmission(FeedbackThreadEvent::SpineFailure {
+                request_generation,
                 draft,
                 error,
-            }) if draft == &expected_draft && error == "rate limited"
+            }) if draft == &expected_draft
+                && *request_generation == 2
+                && error == "rate limited"
         ));
 
         let remaining = store.snapshot();
@@ -786,8 +801,12 @@ mod tests {
         assert!(matches!(
             &remaining.events[0],
             ThreadBufferedEvent::FeedbackSubmission(FeedbackThreadEvent::SpineSuccess {
+                thread_id: actual_thread_id,
+                request_generation,
                 report_id,
-            }) if report_id == &expected_report_id
+            }) if *actual_thread_id == thread_id
+                && *request_generation == 3
+                && report_id == &expected_report_id
         ));
         assert_eq!(store.snapshot_for_activation().events.len(), 1);
     }

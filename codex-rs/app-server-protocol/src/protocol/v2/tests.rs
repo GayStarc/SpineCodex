@@ -205,6 +205,7 @@ fn thread_resume_response_round_trips_initial_turns_page() {
         model: "gpt-5".to_string(),
         model_provider: "openai".to_string(),
         service_tier: None,
+        spine_feedback_enabled: Some(true),
         cwd: absolute_path("tmp"),
         runtime_workspace_roots: Vec::new(),
         instruction_sources: Vec::new(),
@@ -230,9 +231,18 @@ fn thread_resume_response_round_trips_initial_turns_page() {
             "backwardsCursor": "cursor_back",
         }))
     );
-    let decoded = serde_json::from_value::<ThreadResumeResponse>(value)
+    let decoded = serde_json::from_value::<ThreadResumeResponse>(value.clone())
         .expect("deserialize thread resume response");
     assert_eq!(decoded, response);
+
+    let mut legacy_value = value;
+    legacy_value
+        .as_object_mut()
+        .expect("response is an object")
+        .remove("spineFeedbackEnabled");
+    let legacy_decoded = serde_json::from_value::<ThreadResumeResponse>(legacy_value)
+        .expect("deserialize response without experimental authority");
+    assert_eq!(legacy_decoded.spine_feedback_enabled, None);
 }
 
 #[test]

@@ -18,6 +18,11 @@ use codex_protocol::protocol::TokenUsage;
 use codex_spine_core::SpawnTask;
 use codex_spine_core::TrimRequest;
 use serde::Serialize;
+use serde::de::DeserializeSeed;
+use serde::de::IgnoredAny;
+use serde::de::MapAccess;
+use serde::de::SeqAccess;
+use serde::de::Visitor;
 use serde_json::Map;
 use serde_json::Value;
 use thiserror::Error;
@@ -638,18 +643,21 @@ struct DebugCallState {
     spawn_request: Option<SpawnRequestSignature>,
 }
 
-// These limits bound only package-local diagnostic equality/pairing state.
-// They are deliberately above the accepted 35,612-record corpus while keeping
-// adversarially unique identifiers and unmatched calls finite.
+// These limits are deliberately above the accepted 35,612-record corpus while
+// keeping package-local diagnostic state and structural work finite.
 const DEFAULT_MAX_TRACKED_ID_BYTES: usize = 8 * 1024 * 1024;
 const DEFAULT_MAX_TRACKED_ID_ENTRIES: usize = 131_072;
 const DEFAULT_MAX_PENDING_CALLS: usize = 32_768;
+const DEFAULT_MAX_JSON_NODES_PER_RECORD: usize = 65_536;
+const DEFAULT_MAX_JSON_NODES_PER_PACKAGE: usize = 4 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug)]
 struct RedactorLimits {
     max_tracked_id_bytes: usize,
     max_tracked_id_entries: usize,
     max_pending_calls: usize,
+    max_json_nodes_per_record: usize,
+    max_json_nodes_per_package: usize,
 }
 
 impl Default for RedactorLimits {
@@ -658,15 +666,122 @@ impl Default for RedactorLimits {
             max_tracked_id_bytes: DEFAULT_MAX_TRACKED_ID_BYTES,
             max_tracked_id_entries: DEFAULT_MAX_TRACKED_ID_ENTRIES,
             max_pending_calls: DEFAULT_MAX_PENDING_CALLS,
+            max_json_nodes_per_record: DEFAULT_MAX_JSON_NODES_PER_RECORD,
+            max_json_nodes_per_package: DEFAULT_MAX_JSON_NODES_PER_PACKAGE,
         }
     }
 }
 
-/// The diagnostic package cannot be built without exceeding its bounded local state.
+struct JsonNodeBudgetSeed<'a> {
+    remaining: &'a mut usize,
+    exceeded: &'a mut bool,
+}
+
+impl JsonNodeBudgetSeed<'_> {
+    fn consume<E: serde::de::Error>(&mut self) -> Result<(), E> {
+        let Some(next) = self.remaining.checked_sub(1) else {
+            *self.exceeded = true;
+            return Err(E::custom("rollout debug JSON node limit exceeded"));
+        };
+        *self.remaining = next;
+        Ok(())
+    }
+}
+
+impl<'de> DeserializeSeed<'de> for JsonNodeBudgetSeed<'_> {
+    type Value = ();
+
+    fn deserialize<D>(mut self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        self.consume::<D::Error>()?;
+        deserializer.deserialize_any(self)
+    }
+}
+
+impl<'de> Visitor<'de> for JsonNodeBudgetSeed<'_> {
+    type Value = ();
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("a JSON value within the rollout debug structural budget")
+    }
+
+    fn visit_bool<E>(self, _value: bool) -> Result<Self::Value, E> {
+        Ok(())
+    }
+
+    fn visit_i64<E>(self, _value: i64) -> Result<Self::Value, E> {
+        Ok(())
+    }
+
+    fn visit_u64<E>(self, _value: u64) -> Result<Self::Value, E> {
+        Ok(())
+    }
+
+    fn visit_f64<E>(self, _value: f64) -> Result<Self::Value, E> {
+        Ok(())
+    }
+
+    fn visit_str<E>(self, _value: &str) -> Result<Self::Value, E> {
+        Ok(())
+    }
+
+    fn visit_none<E>(self) -> Result<Self::Value, E> {
+        Ok(())
+    }
+
+    fn visit_unit<E>(self) -> Result<Self::Value, E> {
+        Ok(())
+    }
+
+    fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        JsonNodeBudgetSeed {
+            remaining: self.remaining,
+            exceeded: self.exceeded,
+        }
+        .deserialize(deserializer)
+    }
+
+    fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        while sequence
+            .next_element_seed(JsonNodeBudgetSeed {
+                remaining: &mut *self.remaining,
+                exceeded: &mut *self.exceeded,
+            })?
+            .is_some()
+        {}
+        Ok(())
+    }
+
+    fn visit_map<A>(mut self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        while map.next_key::<IgnoredAny>()?.is_some() {
+            self.consume::<A::Error>()?;
+            map.next_value_seed(JsonNodeBudgetSeed {
+                remaining: &mut *self.remaining,
+                exceeded: &mut *self.exceeded,
+            })?;
+        }
+        Ok(())
+    }
+}
+
+/// The diagnostic package cannot be built without exceeding a closed safety boundary.
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
 pub enum RolloutDebugRedactorError {
     #[error("rollout debug redactor state limit exceeded")]
     ResourceLimitExceeded,
+    #[error("rollout debug call identifier is ambiguous while still outstanding")]
+    AmbiguousCallId,
 }
 
 /// Stateful only for package-local identifier equality and request/output pairing.
@@ -676,8 +791,10 @@ pub struct RolloutDebugRedactor {
     calls: BTreeMap<u64, DebugCallState>,
     tracked_id_bytes: usize,
     tracked_id_entries: usize,
+    record_json_nodes: usize,
+    package_json_nodes: usize,
     limits: RedactorLimits,
-    resource_limit_exceeded: bool,
+    failure: Option<RolloutDebugRedactorError>,
 }
 
 impl Default for RolloutDebugRedactor {
@@ -687,8 +804,10 @@ impl Default for RolloutDebugRedactor {
             calls: BTreeMap::new(),
             tracked_id_bytes: 0,
             tracked_id_entries: 0,
+            record_json_nodes: 0,
+            package_json_nodes: 0,
             limits: RedactorLimits::default(),
-            resource_limit_exceeded: false,
+            failure: None,
         }
     }
 }
@@ -711,7 +830,16 @@ impl RolloutDebugRedactor {
         line: &[u8],
     ) -> Result<Value, RolloutDebugRedactorError> {
         self.ensure_within_limits()?;
-        let record = self.redact_json_line(line);
+        self.begin_record();
+        let syntactically_valid = self.preflight_json(line);
+        self.ensure_within_limits()?;
+        let record = if syntactically_valid {
+            self.redact_preflighted_json_line(line)
+        } else {
+            DebugRolloutRecord::MalformedRedacted {
+                scope: DebugPlaceholderScope::Line,
+            }
+        };
         self.ensure_within_limits()?;
         Ok(serde_json::to_value(record).expect("rollout debug records must serialize"))
     }
@@ -734,24 +862,90 @@ impl RolloutDebugRedactor {
                 max_tracked_id_bytes,
                 max_tracked_id_entries,
                 max_pending_calls,
+                ..RedactorLimits::default()
+            },
+            ..Self::default()
+        }
+    }
+
+    #[cfg(test)]
+    fn with_json_node_limits(
+        max_json_nodes_per_record: usize,
+        max_json_nodes_per_package: usize,
+    ) -> Self {
+        Self {
+            limits: RedactorLimits {
+                max_json_nodes_per_record,
+                max_json_nodes_per_package,
+                ..RedactorLimits::default()
             },
             ..Self::default()
         }
     }
 
     fn ensure_within_limits(&self) -> Result<(), RolloutDebugRedactorError> {
-        if self.resource_limit_exceeded {
-            Err(RolloutDebugRedactorError::ResourceLimitExceeded)
-        } else {
-            Ok(())
-        }
+        self.failure.map_or(Ok(()), Err)
     }
 
     fn mark_resource_limit_exceeded(&mut self) {
-        self.resource_limit_exceeded = true;
+        self.failure
+            .get_or_insert(RolloutDebugRedactorError::ResourceLimitExceeded);
     }
 
+    fn mark_ambiguous_call_id(&mut self) {
+        self.failure
+            .get_or_insert(RolloutDebugRedactorError::AmbiguousCallId);
+    }
+
+    fn begin_record(&mut self) {
+        self.record_json_nodes = 0;
+    }
+
+    /// Validate and count one JSON value before constructing its `Value` tree.
+    ///
+    /// Object keys count as nodes as well as values. Nested JSON strings used
+    /// by tool arguments and carriers are preflighted separately, so a compact
+    /// source line cannot expand into an unbounded diagnostic structure.
+    fn preflight_json(&mut self, input: &[u8]) -> bool {
+        let record_remaining = self
+            .limits
+            .max_json_nodes_per_record
+            .saturating_sub(self.record_json_nodes);
+        let package_remaining = self
+            .limits
+            .max_json_nodes_per_package
+            .saturating_sub(self.package_json_nodes);
+        let initial_remaining = record_remaining.min(package_remaining);
+        let mut remaining = initial_remaining;
+        let mut exceeded = false;
+        let mut deserializer = serde_json::Deserializer::from_slice(input);
+        let result = JsonNodeBudgetSeed {
+            remaining: &mut remaining,
+            exceeded: &mut exceeded,
+        }
+        .deserialize(&mut deserializer)
+        .and_then(|()| deserializer.end());
+        let consumed = initial_remaining.saturating_sub(remaining);
+        self.record_json_nodes = self.record_json_nodes.saturating_add(consumed);
+        self.package_json_nodes = self.package_json_nodes.saturating_add(consumed);
+        if exceeded {
+            self.mark_resource_limit_exceeded();
+        }
+        result.is_ok() && !exceeded
+    }
+
+    #[cfg(test)]
     pub(crate) fn redact_json_line(&mut self, line: &[u8]) -> DebugRolloutRecord {
+        self.begin_record();
+        if !self.preflight_json(line) {
+            return DebugRolloutRecord::MalformedRedacted {
+                scope: DebugPlaceholderScope::Line,
+            };
+        }
+        self.redact_preflighted_json_line(line)
+    }
+
+    fn redact_preflighted_json_line(&mut self, line: &[u8]) -> DebugRolloutRecord {
         let Ok(raw) = serde_json::from_slice::<Value>(line) else {
             return DebugRolloutRecord::MalformedRedacted {
                 scope: DebugPlaceholderScope::Line,
@@ -1130,15 +1324,20 @@ impl RolloutDebugRedactor {
     }
 
     fn remember_call(&mut self, local_call_id: u64, tool: DebugToolKind, arguments: &str) {
+        if self.failure.is_some() {
+            return;
+        }
+        if self.calls.contains_key(&local_call_id) {
+            self.mark_ambiguous_call_id();
+            return;
+        }
         let spawn_request = (tool == DebugToolKind::SpineSpawn)
             .then(|| super::spawn::parse_tasks(arguments).ok())
             .flatten()
             .map(|tasks| SpawnRequestSignature {
                 task_count: tasks.len(),
             });
-        if !self.calls.contains_key(&local_call_id)
-            && self.calls.len() >= self.limits.max_pending_calls
-        {
+        if self.calls.len() >= self.limits.max_pending_calls {
             self.mark_resource_limit_exceeded();
             return;
         }
@@ -1156,18 +1355,32 @@ impl RolloutDebugRedactor {
         tool: DebugToolKind,
         arguments: &str,
     ) -> DebugToolArguments {
-        if !tool.is_spine() {
+        if self.failure.is_some() {
             return DebugToolArguments::Redacted {
-                shape: json_text_shape(arguments),
+                shape: DebugJsonValueShape::MalformedJson,
             };
         }
-        let parsed = serde_json::from_str::<Value>(arguments);
+        let valid_json = self.preflight_json(arguments.as_bytes());
+        if !tool.is_spine() {
+            return DebugToolArguments::Redacted {
+                shape: if valid_json {
+                    json_text_shape(arguments)
+                } else {
+                    DebugJsonValueShape::MalformedJson
+                },
+            };
+        }
+        let parsed = valid_json
+            .then(|| serde_json::from_str::<Value>(arguments))
+            .transpose()
+            .ok()
+            .flatten();
         let object = match &parsed {
-            Ok(Value::Object(_)) => DebugObjectState::Object,
-            Ok(_) => DebugObjectState::NonObject,
-            Err(_) => DebugObjectState::MalformedJson,
+            Some(Value::Object(_)) => DebugObjectState::Object,
+            Some(_) => DebugObjectState::NonObject,
+            None => DebugObjectState::MalformedJson,
         };
-        let fields = parsed.as_ref().ok().and_then(Value::as_object);
+        let fields = parsed.as_ref().and_then(Value::as_object);
         match tool {
             DebugToolKind::SpineOpen => {
                 let summary = string_shape(field(fields, "summary"));
@@ -1226,13 +1439,13 @@ impl RolloutDebugRedactor {
                         "following",
                     ],
                 ),
-                valid: TrimRequest::parse(arguments).is_ok(),
+                valid: valid_json && TrimRequest::parse(arguments).is_ok(),
             },
             DebugToolKind::SpineSpawn => DebugToolArguments::Spawn {
                 object,
                 tasks: inspect_spawn_tasks(field(fields, "tasks")),
                 unknown_fields: has_unknown_fields(fields, &["tasks"]),
-                valid: super::spawn::parse_tasks(arguments).is_ok(),
+                valid: valid_json && super::spawn::parse_tasks(arguments).is_ok(),
             },
             DebugToolKind::CodeMode
             | DebugToolKind::Shell
@@ -1266,6 +1479,11 @@ impl RolloutDebugRedactor {
                 exact_success_carrier: is_exact_control_success(tool, body),
                 body: debug_output_body(body),
             },
+            Some(DebugToolKind::SpineSpawn) if self.failure.is_some() => {
+                DebugToolOutput::Redacted {
+                    body: debug_output_body(body),
+                }
+            }
             Some(DebugToolKind::SpineSpawn) => DebugToolOutput::Spawn {
                 receipt: self
                     .inspect_spawn_receipt(raw_output, state.and_then(|state| state.spawn_request)),
@@ -1288,20 +1506,55 @@ impl RolloutDebugRedactor {
         output_name: Option<&str>,
         body: &FunctionCallOutputBody,
     ) -> DebugCodeModeCarrier {
+        if let FunctionCallOutputBody::Text(text) = body
+            && !self.preflight_json(text.as_bytes())
+            && self.failure.is_some()
+        {
+            return DebugCodeModeCarrier::Invalid {
+                body: debug_output_body(body),
+                inspection: DebugInvalidCodeModeShape {
+                    object: DebugObjectState::MalformedJson,
+                    schema: DebugSchemaShape::Missing,
+                    visible_body: DebugJsonValueShape::Null,
+                    outer_success: DebugBoolShape::Missing,
+                    cell_id: missing_mapped_string(),
+                    nested_calls: missing_collection(),
+                    unknown_fields: false,
+                },
+            };
+        }
         match decode_marked_body(output_name, body) {
             Ok(Some(carrier)) => {
                 let nested_calls = carrier
                     .nested_spine_calls
                     .into_iter()
                     .map(|call| {
+                        if self.failure.is_some() {
+                            let tool = nested_tool_kind(call.name);
+                            return DebugNestedSpineCall {
+                                runtime_call_id: 0,
+                                invocation_ordinal: call.invocation_ordinal,
+                                tool,
+                                arguments: DebugToolArguments::Redacted {
+                                    shape: DebugJsonValueShape::MalformedJson,
+                                },
+                                success: call.output.success,
+                                output: Box::new(DebugToolOutput::Redacted {
+                                    body: DebugOutputBodyShape::Text {
+                                        bytes: call.output.body.len(),
+                                    },
+                                }),
+                            };
+                        }
                         let tool = nested_tool_kind(call.name);
                         let arguments = self.redact_tool_arguments(tool, &call.arguments);
-                        let spawn_request = (tool == DebugToolKind::SpineSpawn)
-                            .then(|| super::spawn::parse_tasks(&call.arguments).ok())
-                            .flatten()
-                            .map(|tasks| SpawnRequestSignature {
-                                task_count: tasks.len(),
-                            });
+                        let spawn_request = (tool == DebugToolKind::SpineSpawn
+                            && self.failure.is_none())
+                        .then(|| super::spawn::parse_tasks(&call.arguments).ok())
+                        .flatten()
+                        .map(|tasks| SpawnRequestSignature {
+                            task_count: tasks.len(),
+                        });
                         let state = DebugCallState {
                             tool,
                             spawn_request,
@@ -1452,8 +1705,20 @@ impl RolloutDebugRedactor {
         raw_output: Option<&Value>,
         request: Option<SpawnRequestSignature>,
     ) -> DebugSpawnReceiptShape {
+        if self.failure.is_some() {
+            return DebugSpawnReceiptShape {
+                object: DebugObjectState::MalformedJson,
+                schema: DebugSchemaShape::Missing,
+                results: missing_collection(),
+                unknown_fields: false,
+                valid_for_request: false,
+            };
+        }
         let parsed = match raw_output {
-            Some(Value::String(text)) => serde_json::from_str::<Value>(text).ok(),
+            Some(Value::String(text)) => self
+                .preflight_json(text.as_bytes())
+                .then(|| serde_json::from_str::<Value>(text).ok())
+                .flatten(),
             Some(value) => Some(value.clone()),
             None => None,
         };

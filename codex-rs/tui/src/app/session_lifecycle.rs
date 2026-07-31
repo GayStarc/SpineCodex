@@ -521,6 +521,9 @@ impl App {
         self.last_subagent_backfill_attempt = None;
         self.primary_session_configured = None;
         self.pending_primary_events.clear();
+        self.spine_feedback_in_flight.clear();
+        self.spine_feedback_latest_generation.clear();
+        self.chat_widget.clear_spine_feedback_in_flight();
         self.pending_app_server_requests.clear();
         self.pending_startup_thread_start = false;
         self.chat_widget.set_pending_thread_approvals(Vec::new());

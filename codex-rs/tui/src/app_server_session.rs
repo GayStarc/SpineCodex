@@ -1615,6 +1615,7 @@ async fn thread_session_state_from_thread_start_response(
         response.model.clone(),
         response.model_provider.clone(),
         response.service_tier.clone(),
+        response.spine_feedback_enabled,
         response.approval_policy,
         response.approvals_reviewer.to_core(),
         permission_profile,
@@ -1656,6 +1657,7 @@ async fn thread_session_state_from_thread_resume_response(
         response.model.clone(),
         response.model_provider.clone(),
         response.service_tier.clone(),
+        response.spine_feedback_enabled,
         response.approval_policy,
         response.approvals_reviewer.to_core(),
         permission_profile,
@@ -1688,6 +1690,7 @@ async fn thread_session_state_from_thread_fork_response(
         response.model.clone(),
         response.model_provider.clone(),
         response.service_tier.clone(),
+        response.spine_feedback_enabled,
         response.approval_policy,
         response.approvals_reviewer.to_core(),
         permission_profile,
@@ -1727,6 +1730,7 @@ async fn thread_session_state_from_thread_response(
     model: String,
     model_provider_id: String,
     service_tier: Option<String>,
+    spine_feedback_enabled: Option<bool>,
     approval_policy: AskForApproval,
     approvals_reviewer: codex_protocol::config_types::ApprovalsReviewer,
     permission_profile: PermissionProfile,
@@ -1755,6 +1759,7 @@ async fn thread_session_state_from_thread_response(
         model,
         model_provider_id,
         service_tier,
+        spine_feedback_enabled,
         approval_policy,
         approvals_reviewer,
         permission_profile,
@@ -2514,6 +2519,7 @@ mod tests {
             model: "gpt-5.4".to_string(),
             model_provider: "openai".to_string(),
             service_tier: None,
+            spine_feedback_enabled: Some(true),
             cwd: test_path_buf("/tmp/project").abs(),
             runtime_workspace_roots: vec![
                 test_path_buf("/tmp/project").abs(),
@@ -2541,6 +2547,7 @@ mod tests {
         )
         .await
         .expect("resume response should map");
+        assert_eq!(started.session.spine_feedback_enabled, Some(true));
         assert_eq!(started.session.forked_from_id, Some(forked_from_id));
         assert_eq!(
             started.session.runtime_workspace_roots,
@@ -2654,6 +2661,7 @@ mod tests {
             "gpt-5.4".to_string(),
             "openai".to_string(),
             /*service_tier*/ None,
+            /*spine_feedback_enabled*/ Some(false),
             AskForApproval::Never,
             codex_protocol::config_types::ApprovalsReviewer::User,
             PermissionProfile::read_only(),
@@ -2689,6 +2697,7 @@ mod tests {
             "gpt-5.4".to_string(),
             "openai".to_string(),
             /*service_tier*/ None,
+            /*spine_feedback_enabled*/ Some(false),
             AskForApproval::Never,
             codex_protocol::config_types::ApprovalsReviewer::User,
             PermissionProfile::read_only(),

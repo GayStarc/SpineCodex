@@ -1043,6 +1043,7 @@ pub(crate) enum AppEvent {
 
     /// Result of a Spine feedback upload request initiated by the TUI.
     SpineFeedbackSubmitted {
+        request_generation: u64,
         draft: crate::bottom_pane::SpineFeedbackDraft,
         result: Result<String, String>,
     },
