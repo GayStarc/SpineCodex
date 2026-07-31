@@ -20,6 +20,51 @@ mod debug;
 const PRETTY_MAX_VISIBLE_SIBLINGS: usize = 3;
 const INVALID_SPINE_TREE_SNAPSHOT_LABEL: &str = "invalid Spine tree snapshot";
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct OverlaySignature {
+    turn_id: String,
+    call_id: String,
+    tasks: Vec<(u32, String)>,
+}
+
+impl OverlaySignature {
+    fn from_progress(notification: &SpineSpawnProgressUpdatedNotification) -> Option<Self> {
+        if notification.tasks.is_empty() {
+            return None;
+        }
+        let mut child_ids = HashSet::with_capacity(notification.tasks.len());
+        for (index, task) in notification.tasks.iter().enumerate() {
+            if u32::try_from(index).ok() != Some(task.ordinal)
+                || task.thread_id.is_empty()
+                || !child_ids.insert(task.thread_id.as_str())
+            {
+                return None;
+            }
+        }
+        Some(Self {
+            turn_id: notification.turn_id.clone(),
+            call_id: notification.call_id.clone(),
+            tasks: notification
+                .tasks
+                .iter()
+                .map(|task| (task.ordinal, task.thread_id.clone()))
+                .collect(),
+        })
+    }
+
+    fn from_overlay(overlay: &SpineSpawnOverlay) -> Self {
+        Self {
+            turn_id: overlay.turn_id().to_string(),
+            call_id: overlay.call_id().to_string(),
+            tasks: overlay.task_signature(),
+        }
+    }
+
+    fn same_transaction(&self, turn_id: &str, call_id: &str) -> bool {
+        self.turn_id == turn_id && self.call_id == call_id
+    }
+}
+
 #[cfg(test)]
 pub(crate) fn new_spine_tree_snapshot(
     snapshot: SpineTreeUpdatedNotification,
@@ -66,7 +111,7 @@ pub(crate) struct SpineTreeViewState {
     snapshot: Option<SpineTreeUpdatedNotification>,
     pending_history: Option<SpineTreeUpdatedNotification>,
     overlays: Vec<SpineSpawnOverlay>,
-    settled_spawn_call_ids: HashSet<String>,
+    settled_spawn_signatures: HashSet<OverlaySignature>,
     pending_handoff: Option<PendingTreeHandoff>,
     animations_enabled: bool,
 }
@@ -90,7 +135,7 @@ impl SpineTreeViewState {
             snapshot: None,
             pending_history: None,
             overlays: Vec::new(),
-            settled_spawn_call_ids: HashSet::new(),
+            settled_spawn_signatures: HashSet::new(),
             pending_handoff: None,
             animations_enabled,
         }
@@ -112,53 +157,53 @@ impl SpineTreeViewState {
         {
             return;
         }
-        let newly_settled = snapshot
-            .settled_spawn_call_ids
-            .iter()
-            .filter(|call_id| !self.settled_spawn_call_ids.contains(call_id.as_str()))
-            .cloned()
-            .collect::<Vec<_>>();
+        let settlement =
+            self.settlement_overlays_for(&snapshot.turn_id, &snapshot.settled_spawn_call_ids);
+        let has_matching_settlement = settlement
+            .as_ref()
+            .is_some_and(|matched| !matched.is_empty());
         let display_changed = self
             .snapshot
             .as_ref()
             .is_some_and(|current| display_tree_changed(current, &snapshot));
         let handoff_superseded =
-            self.pending_handoff.is_some() && (!newly_settled.is_empty() || display_changed);
+            self.pending_handoff.is_some() && (has_matching_settlement || display_changed);
         if handoff_superseded {
             self.pending_handoff = None;
         }
         let prior = self.snapshot.replace(snapshot);
-        self.settled_spawn_call_ids
-            .extend(newly_settled.iter().cloned());
 
         let mut started_handoff = false;
-        if !newly_settled.is_empty()
-            && let (true, Some(prior), Some(settled_tasks), Some(latest)) = (
+        if let Some(matched) = settlement
+            && !matched.is_empty()
+        {
+            let signatures = matched
+                .iter()
+                .map(|(signature, _)| signature.clone())
+                .collect::<HashSet<_>>();
+            let matched_overlays = matched
+                .iter()
+                .map(|(_, overlay)| overlay.clone())
+                .collect::<Vec<_>>();
+            if let (true, Some(prior), Some(settled_tasks), Some(latest)) = (
                 self.animations_enabled,
                 prior,
-                self.settled_visuals_for(&newly_settled),
+                Self::settled_visuals_for(&matched_overlays),
                 self.snapshot.as_ref(),
-            )
-            && let Some(reveal_at) = plan_handoff(&prior, latest, &settled_tasks, now)
-        {
-            self.pending_handoff = Some(PendingTreeHandoff {
-                snapshot: prior,
-                reveal_at,
-                overlays: self
-                    .overlays
-                    .iter()
-                    .filter(|overlay| {
-                        newly_settled
-                            .iter()
-                            .any(|call_id| call_id == overlay.call_id())
-                    })
-                    .cloned()
-                    .collect(),
-            });
-            started_handoff = true;
+            ) && let Some(reveal_at) = plan_handoff(&prior, latest, &settled_tasks, now)
+            {
+                self.pending_handoff = Some(PendingTreeHandoff {
+                    snapshot: prior,
+                    reveal_at,
+                    overlays: matched_overlays,
+                });
+                started_handoff = true;
+            }
+            self.settled_spawn_signatures
+                .extend(signatures.iter().cloned());
+            self.overlays
+                .retain(|overlay| !signatures.contains(&OverlaySignature::from_overlay(overlay)));
         }
-        self.overlays
-            .retain(|overlay| !self.settled_spawn_call_ids.contains(overlay.call_id()));
 
         let refresh_pending_history = !started_handoff && (display_changed || handoff_superseded);
         if refresh_pending_history {
@@ -166,19 +211,39 @@ impl SpineTreeViewState {
         }
     }
 
-    fn settled_visuals_for(&self, call_ids: &[String]) -> Option<Vec<SettledTaskVisual>> {
+    fn settlement_overlays_for(
+        &self,
+        turn_id: &str,
+        call_ids: &[String],
+    ) -> Option<Vec<(OverlaySignature, SpineSpawnOverlay)>> {
         let mut seen = HashSet::with_capacity(call_ids.len());
-        let mut tasks = Vec::new();
+        let mut matched = Vec::new();
         for call_id in call_ids {
-            seen.insert(call_id.as_str()).then_some(())?;
+            if !seen.insert(call_id.as_str()) {
+                return None;
+            }
             let mut overlays = self
                 .overlays
                 .iter()
-                .filter(|overlay| overlay.call_id() == call_id);
-            let overlay = overlays.next()?;
+                .filter(|overlay| overlay.turn_id() == turn_id && overlay.call_id() == call_id);
+            let Some(overlay) = overlays.next() else {
+                continue;
+            };
             if overlays.next().is_some() {
                 return None;
             }
+            let signature = OverlaySignature::from_overlay(overlay);
+            if self.settled_spawn_signatures.contains(&signature) {
+                return None;
+            }
+            matched.push((signature, overlay.clone()));
+        }
+        Some(matched)
+    }
+
+    fn settled_visuals_for(overlays: &[SpineSpawnOverlay]) -> Option<Vec<SettledTaskVisual>> {
+        let mut tasks = Vec::new();
+        for overlay in overlays {
             tasks.extend(overlay.settled_task_visuals()?);
         }
         Some(tasks)
@@ -197,29 +262,76 @@ impl SpineTreeViewState {
         let before = self.overlays.len();
         self.overlays
             .retain(|overlay| turn_id.is_some_and(|turn_id| overlay.turn_id() != turn_id));
+        let guards_before = self.settled_spawn_signatures.len();
+        if let Some(turn_id) = turn_id {
+            self.settled_spawn_signatures
+                .retain(|signature| signature.turn_id != turn_id);
+        } else {
+            self.settled_spawn_signatures.clear();
+        }
         if pending_cleared {
             self.pending_history = self.snapshot.clone();
         }
-        pending_cleared || self.overlays.len() != before
+        pending_cleared
+            || self.overlays.len() != before
+            || self.settled_spawn_signatures.len() != guards_before
+    }
+
+    pub(crate) fn clear_completed_spawn_overlays(&mut self, turn_id: &str) -> bool {
+        let before = self.overlays.len();
+        self.overlays.retain(|overlay| overlay.turn_id() != turn_id);
+        let guards_before = self.settled_spawn_signatures.len();
+        self.settled_spawn_signatures
+            .retain(|signature| signature.turn_id != turn_id);
+        self.overlays.len() != before || self.settled_spawn_signatures.len() != guards_before
     }
 
     pub(crate) fn apply_spawn_progress(
         &mut self,
         notification: SpineSpawnProgressUpdatedNotification,
     ) {
-        if self
-            .settled_spawn_call_ids
-            .contains(notification.call_id.as_str())
-        {
+        let Some(signature) = OverlaySignature::from_progress(&notification) else {
+            return;
+        };
+        if self.settled_spawn_signatures.contains(&signature) {
             return;
         }
-        if let Some(overlay) = self.overlays.iter_mut().find(|overlay| {
-            overlay.turn_id() == notification.turn_id && overlay.call_id() == notification.call_id
-        }) {
-            overlay.replace_notification(notification);
-        } else {
-            self.overlays.push(SpineSpawnOverlay::new(notification));
+        let matching_index = {
+            let mut indices = self
+                .overlays
+                .iter()
+                .enumerate()
+                .filter_map(|(index, overlay)| {
+                    OverlaySignature::from_overlay(overlay)
+                        .same_transaction(&notification.turn_id, &notification.call_id)
+                        .then_some(index)
+                });
+            let first = indices.next();
+            if indices.next().is_some() {
+                return;
+            }
+            first
+        };
+        match matching_index {
+            None => self.overlays.push(SpineSpawnOverlay::new(notification)),
+            Some(index) if OverlaySignature::from_overlay(&self.overlays[index]) == signature => {
+                self.overlays[index].replace_notification(notification);
+            }
+            Some(_) => {}
         }
+    }
+
+    fn unique_overlay_index(
+        &self,
+        mut matches: impl FnMut(&SpineSpawnOverlay) -> bool,
+    ) -> Option<usize> {
+        let mut indices = self
+            .overlays
+            .iter()
+            .enumerate()
+            .filter_map(|(index, overlay)| matches(overlay).then_some(index));
+        let index = indices.next()?;
+        indices.next().is_none().then_some(index)
     }
 
     pub(crate) fn seed_activity(
@@ -229,24 +341,31 @@ impl SpineTreeViewState {
         thread_id: &str,
         notifications: impl Iterator<Item = ServerNotification>,
     ) -> bool {
-        self.overlays
-            .iter_mut()
-            .find(|overlay| overlay.turn_id() == turn_id && overlay.call_id() == call_id)
-            .is_some_and(|overlay| overlay.seed_activity(thread_id, notifications))
+        let Some(index) = self.unique_overlay_index(|overlay| {
+            overlay.turn_id() == turn_id
+                && overlay.call_id() == call_id
+                && overlay.has_child_thread(thread_id)
+        }) else {
+            return false;
+        };
+        self.overlays[index].seed_activity(thread_id, notifications)
     }
 
     pub(crate) fn overlay_key_for_child_thread(&self, thread_id: &str) -> Option<(String, String)> {
-        self.overlays
-            .iter()
-            .find(|overlay| overlay.has_child_thread(thread_id))
-            .map(|overlay| (overlay.turn_id().to_string(), overlay.call_id().to_string()))
+        let index = self.unique_overlay_index(|overlay| overlay.has_child_thread(thread_id))?;
+        Some((
+            self.overlays[index].turn_id().to_string(),
+            self.overlays[index].call_id().to_string(),
+        ))
     }
 
     pub(crate) fn is_activity_seeded(&self, turn_id: &str, call_id: &str, thread_id: &str) -> bool {
-        self.overlays
-            .iter()
-            .find(|overlay| overlay.turn_id() == turn_id && overlay.call_id() == call_id)
-            .is_some_and(|overlay| overlay.has_activity(thread_id))
+        self.unique_overlay_index(|overlay| {
+            overlay.turn_id() == turn_id
+                && overlay.call_id() == call_id
+                && overlay.has_child_thread(thread_id)
+        })
+        .is_some_and(|index| self.overlays[index].has_activity(thread_id))
     }
 
     pub(crate) fn apply_activity(
@@ -257,15 +376,14 @@ impl SpineTreeViewState {
         notification: &ServerNotification,
         status: Option<codex_app_server_protocol::CollabAgentStatus>,
     ) -> bool {
-        self.overlays
-            .iter_mut()
-            .filter(|overlay| {
-                overlay.turn_id() == turn_id
-                    && overlay.call_id() == call_id
-                    && overlay.has_child_thread(thread_id)
-            })
-            .map(|overlay| overlay.update_activity(thread_id, notification, status.clone()))
-            .any(|changed| changed)
+        let Some(index) = self.unique_overlay_index(|overlay| {
+            overlay.turn_id() == turn_id
+                && overlay.call_id() == call_id
+                && overlay.has_child_thread(thread_id)
+        }) else {
+            return false;
+        };
+        self.overlays[index].update_activity(thread_id, notification, status)
     }
 
     pub(crate) fn update_status(
@@ -275,15 +393,14 @@ impl SpineTreeViewState {
         thread_id: &str,
         status: codex_app_server_protocol::CollabAgentStatus,
     ) -> bool {
-        self.overlays
-            .iter_mut()
-            .filter(|overlay| {
-                overlay.turn_id() == turn_id
-                    && overlay.call_id() == call_id
-                    && overlay.has_child_thread(thread_id)
-            })
-            .map(|overlay| overlay.update_status(thread_id, status.clone()))
-            .any(|changed| changed)
+        let Some(index) = self.unique_overlay_index(|overlay| {
+            overlay.turn_id() == turn_id
+                && overlay.call_id() == call_id
+                && overlay.has_child_thread(thread_id)
+        }) else {
+            return false;
+        };
+        self.overlays[index].update_status(thread_id, status)
     }
 
     pub(crate) fn render_cell(&self) -> Option<SpineTreeUpdateCell> {
@@ -1119,6 +1236,31 @@ mod tests {
                         status: status.clone(),
                     }
                 })
+                .collect(),
+        }
+    }
+
+    fn identified_spawn_progress(
+        turn_id: &str,
+        call_id: &str,
+        tasks: &[(u32, &str)],
+        status: codex_app_server_protocol::CollabAgentStatus,
+    ) -> SpineSpawnProgressUpdatedNotification {
+        SpineSpawnProgressUpdatedNotification {
+            thread_id: "thread".to_string(),
+            turn_id: turn_id.to_string(),
+            call_id: call_id.to_string(),
+            tasks: tasks
+                .iter()
+                .map(
+                    |(ordinal, thread_id)| codex_app_server_protocol::SpineSpawnTaskProgress {
+                        ordinal: *ordinal,
+                        summary: format!("task {thread_id}"),
+                        thread_id: (*thread_id).to_string(),
+                        agent_path: Some(format!("/root/{thread_id}")),
+                        status: status.clone(),
+                    },
+                )
                 .collect(),
         }
     }
@@ -2050,6 +2192,204 @@ mod tests {
         assert!(state.take_due_handoff_history(pending.reveal_at).is_none());
     }
 
+    fn canonical_lines(lines: &[Line<'static>]) -> Vec<String> {
+        lines
+            .iter()
+            .map(|line| {
+                let spans = line
+                    .spans
+                    .iter()
+                    .map(|span| format!("{:?}:{:?}", span.content, span.style))
+                    .collect::<Vec<_>>()
+                    .join("|");
+                format!(
+                    "alignment={:?};style={:?};spans={spans}",
+                    line.alignment, line.style
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn spawn_presentation_frames_are_observationally_stable() {
+        let mut state = SpineTreeViewState::new(true);
+        let start = Instant::now();
+        state.apply_tree_update_at(
+            snapshot(
+                "root",
+                vec![node("root", None, Some("root"), SpineTreeNodeStatus::Live)],
+            ),
+            start,
+        );
+        state.apply_spawn_progress(spawn_progress(
+            "spawn-golden",
+            &[(
+                "child-golden",
+                "golden worker",
+                codex_app_server_protocol::CollabAgentStatus::Completed,
+            )],
+        ));
+        assert!(state.overlays[0].set_activity_word_for_test("child-golden", "Calibrate"));
+        let deadline = state.overlays[0]
+            .completion_deadline("child-golden")
+            .expect("completed child should have a deterministic deadline");
+        let t0 = deadline - Duration::from_millis(850);
+        let t849 = t0 + Duration::from_millis(849);
+        let t850 = deadline;
+
+        let mut committed = snapshot(
+            "root",
+            vec![
+                node("root", None, Some("root"), SpineTreeNodeStatus::Live),
+                node(
+                    "root.1",
+                    Some("root"),
+                    Some("golden worker"),
+                    SpineTreeNodeStatus::Closed,
+                ),
+            ],
+        );
+        committed.nodes[1].spawn_outcome = Some(SpineSpawnOutcome::Completed);
+        committed.snapshot_seq = 2;
+        committed.settled_spawn_call_ids = vec!["spawn-golden".to_string()];
+        state.apply_tree_update_at(committed, t0);
+
+        let cell = state
+            .render_cell()
+            .expect("settlement should retain the live handoff");
+        let pending = cell
+            .pending_handoff
+            .as_ref()
+            .expect("settlement should preserve the prior overlay until reveal");
+        let overlay = pending
+            .overlays
+            .first()
+            .expect("the matching settled overlay should drive the handoff");
+        let at_t0 = overlay.display_lines_at("  │ ", true, 80, true, t0);
+        let at_t849 = overlay.display_lines_at("  │ ", true, 80, true, t849);
+        let at_t850 = cell.display_lines_at(80, t850);
+        assert_eq!(at_t850.len(), 3);
+        assert!(render(&at_t0).contains("golden worker"));
+        assert!(render(&at_t849).contains("golden worker"));
+        assert!(render(&at_t850).contains("golden worker"));
+        assert_ne!(canonical_lines(&at_t0), canonical_lines(&at_t849));
+        assert_eq!(
+            cell.next_frame_in(t849),
+            Some(Duration::from_millis(1)),
+            "the prior frame remains authoritative until the exact reveal deadline"
+        );
+        assert_eq!(cell.next_frame_in(t850), None);
+        assert_eq!(
+            at_t850[0].spans[1].style.fg,
+            Some(SPINE_BRAND_COLOR),
+            "header style is part of the stable presentation contract"
+        );
+        assert!(
+            render(&at_t0).contains("Calibrate"),
+            "the deterministic activity word must remain visible in the pre-reveal frame"
+        );
+    }
+
+    #[test]
+    fn spawn_presentation_typed_activity_is_observationally_stable() {
+        let mut state = SpineTreeViewState::default();
+        state.apply_tree_update(snapshot(
+            "root",
+            vec![node("root", None, Some("root"), SpineTreeNodeStatus::Live)],
+        ));
+        state.apply_spawn_progress(spawn_progress(
+            "spawn-typed",
+            &[(
+                "child-typed",
+                "typed worker",
+                codex_app_server_protocol::CollabAgentStatus::Running,
+            )],
+        ));
+        assert!(state.overlays[0].set_activity_word_for_test("child-typed", "Observe"));
+
+        let typed_notifications = [
+            ServerNotification::ItemStarted(codex_app_server_protocol::ItemStartedNotification {
+                thread_id: "child-typed".to_string(),
+                turn_id: "child-turn".to_string(),
+                started_at_ms: 0,
+                item: codex_app_server_protocol::ThreadItem::CommandExecution {
+                    id: "command".to_string(),
+                    command: "printf typed".to_string(),
+                    cwd: codex_utils_path_uri::LegacyAppPathString::from_path(
+                        std::path::Path::new("/tmp"),
+                    ),
+                    process_id: None,
+                    source: codex_app_server_protocol::CommandExecutionSource::Agent,
+                    status: codex_app_server_protocol::CommandExecutionStatus::InProgress,
+                    command_actions: Vec::new(),
+                    aggregated_output: None,
+                    exit_code: None,
+                    duration_ms: None,
+                },
+            }),
+            ServerNotification::AgentMessageDelta(
+                codex_app_server_protocol::AgentMessageDeltaNotification {
+                    thread_id: "child-typed".to_string(),
+                    turn_id: "child-turn".to_string(),
+                    item_id: "message".to_string(),
+                    delta: "agent message".to_string(),
+                },
+            ),
+            ServerNotification::PlanDelta(codex_app_server_protocol::PlanDeltaNotification {
+                thread_id: "child-typed".to_string(),
+                turn_id: "child-turn".to_string(),
+                item_id: "plan".to_string(),
+                delta: "plan update".to_string(),
+            }),
+            ServerNotification::ReasoningSummaryTextDelta(
+                codex_app_server_protocol::ReasoningSummaryTextDeltaNotification {
+                    thread_id: "child-typed".to_string(),
+                    turn_id: "child-turn".to_string(),
+                    item_id: "reasoning".to_string(),
+                    delta: "reasoning summary".to_string(),
+                    summary_index: 0,
+                },
+            ),
+        ];
+        for notification in typed_notifications {
+            assert!(state.apply_activity(
+                "turn",
+                "spawn-typed",
+                "child-typed",
+                &notification,
+                None,
+            ));
+        }
+
+        let cell = state
+            .render_cell()
+            .expect("live typed overlay should render");
+        let static_lines = cell.display_lines_at(100, Instant::now());
+        let repeated_lines = cell.display_lines_at(100, Instant::now());
+        let rendered = render(&static_lines);
+        assert_eq!(rendered, render(&repeated_lines));
+        for expected in [
+            "$ printf typed",
+            "agent message",
+            "plan update",
+            "reasoning summary",
+        ] {
+            assert!(rendered.contains(expected), "{rendered}");
+        }
+        assert!(
+            static_lines
+                .iter()
+                .flat_map(|line| line.spans.iter())
+                .any(|span| span.content.contains("Observe")
+                    && span.style.fg == Some(SPINE_BRAND_COLOR)),
+            "typed activity must preserve the brand-styled deterministic word"
+        );
+        assert_eq!(
+            canonical_lines(&static_lines),
+            canonical_lines(&repeated_lines)
+        );
+    }
+
     #[test]
     fn clearing_turn_during_handoff_reveals_authoritative_tree() {
         let start = Instant::now();
@@ -2157,7 +2497,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_settled_overlay_supersedes_handoff_into_history() {
+    fn missing_settled_overlay_does_not_supersede_existing_handoff() {
         let mut state = SpineTreeViewState::new(true);
         state.apply_tree_update(snapshot(
             "1",
@@ -2195,10 +2535,10 @@ mod tests {
             .push("spawn-missing".to_string());
         state.apply_tree_update(committed);
 
-        assert!(state.pending_handoff.is_none());
+        assert!(state.pending_handoff.is_some());
         assert!(!state.has_spawn_call("spawn-present"));
-        assert!(state.render_cell().is_none());
-        assert!(state.take_pending_history_cell().is_some());
+        assert!(state.render_cell().is_some());
+        assert!(state.take_pending_history_cell().is_none());
     }
 
     #[test]
@@ -2398,6 +2738,374 @@ mod tests {
     }
 
     #[test]
+    fn spawn_progress_requires_a_well_formed_overlay_signature() {
+        let malformed = [
+            identified_spawn_progress(
+                "turn",
+                "empty",
+                &[],
+                codex_app_server_protocol::CollabAgentStatus::Running,
+            ),
+            identified_spawn_progress(
+                "turn",
+                "missing-zero",
+                &[(1, "child-a")],
+                codex_app_server_protocol::CollabAgentStatus::Running,
+            ),
+            identified_spawn_progress(
+                "turn",
+                "reordered",
+                &[(1, "child-a"), (0, "child-b")],
+                codex_app_server_protocol::CollabAgentStatus::Running,
+            ),
+            identified_spawn_progress(
+                "turn",
+                "duplicate-ordinal",
+                &[(0, "child-a"), (0, "child-b")],
+                codex_app_server_protocol::CollabAgentStatus::Running,
+            ),
+            identified_spawn_progress(
+                "turn",
+                "empty-child",
+                &[(0, "")],
+                codex_app_server_protocol::CollabAgentStatus::Running,
+            ),
+            identified_spawn_progress(
+                "turn",
+                "duplicate-child",
+                &[(0, "child-a"), (1, "child-a")],
+                codex_app_server_protocol::CollabAgentStatus::Running,
+            ),
+        ];
+
+        for progress in malformed {
+            let mut state = SpineTreeViewState::default();
+            state.apply_spawn_progress(progress.clone());
+            assert!(
+                state.overlays.is_empty(),
+                "malformed signature must fail closed: {progress:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn conflicting_live_overlay_signature_cannot_replace_the_owner() {
+        let mut state = SpineTreeViewState::default();
+        state.apply_spawn_progress(identified_spawn_progress(
+            "turn",
+            "same",
+            &[(0, "child-old")],
+            codex_app_server_protocol::CollabAgentStatus::Running,
+        ));
+        state.apply_spawn_progress(identified_spawn_progress(
+            "turn",
+            "same",
+            &[(0, "child-new")],
+            codex_app_server_protocol::CollabAgentStatus::Running,
+        ));
+
+        assert_eq!(state.overlays.len(), 1);
+        assert!(state.overlays[0].has_child_thread("child-old"));
+        assert!(!state.overlays[0].has_child_thread("child-new"));
+    }
+
+    #[test]
+    fn settlement_is_scoped_to_the_snapshot_turn_and_exact_signature() {
+        let mut state = SpineTreeViewState::default();
+        let mut initial = snapshot(
+            "1",
+            vec![node("1", None, Some("root"), SpineTreeNodeStatus::Live)],
+        );
+        initial.turn_id = "turn-a".to_string();
+        state.apply_tree_update(initial);
+        state.apply_spawn_progress(identified_spawn_progress(
+            "turn-a",
+            "same",
+            &[(0, "child-a")],
+            codex_app_server_protocol::CollabAgentStatus::Completed,
+        ));
+        state.apply_spawn_progress(identified_spawn_progress(
+            "turn-b",
+            "same",
+            &[(0, "child-b")],
+            codex_app_server_protocol::CollabAgentStatus::Running,
+        ));
+
+        let mut committed = snapshot(
+            "1",
+            vec![node("1", None, Some("root"), SpineTreeNodeStatus::Live)],
+        );
+        committed.turn_id = "turn-a".to_string();
+        committed.snapshot_seq = 2;
+        committed.settled_spawn_call_ids = vec!["same".to_string()];
+        state.apply_tree_update(committed);
+
+        assert_eq!(state.overlays.len(), 1);
+        assert_eq!(state.overlays[0].turn_id(), "turn-b");
+        assert!(state.overlays[0].has_child_thread("child-b"));
+
+        state.apply_spawn_progress(identified_spawn_progress(
+            "turn-a",
+            "same",
+            &[(0, "child-a")],
+            codex_app_server_protocol::CollabAgentStatus::Running,
+        ));
+        assert_eq!(
+            state.overlays.len(),
+            1,
+            "exact late progress must be rejected"
+        );
+
+        state.apply_spawn_progress(identified_spawn_progress(
+            "turn-a",
+            "same",
+            &[(0, "child-new")],
+            codex_app_server_protocol::CollabAgentStatus::Running,
+        ));
+        assert_eq!(state.overlays.len(), 2);
+        assert!(
+            state
+                .overlays
+                .iter()
+                .any(|overlay| overlay.turn_id() == "turn-a"
+                    && overlay.has_child_thread("child-new"))
+        );
+    }
+
+    #[test]
+    fn zero_match_settlement_does_not_guess_a_duplicate_guard() {
+        let mut state = SpineTreeViewState::default();
+        let mut committed = snapshot(
+            "1",
+            vec![node("1", None, Some("root"), SpineTreeNodeStatus::Live)],
+        );
+        committed.snapshot_seq = 2;
+        committed.settled_spawn_call_ids = vec!["spawn-missing".to_string()];
+        state.apply_tree_update(committed);
+
+        state.apply_spawn_progress(identified_spawn_progress(
+            "turn",
+            "spawn-missing",
+            &[(0, "child-late")],
+            codex_app_server_protocol::CollabAgentStatus::Running,
+        ));
+
+        assert_eq!(state.overlays.len(), 1);
+        assert!(state.overlays[0].has_child_thread("child-late"));
+    }
+
+    #[test]
+    fn settlement_preserves_pulse_order_and_leaves_wrong_turn_overlay_live() {
+        let start = Instant::now();
+        let mut state = SpineTreeViewState::new(true);
+        let mut initial = snapshot(
+            "1",
+            vec![node("1", None, Some("root"), SpineTreeNodeStatus::Live)],
+        );
+        initial.turn_id = "turn-a".to_string();
+        state.apply_tree_update_at(initial, start);
+        for (turn_id, call_id, child_id) in [
+            ("turn-a", "spawn-b", "child-b"),
+            ("turn-b", "spawn-a", "child-wrong-turn"),
+            ("turn-a", "spawn-a", "child-a"),
+        ] {
+            state.apply_spawn_progress(identified_spawn_progress(
+                turn_id,
+                call_id,
+                &[(0, child_id)],
+                codex_app_server_protocol::CollabAgentStatus::Completed,
+            ));
+        }
+
+        let mut committed = snapshot(
+            "1",
+            vec![
+                node("1", None, Some("root"), SpineTreeNodeStatus::Live),
+                node(
+                    "1.1",
+                    Some("1"),
+                    Some("first import"),
+                    SpineTreeNodeStatus::Closed,
+                ),
+                node(
+                    "1.2",
+                    Some("1"),
+                    Some("second import"),
+                    SpineTreeNodeStatus::Closed,
+                ),
+            ],
+        );
+        committed.turn_id = "turn-a".to_string();
+        committed.nodes[1].spawn_outcome = Some(SpineSpawnOutcome::Completed);
+        committed.nodes[2].spawn_outcome = Some(SpineSpawnOutcome::Completed);
+        committed.snapshot_seq = 2;
+        committed.settled_spawn_call_ids = vec!["spawn-a".to_string(), "spawn-b".to_string()];
+        state.apply_tree_update_at(committed, start);
+
+        assert_eq!(
+            state
+                .pending_handoff
+                .as_ref()
+                .expect("matching turn overlays should animate")
+                .overlays
+                .iter()
+                .map(SpineSpawnOverlay::call_id)
+                .collect::<Vec<_>>(),
+            vec!["spawn-a", "spawn-b"]
+        );
+        assert_eq!(state.overlays.len(), 1);
+        assert_eq!(state.overlays[0].turn_id(), "turn-b");
+        assert!(state.overlays[0].has_child_thread("child-wrong-turn"));
+    }
+
+    #[test]
+    fn ambiguous_settlement_fails_closed_without_guessing_an_owner() {
+        let mut state = SpineTreeViewState::default();
+        state.apply_tree_update(snapshot(
+            "1",
+            vec![node("1", None, Some("root"), SpineTreeNodeStatus::Live)],
+        ));
+        state
+            .overlays
+            .push(SpineSpawnOverlay::new(identified_spawn_progress(
+                "turn",
+                "same",
+                &[(0, "child-a")],
+                codex_app_server_protocol::CollabAgentStatus::Completed,
+            )));
+        state
+            .overlays
+            .push(SpineSpawnOverlay::new(identified_spawn_progress(
+                "turn",
+                "same",
+                &[(0, "child-b")],
+                codex_app_server_protocol::CollabAgentStatus::Completed,
+            )));
+
+        let mut committed = snapshot(
+            "1",
+            vec![node("1", None, Some("root"), SpineTreeNodeStatus::Live)],
+        );
+        committed.snapshot_seq = 2;
+        committed.settled_spawn_call_ids = vec!["same".to_string()];
+        state.apply_tree_update(committed);
+
+        assert_eq!(state.overlays.len(), 2);
+        assert!(state.pending_handoff.is_none());
+    }
+
+    #[test]
+    fn activity_does_not_cross_from_a_retired_child_to_a_reused_call() {
+        let mut state = SpineTreeViewState::default();
+        state.apply_tree_update(snapshot(
+            "1",
+            vec![node("1", None, Some("root"), SpineTreeNodeStatus::Live)],
+        ));
+        state.apply_spawn_progress(identified_spawn_progress(
+            "turn",
+            "same",
+            &[(0, "child-old")],
+            codex_app_server_protocol::CollabAgentStatus::Completed,
+        ));
+        let mut committed = snapshot(
+            "1",
+            vec![node("1", None, Some("root"), SpineTreeNodeStatus::Live)],
+        );
+        committed.snapshot_seq = 2;
+        committed.settled_spawn_call_ids = vec!["same".to_string()];
+        state.apply_tree_update(committed);
+        state.apply_spawn_progress(identified_spawn_progress(
+            "turn",
+            "same",
+            &[(0, "child-new")],
+            codex_app_server_protocol::CollabAgentStatus::Running,
+        ));
+
+        let activity = ServerNotification::AgentMessageDelta(
+            codex_app_server_protocol::AgentMessageDeltaNotification {
+                thread_id: "child".to_string(),
+                turn_id: "child-turn".to_string(),
+                item_id: "message".to_string(),
+                delta: "only the current child".to_string(),
+            },
+        );
+        assert!(!state.apply_activity("turn", "same", "child-old", &activity, None));
+        assert!(state.apply_activity("turn", "same", "child-new", &activity, None));
+    }
+
+    #[test]
+    fn terminal_cleanup_releases_turn_local_duplicate_guards() {
+        let mut state = SpineTreeViewState::default();
+        state.apply_tree_update(snapshot(
+            "1",
+            vec![node("1", None, Some("root"), SpineTreeNodeStatus::Live)],
+        ));
+        let progress = identified_spawn_progress(
+            "turn",
+            "same",
+            &[(0, "child")],
+            codex_app_server_protocol::CollabAgentStatus::Completed,
+        );
+        state.apply_spawn_progress(progress.clone());
+        let mut committed = snapshot(
+            "1",
+            vec![node("1", None, Some("root"), SpineTreeNodeStatus::Live)],
+        );
+        committed.snapshot_seq = 2;
+        committed.settled_spawn_call_ids = vec!["same".to_string()];
+        state.apply_tree_update(committed);
+        state.apply_spawn_progress(progress.clone());
+        assert!(state.overlays.is_empty());
+
+        state.clear_incomplete_spawn_overlays(Some("turn"));
+        state.apply_spawn_progress(progress);
+        assert_eq!(state.overlays.len(), 1);
+    }
+
+    #[test]
+    fn completed_turn_cleanup_removes_live_state_but_preserves_handoff() {
+        let mut state = SpineTreeViewState::default();
+        let turn_a = identified_spawn_progress(
+            "turn-a",
+            "spawn-a",
+            &[(0, "child-a")],
+            codex_app_server_protocol::CollabAgentStatus::Running,
+        );
+        let turn_b = identified_spawn_progress(
+            "turn-b",
+            "spawn-b",
+            &[(0, "child-b")],
+            codex_app_server_protocol::CollabAgentStatus::Running,
+        );
+        state.apply_spawn_progress(turn_a.clone());
+        state.apply_spawn_progress(turn_b.clone());
+        let handoff_snapshot = snapshot(
+            "1",
+            vec![node("1", None, Some("root"), SpineTreeNodeStatus::Live)],
+        );
+        state.pending_handoff = Some(PendingTreeHandoff {
+            snapshot: handoff_snapshot.clone(),
+            reveal_at: Instant::now(),
+            overlays: vec![SpineSpawnOverlay::new(turn_a)],
+        });
+        let settled_signature = OverlaySignature::from_overlay(&state.overlays[0]);
+        state.settled_spawn_signatures.insert(settled_signature);
+
+        assert!(state.clear_completed_spawn_overlays("turn-a"));
+        assert!(!state.has_spawn_call("spawn-a"));
+        assert!(state.has_spawn_call("spawn-b"));
+        assert!(state.settled_spawn_signatures.is_empty());
+        assert_eq!(
+            state
+                .pending_handoff
+                .as_ref()
+                .map(|handoff| &handoff.snapshot),
+            Some(&handoff_snapshot)
+        );
+        assert!(state.pending_history.is_none());
+    }
+
+    #[test]
     fn settled_spawn_progress_cannot_recreate_a_transient_overlay() {
         let progress = SpineSpawnProgressUpdatedNotification {
             thread_id: "thread".to_string(),
@@ -2434,7 +3142,7 @@ mod tests {
     }
 
     #[test]
-    fn settled_spawn_call_ignores_progress_that_arrives_after_the_tree_commit() {
+    fn zero_match_settlement_allows_later_progress_without_guessing_identity() {
         let mut state = SpineTreeViewState::default();
         let mut committed = snapshot(
             "1",
@@ -2461,8 +3169,8 @@ mod tests {
             }],
         });
 
-        assert!(!state.has_spawn_call("spawn-settled"));
-        assert!(state.render_cell().is_none());
+        assert!(state.has_spawn_call("spawn-settled"));
+        assert!(state.render_cell().is_some());
     }
 
     #[test]

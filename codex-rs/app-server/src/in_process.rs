@@ -103,12 +103,37 @@ pub const DEFAULT_IN_PROCESS_CHANNEL_CAPACITY: usize = CHANNEL_CAPACITY;
 type PendingClientRequestResponse = std::result::Result<Result, JSONRPCErrorError>;
 
 fn server_notification_requires_delivery(notification: &ServerNotification) -> bool {
-    matches!(
-        notification,
+    match notification {
         ServerNotification::TurnCompleted(_)
-            | ServerNotification::ThreadSettingsUpdated(_)
-            | ServerNotification::ExternalAgentConfigImportCompleted(_)
-    )
+        | ServerNotification::ThreadSettingsUpdated(_)
+        | ServerNotification::ExternalAgentConfigImportCompleted(_)
+        | ServerNotification::ThreadRolledBack(_) => true,
+        ServerNotification::SpineTreeUpdated(notification) => {
+            !notification.settled_spawn_call_ids.is_empty()
+        }
+        _ => false,
+    }
+}
+
+async fn forward_server_notification(
+    event_tx: &mpsc::Sender<InProcessServerEvent>,
+    notification: ServerNotification,
+) -> bool {
+    if server_notification_requires_delivery(&notification) {
+        return event_tx
+            .send(InProcessServerEvent::ServerNotification(notification))
+            .await
+            .is_ok();
+    }
+
+    match event_tx.try_send(InProcessServerEvent::ServerNotification(notification)) {
+        Ok(()) => true,
+        Err(mpsc::error::TrySendError::Full(_)) => {
+            warn!("dropping in-process server notification (queue full)");
+            true
+        }
+        Err(mpsc::error::TrySendError::Closed(_)) => false,
+    }
 }
 
 /// Input needed to start an in-process app-server runtime.
@@ -668,25 +693,8 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                             }
                         }
                         OutgoingMessage::AppServerNotification(notification) => {
-                            if server_notification_requires_delivery(&notification) {
-                                if event_tx
-                                    .send(InProcessServerEvent::ServerNotification(notification))
-                                    .await
-                                    .is_err()
-                                {
-                                    break;
-                                }
-                            } else if let Err(send_error) =
-                                event_tx.try_send(InProcessServerEvent::ServerNotification(notification))
-                            {
-                                match send_error {
-                                    mpsc::error::TrySendError::Full(_) => {
-                                        warn!("dropping in-process server notification (queue full)");
-                                    }
-                                    mpsc::error::TrySendError::Closed(_) => {
-                                        break;
-                                    }
-                                }
+                            if !forward_server_notification(&event_tx, notification).await {
+                                break;
                             }
                         }
                     }
@@ -743,6 +751,9 @@ mod tests {
     use codex_app_server_protocol::ConfigRequirementsReadResponse;
     use codex_app_server_protocol::ExternalAgentConfigImportCompletedNotification;
     use codex_app_server_protocol::SessionSource as ApiSessionSource;
+    use codex_app_server_protocol::SpineSpawnProgressUpdatedNotification;
+    use codex_app_server_protocol::SpineTreeUpdatedNotification;
+    use codex_app_server_protocol::ThreadRolledBackNotification;
     use codex_app_server_protocol::ThreadStartParams;
     use codex_app_server_protocol::ThreadStartResponse;
     use codex_app_server_protocol::Turn;
@@ -753,6 +764,9 @@ mod tests {
     use pretty_assertions::assert_eq;
     use std::path::Path;
     use tempfile::TempDir;
+    use tokio::task::JoinHandle;
+
+    const TEST_TIMEOUT: Duration = Duration::from_secs(1);
 
     async fn build_test_config(codex_home: &Path) -> Config {
         match ConfigBuilder::default()
@@ -889,22 +903,53 @@ mod tests {
             .expect("in-process runtime should shutdown cleanly");
     }
 
+    fn turn_completed_notification() -> ServerNotification {
+        ServerNotification::TurnCompleted(TurnCompletedNotification {
+            thread_id: "thread-1".to_string(),
+            turn: Turn {
+                id: "turn-1".to_string(),
+                items: Vec::new(),
+                items_view: TurnItemsView::NotLoaded,
+                status: TurnStatus::Completed,
+                error: None,
+                started_at: None,
+                completed_at: Some(0),
+                duration_ms: None,
+            },
+        })
+    }
+
+    fn spine_tree_notification(settled_spawn_call_ids: Vec<String>) -> ServerNotification {
+        ServerNotification::SpineTreeUpdated(SpineTreeUpdatedNotification {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            snapshot_seq: 1,
+            active_node_id: "root".to_string(),
+            nodes: Vec::new(),
+            settled_spawn_call_ids,
+        })
+    }
+
+    async fn recv_event(
+        event_rx: &mut mpsc::Receiver<InProcessServerEvent>,
+    ) -> InProcessServerEvent {
+        timeout(TEST_TIMEOUT, event_rx.recv())
+            .await
+            .expect("event receive should not hang")
+            .expect("event stream should stay open")
+    }
+
+    async fn join_producer(producer: JoinHandle<()>) {
+        timeout(TEST_TIMEOUT, producer)
+            .await
+            .expect("producer should not hang")
+            .expect("producer should complete");
+    }
+
     #[test]
-    fn guaranteed_delivery_helpers_cover_terminal_server_notifications() {
+    fn guaranteed_delivery_helpers_cover_terminal_and_spine_critical_notifications() {
         assert!(server_notification_requires_delivery(
-            &ServerNotification::TurnCompleted(TurnCompletedNotification {
-                thread_id: "thread-1".to_string(),
-                turn: Turn {
-                    id: "turn-1".to_string(),
-                    items: Vec::new(),
-                    items_view: TurnItemsView::NotLoaded,
-                    status: TurnStatus::Completed,
-                    error: None,
-                    started_at: None,
-                    completed_at: Some(0),
-                    duration_ms: None,
-                },
-            })
+            &turn_completed_notification()
         ));
         assert!(server_notification_requires_delivery(
             &ServerNotification::ExternalAgentConfigImportCompleted(
@@ -914,5 +959,101 @@ mod tests {
                 },
             )
         ));
+        assert!(server_notification_requires_delivery(
+            &spine_tree_notification(vec!["spawn-1".to_string()])
+        ));
+        assert!(server_notification_requires_delivery(
+            &ServerNotification::ThreadRolledBack(ThreadRolledBackNotification {
+                thread_id: "thread-1".to_string(),
+            },)
+        ));
+        assert!(!server_notification_requires_delivery(
+            &spine_tree_notification(Vec::new())
+        ));
+        assert!(!server_notification_requires_delivery(
+            &ServerNotification::SpineSpawnProgressUpdated(SpineSpawnProgressUpdatedNotification {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                call_id: "spawn-1".to_string(),
+                tasks: Vec::new(),
+            },)
+        ));
+    }
+
+    #[tokio::test]
+    async fn spine_settlement_precedes_turn_completed_at_capacity_one() {
+        let (event_tx, mut event_rx) = mpsc::channel(1);
+        event_tx
+            .try_send(InProcessServerEvent::Lagged { skipped: 7 })
+            .expect("capacity-one queue should accept the existing event");
+
+        let producer_tx = event_tx.clone();
+        let producer = tokio::spawn(async move {
+            assert!(
+                forward_server_notification(
+                    &producer_tx,
+                    spine_tree_notification(vec!["spawn-1".to_string()]),
+                )
+                .await
+            );
+            assert!(forward_server_notification(&producer_tx, turn_completed_notification()).await);
+        });
+
+        assert!(matches!(
+            recv_event(&mut event_rx).await,
+            InProcessServerEvent::Lagged { skipped: 7 }
+        ));
+        match recv_event(&mut event_rx).await {
+            InProcessServerEvent::ServerNotification(ServerNotification::SpineTreeUpdated(
+                notification,
+            )) => {
+                assert_eq!(
+                    notification.settled_spawn_call_ids,
+                    vec!["spawn-1".to_string()]
+                );
+            }
+            other => panic!("expected settlement notification, got {other:?}"),
+        }
+        assert!(matches!(
+            recv_event(&mut event_rx).await,
+            InProcessServerEvent::ServerNotification(ServerNotification::TurnCompleted(_))
+        ));
+        join_producer(producer).await;
+    }
+
+    #[tokio::test]
+    async fn thread_rollback_precedes_turn_completed_at_capacity_one() {
+        let (event_tx, mut event_rx) = mpsc::channel(1);
+        event_tx
+            .try_send(InProcessServerEvent::Lagged { skipped: 11 })
+            .expect("capacity-one queue should accept the existing event");
+
+        let producer_tx = event_tx.clone();
+        let producer = tokio::spawn(async move {
+            assert!(
+                forward_server_notification(
+                    &producer_tx,
+                    ServerNotification::ThreadRolledBack(ThreadRolledBackNotification {
+                        thread_id: "thread-1".to_string(),
+                    }),
+                )
+                .await
+            );
+            assert!(forward_server_notification(&producer_tx, turn_completed_notification()).await);
+        });
+
+        assert!(matches!(
+            recv_event(&mut event_rx).await,
+            InProcessServerEvent::Lagged { skipped: 11 }
+        ));
+        assert!(matches!(
+            recv_event(&mut event_rx).await,
+            InProcessServerEvent::ServerNotification(ServerNotification::ThreadRolledBack(_))
+        ));
+        assert!(matches!(
+            recv_event(&mut event_rx).await,
+            InProcessServerEvent::ServerNotification(ServerNotification::TurnCompleted(_))
+        ));
+        join_producer(producer).await;
     }
 }

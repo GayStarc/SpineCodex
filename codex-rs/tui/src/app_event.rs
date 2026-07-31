@@ -683,6 +683,11 @@ pub(crate) enum AppEvent {
         turn_id: Option<String>,
     },
 
+    ClearCompletedTurnSpineOverlays {
+        parent_thread_id: ThreadId,
+        turn_id: String,
+    },
+
     InvalidateSpineTreeView {
         thread_id: ThreadId,
     },

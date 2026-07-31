@@ -957,6 +957,14 @@ impl App {
                 Some(AppEvent::InvalidateSpineTreeView { thread_id })
             }
             ServerNotification::TurnCompleted(notification)
+                if notification.turn.status == TurnStatus::Completed =>
+            {
+                Some(AppEvent::ClearCompletedTurnSpineOverlays {
+                    parent_thread_id: thread_id,
+                    turn_id: notification.turn.id.clone(),
+                })
+            }
+            ServerNotification::TurnCompleted(notification)
                 if matches!(
                     notification.turn.status,
                     TurnStatus::Interrupted | TurnStatus::Failed

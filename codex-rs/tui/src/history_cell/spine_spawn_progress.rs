@@ -73,6 +73,14 @@ impl SpineSpawnOverlay {
         &self.notification.turn_id
     }
 
+    pub(crate) fn task_signature(&self) -> Vec<(u32, String)> {
+        self.notification
+            .tasks
+            .iter()
+            .map(|task| (task.ordinal, task.thread_id.clone()))
+            .collect()
+    }
+
     pub(crate) fn replace_notification(
         &mut self,
         mut notification: SpineSpawnProgressUpdatedNotification,
@@ -315,6 +323,15 @@ impl SpineSpawnOverlay {
         self.visuals
             .get(thread_id)
             .map(|visual| visual.activity_word.as_str())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_activity_word_for_test(&mut self, thread_id: &str, word: &str) -> bool {
+        let Some(visual) = self.visuals.get_mut(thread_id) else {
+            return false;
+        };
+        visual.activity_word = word.to_string();
+        true
     }
 }
 

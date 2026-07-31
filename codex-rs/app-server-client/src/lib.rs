@@ -29,6 +29,8 @@ use std::time::Duration;
 
 pub use codex_app_server::app_server_control_socket_path;
 pub use codex_app_server::in_process::DEFAULT_IN_PROCESS_CHANNEL_CAPACITY;
+use codex_app_server::in_process::InProcessClientHandle;
+use codex_app_server::in_process::InProcessClientSender;
 pub use codex_app_server::in_process::InProcessServerEvent;
 use codex_app_server::in_process::InProcessStartArgs;
 use codex_app_server::in_process::LogDbLayer;
@@ -159,25 +161,33 @@ fn event_requires_delivery(event: &InProcessServerEvent) -> bool {
 /// The bounded in-process transport uses this classification. The remote
 /// transport forwards notifications through an unbounded channel.
 pub(crate) fn server_notification_requires_delivery(notification: &ServerNotification) -> bool {
-    matches!(
-        notification,
+    match notification {
         ServerNotification::TurnCompleted(_)
-            | ServerNotification::ThreadRolledBack(_)
-            | ServerNotification::ThreadSettingsUpdated(_)
-            | ServerNotification::ItemCompleted(_)
-            | ServerNotification::ExternalAgentConfigImportCompleted(_)
-            | ServerNotification::AgentMessageDelta(_)
-            | ServerNotification::PlanDelta(_)
-            | ServerNotification::ReasoningSummaryTextDelta(_)
-            | ServerNotification::ReasoningTextDelta(_)
-    )
+        | ServerNotification::ThreadRolledBack(_)
+        | ServerNotification::ThreadSettingsUpdated(_)
+        | ServerNotification::ItemCompleted(_)
+        | ServerNotification::ExternalAgentConfigImportCompleted(_)
+        | ServerNotification::AgentMessageDelta(_)
+        | ServerNotification::PlanDelta(_)
+        | ServerNotification::ReasoningSummaryTextDelta(_)
+        | ServerNotification::ReasoningTextDelta(_) => true,
+        ServerNotification::SpineTreeUpdated(notification) => {
+            !notification.settled_spawn_call_ids.is_empty()
+        }
+        _ => false,
+    }
 }
 
 /// Outcome of attempting to forward a single event to the consumer channel.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug)]
 enum ForwardEventResult {
     /// The event was delivered (or intentionally dropped); the stream is healthy.
     Continue,
+    /// The event is lossless and must be retained until the consumer has capacity.
+    PendingCritical {
+        event: InProcessServerEvent,
+        skipped: usize,
+    },
     /// The consumer channel is closed; the caller should stop producing events.
     DisableStream,
 }
@@ -185,10 +195,10 @@ enum ForwardEventResult {
 /// Forwards a single in-process event to the consumer, respecting the
 /// lossless/best-effort split.
 ///
-/// Lossless events (transcript deltas, item/turn completions) block until the
-/// consumer drains capacity. Best-effort events use `try_send` and increment
-/// `skipped_events` on failure. When a lag marker needs to be flushed before a
-/// lossless event, the flush itself blocks so the marker is never lost.
+/// Lossless events (transcript deltas, item/turn completions) are returned to
+/// the worker as one pending critical event. Best-effort events use `try_send`
+/// and increment `skipped_events` on failure. The worker publishes the pending
+/// lag marker before the critical event without blocking command service.
 ///
 /// If a dropped event is a `ServerRequest`, `reject_server_request` is called
 /// so the server does not wait for a response that will never come.
@@ -201,49 +211,32 @@ async fn forward_in_process_event<F>(
 where
     F: FnMut(ServerRequest),
 {
-    if *skipped_events > 0 {
-        if event_requires_delivery(&event) {
-            // Surface lag before the lossless event, but do not let the lag marker itself cause
-            // us to drop the transcript/completion notification the caller is blocked on.
-            if event_tx
-                .send(InProcessServerEvent::Lagged {
-                    skipped: *skipped_events,
-                })
-                .await
-                .is_err()
-            {
-                return ForwardEventResult::DisableStream;
-            }
-            *skipped_events = 0;
-        } else {
-            match event_tx.try_send(InProcessServerEvent::Lagged {
-                skipped: *skipped_events,
-            }) {
-                Ok(()) => {
-                    *skipped_events = 0;
-                }
-                Err(mpsc::error::TrySendError::Full(_)) => {
-                    *skipped_events = skipped_events.saturating_add(1);
-                    warn!("dropping in-process app-server event because consumer queue is full");
-                    if let InProcessServerEvent::ServerRequest(request) = event {
-                        reject_server_request(request);
-                    }
-                    return ForwardEventResult::Continue;
-                }
-                Err(mpsc::error::TrySendError::Closed(_)) => {
-                    return ForwardEventResult::DisableStream;
-                }
-            }
-        }
+    if event_requires_delivery(&event) {
+        return ForwardEventResult::PendingCritical {
+            event,
+            skipped: std::mem::take(skipped_events),
+        };
     }
 
-    if event_requires_delivery(&event) {
-        // Block until the consumer catches up for transcript/completion notifications; this
-        // preserves the visible assistant output even when the queue is otherwise saturated.
-        if event_tx.send(event).await.is_err() {
-            return ForwardEventResult::DisableStream;
+    if *skipped_events > 0 {
+        match event_tx.try_send(InProcessServerEvent::Lagged {
+            skipped: *skipped_events,
+        }) {
+            Ok(()) => {
+                *skipped_events = 0;
+            }
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                *skipped_events = skipped_events.saturating_add(1);
+                warn!("dropping in-process server notification because queue is full");
+                if let InProcessServerEvent::ServerRequest(request) = event {
+                    reject_server_request(request);
+                }
+                return ForwardEventResult::Continue;
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                return ForwardEventResult::DisableStream;
+            }
         }
-        return ForwardEventResult::Continue;
     }
 
     match event_tx.try_send(event) {
@@ -457,6 +450,33 @@ pub struct InProcessAppServerClient {
     worker_handle: tokio::task::JoinHandle<()>,
 }
 
+enum InProcessEventSource {
+    Runtime(InProcessClientHandle),
+    #[cfg(test)]
+    Injected {
+        runtime: InProcessClientHandle,
+        event_rx: mpsc::Receiver<InProcessServerEvent>,
+    },
+}
+
+impl InProcessEventSource {
+    async fn next_event(&mut self) -> Option<InProcessServerEvent> {
+        match self {
+            Self::Runtime(runtime) => runtime.next_event().await,
+            #[cfg(test)]
+            Self::Injected { event_rx, .. } => event_rx.recv().await,
+        }
+    }
+
+    async fn shutdown(self) -> IoResult<()> {
+        match self {
+            Self::Runtime(runtime) => runtime.shutdown().await,
+            #[cfg(test)]
+            Self::Injected { runtime, .. } => runtime.shutdown().await,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct InProcessAppServerRequestHandle {
     command_tx: mpsc::Sender<ClientCommand>,
@@ -481,16 +501,49 @@ impl InProcessAppServerClient {
     /// with overload error instead of being silently dropped.
     pub async fn start(args: InProcessClientStartArgs) -> IoResult<Self> {
         let channel_capacity = args.channel_capacity.max(1);
-        let mut handle =
-            codex_app_server::in_process::start(args.into_runtime_start_args()).await?;
-        let request_sender = handle.sender();
+        let runtime = codex_app_server::in_process::start(args.into_runtime_start_args()).await?;
+        let request_sender = runtime.sender();
+        Ok(Self::start_worker(
+            channel_capacity,
+            request_sender,
+            InProcessEventSource::Runtime(runtime),
+        ))
+    }
+
+    #[cfg(test)]
+    async fn start_with_test_event_source(
+        args: InProcessClientStartArgs,
+    ) -> IoResult<(Self, mpsc::Sender<InProcessServerEvent>)> {
+        let channel_capacity = args.channel_capacity.max(1);
+        let runtime = codex_app_server::in_process::start(args.into_runtime_start_args()).await?;
+        let request_sender = runtime.sender();
+        let (injected_event_tx, injected_event_rx) =
+            mpsc::channel::<InProcessServerEvent>(channel_capacity);
+        let client = Self::start_worker(
+            channel_capacity,
+            request_sender,
+            InProcessEventSource::Injected {
+                runtime,
+                event_rx: injected_event_rx,
+            },
+        );
+        Ok((client, injected_event_tx))
+    }
+
+    fn start_worker(
+        channel_capacity: usize,
+        request_sender: InProcessClientSender,
+        mut event_source: InProcessEventSource,
+    ) -> Self {
         let (command_tx, mut command_rx) = mpsc::channel::<ClientCommand>(channel_capacity);
         let (event_tx, event_rx) = mpsc::channel::<InProcessServerEvent>(channel_capacity);
 
         let worker_handle = tokio::spawn(async move {
             let mut event_stream_enabled = true;
             let mut skipped_events = 0usize;
+            let mut pending_critical: Option<(InProcessServerEvent, usize)> = None;
             loop {
+                let has_pending_critical = pending_critical.is_some();
                 tokio::select! {
                     command = command_rx.recv() => {
                         match command {
@@ -529,17 +582,36 @@ impl InProcessAppServerClient {
                                 let _ = response_tx.send(send_result);
                             }
                             Some(ClientCommand::Shutdown { response_tx }) => {
-                                let shutdown_result = handle.shutdown().await;
+                                let shutdown_result = event_source.shutdown().await;
                                 let _ = response_tx.send(shutdown_result);
                                 break;
                             }
                             None => {
-                                let _ = handle.shutdown().await;
+                                let _ = event_source.shutdown().await;
                                 break;
                             }
                         }
                     }
-                    event = handle.next_event(), if event_stream_enabled => {
+                    permit = event_tx.reserve(), if has_pending_critical => {
+                        match permit {
+                            Ok(permit) => {
+                                let (event, skipped) = pending_critical
+                                    .take()
+                                    .expect("pending critical event must exist");
+                                if skipped > 0 {
+                                    permit.send(InProcessServerEvent::Lagged { skipped });
+                                    pending_critical = Some((event, 0));
+                                } else {
+                                    permit.send(event);
+                                }
+                            }
+                            Err(_) => {
+                                event_stream_enabled = false;
+                                pending_critical = None;
+                            }
+                        }
+                    }
+                    event = event_source.next_event(), if event_stream_enabled && !has_pending_critical => {
                         let Some(event) = event else {
                             break;
                         };
@@ -582,6 +654,9 @@ impl InProcessAppServerClient {
                         .await
                         {
                             ForwardEventResult::Continue => {}
+                            ForwardEventResult::PendingCritical { event, skipped } => {
+                                pending_critical = Some((event, skipped));
+                            }
                             ForwardEventResult::DisableStream => {
                                 event_stream_enabled = false;
                             }
@@ -591,11 +666,11 @@ impl InProcessAppServerClient {
             }
         });
 
-        Ok(Self {
+        Self {
             command_tx,
             event_rx,
             worker_handle,
-        })
+        }
     }
 
     pub fn request_handle(&self) -> InProcessAppServerRequestHandle {
@@ -759,9 +834,9 @@ impl InProcessAppServerClient {
         } = self;
         let mut worker_handle = worker_handle;
         // Drop the caller-facing receiver before asking the worker to shut
-        // down. That unblocks any pending must-deliver `event_tx.send(..)`
-        // so the worker can reach `handle.shutdown()` instead of timing out
-        // and getting aborted with the runtime still attached.
+        // down. That lets the worker abandon any pending critical permit so it
+        // can reach `event_source.shutdown()` instead of timing out and
+        // getting aborted with the runtime still attached.
         drop(event_rx);
         let (response_tx, response_rx) = oneshot::channel();
         if command_tx
@@ -1020,16 +1095,16 @@ mod tests {
         }
     }
 
-    async fn start_test_client_with_capacity(
+    async fn test_client_start_args(
         session_source: SessionSource,
         channel_capacity: usize,
-    ) -> TestClient {
+    ) -> (TempDir, InProcessClientStartArgs) {
         let codex_home = TempDir::new().expect("temp dir");
         let config = Arc::new(build_test_config_for_codex_home(codex_home.path()).await);
         let state_db = init_state_db(config.as_ref())
             .await
             .expect("state db should initialize for in-process test");
-        let client = InProcessAppServerClient::start(InProcessClientStartArgs {
+        let args = InProcessClientStartArgs {
             arg0_paths: Arg0DispatchPaths::default(),
             config,
             cli_overrides: Vec::new(),
@@ -1049,9 +1124,18 @@ mod tests {
             mcp_server_openai_form_elicitation: false,
             opt_out_notification_methods: Vec::new(),
             channel_capacity,
-        })
-        .await
-        .expect("in-process app-server client should start");
+        };
+        (codex_home, args)
+    }
+
+    async fn start_test_client_with_capacity(
+        session_source: SessionSource,
+        channel_capacity: usize,
+    ) -> TestClient {
+        let (codex_home, args) = test_client_start_args(session_source, channel_capacity).await;
+        let client = InProcessAppServerClient::start(args)
+            .await
+            .expect("in-process app-server client should start");
 
         TestClient {
             _codex_home: codex_home,
@@ -1231,6 +1315,19 @@ mod tests {
         })
     }
 
+    fn settlement_notification() -> ServerNotification {
+        ServerNotification::SpineTreeUpdated(
+            codex_app_server_protocol::SpineTreeUpdatedNotification {
+                thread_id: "thread".to_string(),
+                turn_id: "turn".to_string(),
+                snapshot_seq: 1,
+                active_node_id: "root".to_string(),
+                nodes: Vec::new(),
+                settled_spawn_call_ids: vec!["spawn-1".to_string()],
+            },
+        )
+    }
+
     fn test_remote_connect_args(websocket_url: String) -> RemoteAppServerConnectArgs {
         RemoteAppServerConnectArgs {
             endpoint: RemoteAppServerEndpoint::WebSocket {
@@ -1360,7 +1457,125 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn forward_in_process_event_preserves_transcript_notifications_under_backpressure() {
+    async fn capacity_one_settlement_backpressure_does_not_starve_typed_rpc() {
+        let (codex_home, args) =
+            test_client_start_args(SessionSource::Exec, /*channel_capacity*/ 1).await;
+        let (mut client, runtime_event_tx) =
+            InProcessAppServerClient::start_with_test_event_source(args)
+                .await
+                .expect("test event source should start");
+
+        let settlement = InProcessServerEvent::ServerNotification(settlement_notification());
+        assert!(
+            event_requires_delivery(&settlement),
+            "non-empty Spine settlement must not be dropped; if this assertion fails, \
+             the fixture is observing best-effort loss rather than RPC starvation"
+        );
+
+        for event in [
+            InProcessServerEvent::ServerNotification(command_execution_output_delta_notification(
+                "existing",
+            )),
+            InProcessServerEvent::ServerNotification(command_execution_output_delta_notification(
+                "dropped",
+            )),
+            settlement,
+            InProcessServerEvent::ServerNotification(turn_completed_notification()),
+        ] {
+            runtime_event_tx
+                .send(event)
+                .await
+                .expect("fixture event source should remain open");
+        }
+
+        let request_handle = client.request_handle();
+        let command_tx = request_handle.command_tx.clone();
+        let rpc_task = tokio::spawn(async move {
+            request_handle
+                .request_typed::<ConfigRequirementsReadResponse>(
+                    ClientRequest::ConfigRequirementsRead {
+                        request_id: RequestId::Integer(1),
+                        params: None,
+                    },
+                )
+                .await
+        });
+
+        timeout(Duration::from_secs(2), async {
+            loop {
+                if command_tx.capacity() == 0 || rpc_task.is_finished() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("typed RPC should be queued or completed before event capacity is released");
+
+        let first = timeout(Duration::from_secs(2), client.next_event())
+            .await
+            .expect("existing event should arrive before timeout")
+            .expect("event stream should stay open");
+        assert!(matches!(
+            first,
+            InProcessServerEvent::ServerNotification(
+                ServerNotification::CommandExecutionOutputDelta(notification)
+            ) if notification.delta == "existing"
+        ));
+
+        timeout(Duration::from_secs(2), rpc_task)
+            .await
+            .expect(
+                "typed RPC starved while Lagged occupied the consumer queue and settlement \
+                 remained pending",
+            )
+            .expect("typed RPC task should join")
+            .expect("typed RPC should succeed");
+
+        let lagged = timeout(Duration::from_secs(2), client.next_event())
+            .await
+            .expect("Lagged should arrive before timeout")
+            .expect("event stream should stay open");
+        assert!(matches!(
+            lagged,
+            InProcessServerEvent::Lagged { skipped: 1 }
+        ));
+
+        let settled = timeout(Duration::from_secs(2), client.next_event())
+            .await
+            .expect("settlement should arrive before timeout")
+            .expect("event stream should stay open");
+        assert!(matches!(
+            settled,
+            InProcessServerEvent::ServerNotification(ServerNotification::SpineTreeUpdated(
+                notification
+            )) if notification.settled_spawn_call_ids == ["spawn-1"]
+        ));
+
+        let completed = timeout(Duration::from_secs(2), client.next_event())
+            .await
+            .expect("TurnCompleted should arrive before timeout")
+            .expect("event stream should stay open");
+        assert!(matches!(
+            completed,
+            InProcessServerEvent::ServerNotification(ServerNotification::TurnCompleted(
+                notification
+            )) if notification.turn.status == codex_app_server_protocol::TurnStatus::Completed
+        ));
+        assert!(
+            timeout(Duration::from_millis(50), client.next_event())
+                .await
+                .is_err(),
+            "no fifth event should be observable"
+        );
+
+        client.shutdown().await.expect("shutdown should complete");
+        drop(runtime_event_tx);
+        drop(codex_home);
+    }
+
+    #[tokio::test]
+    async fn forward_in_process_event_defers_transcript_notifications_under_backpressure() {
         let (event_tx, mut event_rx) = mpsc::channel(1);
         event_tx
             .send(InProcessServerEvent::ServerNotification(
@@ -1379,71 +1594,35 @@ mod tests {
             |_| {},
         )
         .await;
-        assert_eq!(result, ForwardEventResult::Continue);
+        assert!(matches!(result, ForwardEventResult::Continue));
         assert_eq!(skipped_events, 1);
 
-        let receive_task = tokio::spawn(async move {
-            let mut events = Vec::new();
-            for _ in 0..5 {
-                events.push(
-                    timeout(Duration::from_secs(2), event_rx.recv())
-                        .await
-                        .expect("event should arrive before timeout")
-                        .expect("event stream should stay open"),
-                );
-            }
-            events
-        });
-
-        for notification in [
-            agent_message_delta_notification("hello"),
-            item_completed_notification("hello"),
-            turn_completed_notification(),
-        ] {
-            let result = forward_in_process_event(
-                &event_tx,
-                &mut skipped_events,
-                InProcessServerEvent::ServerNotification(notification),
-                |_| {},
-            )
-            .await;
-            assert_eq!(result, ForwardEventResult::Continue);
-        }
+        let result = forward_in_process_event(
+            &event_tx,
+            &mut skipped_events,
+            InProcessServerEvent::ServerNotification(agent_message_delta_notification("hello")),
+            |_| {},
+        )
+        .await;
+        let ForwardEventResult::PendingCritical { event, skipped } = result else {
+            panic!("transcript notification should remain pending");
+        };
+        assert_eq!(skipped, 1);
         assert_eq!(skipped_events, 0);
-
-        let events = receive_task
-            .await
-            .expect("receiver task should join successfully");
         assert!(matches!(
-            &events[0],
+            event,
             InProcessServerEvent::ServerNotification(
-                ServerNotification::CommandExecutionOutputDelta(notification)
-            ) if notification.delta == "stdout-1"
-        ));
-        assert!(matches!(
-            &events[1],
-            InProcessServerEvent::Lagged { skipped: 1 }
-        ));
-        assert!(matches!(
-            &events[2],
-            InProcessServerEvent::ServerNotification(ServerNotification::AgentMessageDelta(
+                ServerNotification::AgentMessageDelta(
                 notification
             )) if notification.delta == "hello"
         ));
         assert!(matches!(
-            &events[3],
-            InProcessServerEvent::ServerNotification(ServerNotification::ItemCompleted(
-                notification
-            )) if matches!(
-                &notification.item,
-                codex_app_server_protocol::ThreadItem::AgentMessage { text, .. } if text == "hello"
-            )
-        ));
-        assert!(matches!(
-            &events[4],
-            InProcessServerEvent::ServerNotification(ServerNotification::TurnCompleted(
-                notification
-            )) if notification.turn.status == codex_app_server_protocol::TurnStatus::Completed
+            timeout(Duration::from_secs(1), event_rx.recv())
+                .await
+                .expect("existing event should remain queued"),
+            Some(InProcessServerEvent::ServerNotification(
+                ServerNotification::CommandExecutionOutputDelta(notification)
+            )) if notification.delta == "stdout-1"
         ));
     }
 

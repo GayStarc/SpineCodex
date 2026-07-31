@@ -396,6 +396,31 @@ impl App {
                     tui.frame_requester().schedule_frame();
                 }
             }
+            AppEvent::ClearCompletedTurnSpineOverlays {
+                parent_thread_id,
+                turn_id,
+            } => {
+                if self
+                    .spine_projection_rollback_fences
+                    .contains_key(&parent_thread_id)
+                {
+                    return Ok(AppRunControl::Continue);
+                }
+                let is_active = self.chat_widget.thread_id() == Some(parent_thread_id);
+                let can_publish = is_active && self.initial_history_replay_buffer.is_none();
+                let update = self
+                    .spine_tree_views
+                    .get_mut(&parent_thread_id)
+                    .and_then(|state| {
+                        state
+                            .clear_completed_spawn_overlays(&turn_id)
+                            .then(|| (state.snapshot().cloned(), state.render_cell()))
+                    });
+                if can_publish && let Some((snapshot, live_cell)) = update {
+                    self.chat_widget.set_spine_tree_view(snapshot, live_cell);
+                    tui.frame_requester().schedule_frame();
+                }
+            }
             AppEvent::InvalidateSpineTreeView { thread_id } => {
                 self.spine_tree_views.remove(&thread_id);
                 if let std::collections::hash_map::Entry::Occupied(mut fence) =
