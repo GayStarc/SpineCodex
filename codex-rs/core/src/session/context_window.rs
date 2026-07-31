@@ -25,19 +25,19 @@ pub(crate) async fn context_window_token_status(
     sess: &Session,
     turn_context: &TurnContext,
 ) -> ContextWindowTokenStatus {
-    let active_context_tokens = sess.get_total_token_usage().await;
-
-    let (auto_compact_scope_tokens, auto_compact_scope_limit, body_window) =
+    let (active_context_tokens, auto_compact_scope_tokens, auto_compact_scope_limit, body_window) =
         match turn_context.config.model_auto_compact_token_limit_scope {
-            AutoCompactTokenLimitScope::Total => (
-                active_context_tokens,
-                turn_context.model_info.auto_compact_token_limit(),
-                None,
-            ),
+            AutoCompactTokenLimitScope::Total => {
+                let active_context_tokens = sess.get_total_token_usage().await;
+                (
+                    active_context_tokens,
+                    active_context_tokens,
+                    turn_context.model_info.auto_compact_token_limit(),
+                    None,
+                )
+            }
             AutoCompactTokenLimitScope::BodyAfterPrefix => {
-                let window = sess.auto_compact_window_snapshot().await;
-                let baseline = window.prefill_input_tokens.unwrap_or(active_context_tokens);
-
+                let pressure = sess.context_pressure(turn_context).await;
                 let scope_limit = turn_context
                     .config
                     .model_auto_compact_token_limit
@@ -45,11 +45,13 @@ pub(crate) async fn context_window_token_status(
                 let full_context_window_limit = turn_context.model_context_window();
 
                 (
-                    active_context_tokens.saturating_sub(baseline),
+                    pressure.active_context_tokens,
+                    pressure.body_after_prefix_tokens,
                     scope_limit,
                     Some(BodyAfterPrefixWindowStatus {
                         full_context_window_limit,
-                        auto_compact_window_prefill_tokens: window.prefill_input_tokens,
+                        auto_compact_window_prefill_tokens: pressure
+                            .body_after_prefix_prefill_tokens,
                     }),
                 )
             }

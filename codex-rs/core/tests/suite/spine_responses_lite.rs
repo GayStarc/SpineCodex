@@ -1,13 +1,18 @@
 use anyhow::Context;
 use anyhow::Result;
+use codex_core::compact::SUMMARIZATION_PROMPT;
 use codex_features::Feature;
 use codex_protocol::config_types::AutoCompactTokenLimitScope;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
+#[cfg(not(target_os = "windows"))]
+use codex_protocol::openai_models::TruncationPolicyConfig;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::RolloutLine;
+#[cfg(not(target_os = "windows"))]
+use codex_protocol::user_input::UserInput;
 use core_test_support::hooks::trust_discovered_hooks;
 use core_test_support::responses;
 use core_test_support::skip_if_no_network;
@@ -18,6 +23,8 @@ use pretty_assertions::assert_eq;
 use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::Arc;
+#[cfg(not(target_os = "windows"))]
+use std::time::Duration;
 use tempfile::TempDir;
 
 const CODE_MODE_SPINE_CARRIER_MARKER: &str = "spine.code_mode.output.v1";
@@ -97,6 +104,56 @@ fn request_spine_transition_statuses(body: &Value) -> Vec<&str> {
         .filter_map(|item| item.get("text").and_then(Value::as_str))
         .filter(|text| text.starts_with("<spine_tran_status "))
         .collect()
+}
+
+fn completed_without_usage(id: &str) -> Value {
+    serde_json::json!({
+        "type": "response.completed",
+        "response": {"id": id}
+    })
+}
+
+fn completed_with_usage(id: &str, input_tokens: i64, output_tokens: i64) -> Value {
+    serde_json::json!({
+        "type": "response.completed",
+        "response": {
+            "id": id,
+            "usage": {
+                "input_tokens": input_tokens,
+                "input_tokens_details": null,
+                "output_tokens": output_tokens,
+                "output_tokens_details": null,
+                "total_tokens": input_tokens + output_tokens
+            }
+        }
+    })
+}
+
+fn ev_compaction_item(id: &str, encrypted_content: &str) -> Value {
+    serde_json::json!({
+        "type": "response.output_item.done",
+        "item": {
+            "type": "compaction",
+            "id": id,
+            "encrypted_content": encrypted_content,
+        }
+    })
+}
+
+fn status_kilotokens(status: &str, field: &str) -> Result<f64> {
+    let marker = format!(r#"{field}=""#);
+    let value = status
+        .split_once(&marker)
+        .with_context(|| format!("status is missing {field}: {status}"))?
+        .1
+        .split_once('"')
+        .with_context(|| format!("status has malformed {field}: {status}"))?
+        .0
+        .strip_suffix('K')
+        .with_context(|| format!("status {field} is not expressed in kilotokens: {status}"))?;
+    value
+        .parse()
+        .with_context(|| format!("status has non-numeric {field}: {status}"))
 }
 
 fn persisted_spine_transition_statuses(test: &TestCodex) -> Result<Vec<String>> {
@@ -433,11 +490,13 @@ async fn responses_lite_spine_transition_status_uses_body_after_prefix_context_l
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
+    let sampled_output = "s".repeat(40_000);
     let response_mock = responses::mount_sse_sequence(
         &server,
         vec![
             responses::sse(vec![
                 responses::ev_response_created("resp-status-body-window-open"),
+                responses::ev_assistant_message("resp-status-body-window-output", &sampled_output),
                 responses::ev_function_call_with_namespace(
                     "status-body-window-open",
                     "spine",
@@ -473,10 +532,162 @@ async fn responses_lite_spine_transition_status_uses_body_after_prefix_context_l
     let follow_up = requests[1].body_json();
     let statuses = request_spine_transition_statuses(&follow_up);
     assert_eq!(statuses.len(), 1);
+    let context_left = status_kilotokens(statuses[0], "context_left")?;
     assert!(
-        statuses[0].contains(r#"context_left="80.0K""#),
-        "{}",
-        statuses[0]
+        (50.0..80.0).contains(&context_left),
+        "sampled growth must reduce BodyAfterPrefix context_left without resetting the window: {}",
+        statuses[0],
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn responses_lite_open_rewrite_preserves_body_after_prefix_growth() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let large_sampled_output = "x".repeat(80_000);
+    let response_mock = responses::mount_sse_sequence(
+        &server,
+        vec![
+            responses::sse(vec![
+                responses::ev_response_created("body-prefix-open"),
+                responses::ev_assistant_message("body-prefix-large-output", &large_sampled_output),
+                responses::ev_function_call_with_namespace(
+                    "body-prefix-open-call",
+                    "spine",
+                    "open",
+                    r#"{"summary":"body budget child"}"#,
+                ),
+                completed_with_usage(
+                    "body-prefix-open",
+                    /*input_tokens*/ 5_000,
+                    /*output_tokens*/ 20_000,
+                ),
+            ]),
+            responses::sse(vec![
+                responses::ev_response_created("body-prefix-compact"),
+                ev_compaction_item("body-prefix-compact-item", "body-prefix-compact-summary"),
+                responses::ev_completed_with_tokens("body-prefix-compact", 5_000),
+            ]),
+            responses::sse(vec![
+                responses::ev_response_created("body-prefix-done"),
+                responses::ev_assistant_message("body-prefix-done-message", "done"),
+                responses::ev_completed_with_tokens("body-prefix-done", 5_000),
+            ]),
+        ],
+    )
+    .await;
+    let mut builder = spine_test_codex()
+        .with_model_info_override("gpt-5.4", |model_info| {
+            model_info.use_responses_lite = true;
+        })
+        .with_config(|config| {
+            config.model_context_window = Some(200_000);
+            config.model_auto_compact_token_limit = Some(5_000);
+            config.model_auto_compact_token_limit_scope =
+                AutoCompactTokenLimitScope::BodyAfterPrefix;
+        });
+    let test = builder.build(&server).await?;
+
+    test.submit_turn("open after producing a large sampled output")
+        .await?;
+
+    let requests = response_mock.requests();
+    assert!(
+        requests.len() >= 2,
+        "the open request must be followed by either compact or normal sampling"
+    );
+    assert_eq!(
+        requests[1]
+            .input()
+            .last()
+            .and_then(|item| item.get("type"))
+            .and_then(Value::as_str),
+        Some("compaction_trigger"),
+        "spine.open is not a new auto-compact window and must not reset the body budget"
+    );
+    assert_eq!(
+        requests.len(),
+        3,
+        "sampled growth beyond the BodyAfterPrefix limit must compact before the normal follow-up"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn responses_lite_later_usage_cannot_absorb_no_usage_first_request_growth() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let first_growth = "a".repeat(40_000);
+    let second_growth = "b".repeat(40_000);
+    let response_mock = responses::mount_sse_sequence(
+        &server,
+        vec![
+            responses::sse(vec![
+                responses::ev_response_created("body-prefix-no-usage-first"),
+                responses::ev_assistant_message("body-prefix-no-usage-first-output", &first_growth),
+                responses::ev_function_call(
+                    "body-prefix-no-usage-first-tool",
+                    "missing_tool",
+                    "{}",
+                ),
+                completed_without_usage("body-prefix-no-usage-first"),
+            ]),
+            responses::sse(vec![
+                responses::ev_response_created("body-prefix-later-usage"),
+                responses::ev_assistant_message("body-prefix-later-usage-output", &second_growth),
+                responses::ev_function_call("body-prefix-later-usage-tool", "missing_tool", "{}"),
+                completed_with_usage(
+                    "body-prefix-later-usage",
+                    /*input_tokens*/ 100_000,
+                    /*output_tokens*/ 8_000,
+                ),
+            ]),
+            responses::sse(vec![
+                responses::ev_response_created("body-prefix-no-usage-compact"),
+                ev_compaction_item(
+                    "body-prefix-no-usage-compact-item",
+                    "body-prefix-no-usage-summary",
+                ),
+                responses::ev_completed_with_tokens("body-prefix-no-usage-compact", 5_000),
+            ]),
+            responses::sse(vec![
+                responses::ev_response_created("body-prefix-no-usage-done"),
+                responses::ev_assistant_message("body-prefix-no-usage-done-message", "done"),
+                responses::ev_completed_with_tokens("body-prefix-no-usage-done", 5_000),
+            ]),
+        ],
+    )
+    .await;
+    let mut builder = spine_test_codex()
+        .with_model_info_override("gpt-5.4", |model_info| {
+            model_info.use_responses_lite = true;
+        })
+        .with_config(|config| {
+            config.model_context_window = Some(200_000);
+            config.model_auto_compact_token_limit = Some(15_000);
+            config.model_auto_compact_token_limit_scope =
+                AutoCompactTokenLimitScope::BodyAfterPrefix;
+        });
+    let test = builder.build(&server).await?;
+
+    test.submit_turn("accumulate body growth across a no-usage first request")
+        .await?;
+
+    let requests = response_mock.requests();
+    assert_eq!(requests.len(), 4);
+    assert_eq!(
+        requests[2]
+            .input()
+            .last()
+            .and_then(|item| item.get("type"))
+            .and_then(Value::as_str),
+        Some("compaction_trigger"),
+        "usage from a later request must not become U0 and absorb earlier no-usage growth"
     );
 
     Ok(())
@@ -649,6 +860,612 @@ async fn responses_lite_spine_memory_slots_precede_the_transition_status() -> Re
             "missing {field} in {status_text}"
         );
     }
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn responses_lite_spine_close_rebases_provider_usage_before_auto_compact() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let mut old_reasoning =
+        responses::ev_reasoning_item("closed-child-reasoning", &["old"], &[&"r".repeat(360_000)]);
+    old_reasoning["item"]
+        .as_object_mut()
+        .context("reasoning fixture item should be an object")?
+        .remove("content");
+    let response_mock = responses::mount_response_sequence(
+        &server,
+        vec![
+            responses::sse_response(responses::sse(vec![
+                responses::ev_response_created("resp-rebase-open"),
+                responses::ev_function_call_with_namespace(
+                    "rebase-open",
+                    "spine",
+                    "open",
+                    r#"{"summary":"large child"}"#,
+                ),
+                responses::ev_completed_with_tokens("resp-rebase-open", 10_000),
+            ])),
+            responses::sse_response(responses::sse(vec![
+                responses::ev_response_created("resp-rebase-opened"),
+                responses::ev_assistant_message("msg-rebase-opened", "child ready"),
+                responses::ev_completed_with_tokens("resp-rebase-opened", 10_000),
+            ])),
+            responses::sse_response(responses::sse(vec![
+                responses::ev_response_created("resp-rebase-child-work"),
+                old_reasoning,
+                responses::ev_assistant_message(
+                    "msg-rebase-child-work",
+                    "large child work complete",
+                ),
+                responses::ev_completed_with_tokens("resp-rebase-child-work", 100_000),
+            ]))
+            .insert_header("X-Reasoning-Included", "true"),
+            responses::sse_response(responses::sse(vec![
+                responses::ev_response_created("resp-rebase-close"),
+                responses::ev_function_call_with_namespace(
+                    "rebase-close",
+                    "spine",
+                    "close",
+                    r#"{"memory":"short child memory"}"#,
+                ),
+                responses::ev_completed_with_tokens("resp-rebase-close", 250_000),
+            ]))
+            .insert_header("X-Reasoning-Included", "true"),
+            responses::sse_response(responses::sse(vec![
+                responses::ev_response_created("resp-rebase-done"),
+                responses::ev_assistant_message("msg-rebase-done", "done"),
+                responses::ev_completed_with_tokens("resp-rebase-done", 159_837),
+            ])),
+            responses::sse_response(responses::sse(vec![
+                responses::ev_response_created("resp-rebase-next-turn"),
+                responses::ev_assistant_message("msg-rebase-next-turn", "next turn done"),
+                responses::ev_completed_with_tokens("resp-rebase-next-turn", 10_000),
+            ])),
+        ],
+    )
+    .await;
+    let mut builder = spine_test_codex()
+        .with_model_info_override("gpt-5.4", |model_info| {
+            model_info.use_responses_lite = true;
+        })
+        .with_config(|config| {
+            config.model_context_window = Some(272_000);
+            config.model_auto_compact_token_limit = Some(244_800);
+        });
+    let test = builder.build(&server).await?;
+
+    test.submit_turn("exercise projection-aware usage rebase")
+        .await?;
+    test.submit_turn("perform large child work").await?;
+    test.submit_turn("close the large child").await?;
+
+    let requests = response_mock.requests();
+    assert_eq!(
+        requests.len(),
+        5,
+        "closing the large child should continue normally without auto compact"
+    );
+    let follow_up = &requests[4];
+    let follow_up_body = follow_up.body_json().to_string();
+    assert!(
+        !follow_up.body_contains_text(SUMMARIZATION_PROMPT),
+        "stale provider usage must not trigger a compaction request"
+    );
+    assert!(
+        !follow_up
+            .input()
+            .iter()
+            .any(|item| item.get("type").and_then(Value::as_str) == Some("reasoning")),
+        "closed child reasoning must not remain model-visible"
+    );
+    assert!(
+        follow_up_body.contains("short child memory"),
+        "closed child memory must replace the removed suffix"
+    );
+    let follow_up_json = follow_up.body_json();
+    let statuses = request_spine_transition_statuses(&follow_up_json);
+    assert_eq!(statuses.len(), 1);
+    assert!(
+        status_kilotokens(statuses[0], "context_left")? > 100.0,
+        "status must use the same rebased pressure as compact admission: {}",
+        statuses[0]
+    );
+    let metadata: Value = serde_json::from_str(
+        &follow_up
+            .header("x-codex-turn-metadata")
+            .context("follow-up request should include turn metadata")?,
+    )
+    .context("follow-up turn metadata should be valid json")?;
+    assert_eq!(
+        metadata["request_kind"].as_str(),
+        Some("turn"),
+        "unexpected follow-up metadata: {metadata:#}"
+    );
+    assert!(
+        metadata.get("compaction").is_none(),
+        "normal follow-up must not carry compaction metadata"
+    );
+
+    test.submit_turn("verify provider-valid projected reasoning accounting")
+        .await?;
+    let requests = response_mock.requests();
+    assert_eq!(
+        requests.len(),
+        6,
+        "closed reasoning must not trigger pre-turn compact after fresh provider usage"
+    );
+    assert!(
+        !requests[5].body_contains_text(SUMMARIZATION_PROMPT),
+        "provider-valid accounting must scan h(PS), not hidden native reasoning"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn responses_lite_body_after_prefix_rewrite_keeps_full_window_hard_stop() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let close_arguments = serde_json::json!({
+        "memory": "m".repeat(400_000),
+    })
+    .to_string();
+    let response_mock = responses::mount_sse_sequence(
+        &server,
+        vec![
+            responses::sse(vec![
+                responses::ev_response_created("resp-body-prefix-open"),
+                responses::ev_function_call_with_namespace(
+                    "body-prefix-open",
+                    "spine",
+                    "open",
+                    r#"{"summary":"body prefix child"}"#,
+                ),
+                responses::ev_completed_with_tokens("resp-body-prefix-open", 5_000),
+            ]),
+            responses::sse(vec![
+                responses::ev_response_created("resp-body-prefix-opened"),
+                responses::ev_assistant_message("msg-body-prefix-opened", "child ready"),
+                responses::ev_completed_with_tokens("resp-body-prefix-opened", 5_000),
+            ]),
+            responses::sse(vec![
+                responses::ev_response_created("resp-body-prefix-close"),
+                responses::ev_function_call_with_namespace(
+                    "body-prefix-close",
+                    "spine",
+                    "close",
+                    &close_arguments,
+                ),
+                responses::ev_completed_with_tokens("resp-body-prefix-close", 10_000),
+            ]),
+            responses::sse(vec![
+                responses::ev_response_created("resp-body-prefix-compact"),
+                ev_compaction_item("compact-body-prefix", "compact-body-prefix-summary"),
+                responses::ev_completed_with_tokens("resp-body-prefix-compact", 5_000),
+            ]),
+            responses::sse(vec![
+                responses::ev_response_created("resp-body-prefix-done"),
+                responses::ev_assistant_message("msg-body-prefix-done", "done"),
+                responses::ev_completed_with_tokens("resp-body-prefix-done", 5_000),
+            ]),
+        ],
+    )
+    .await;
+    let mut builder = spine_test_codex()
+        .with_model_info_override("gpt-5.4", |model_info| {
+            model_info.use_responses_lite = true;
+        })
+        .with_config(|config| {
+            config.model_context_window = Some(80_000);
+            config.model_auto_compact_token_limit = Some(500_000);
+            config.model_auto_compact_token_limit_scope =
+                AutoCompactTokenLimitScope::BodyAfterPrefix;
+        });
+    let test = builder.build(&server).await?;
+
+    test.submit_turn("open a body-prefix child").await?;
+    test.submit_turn("close with a large memory").await?;
+
+    let requests = response_mock.requests();
+    assert_eq!(requests.len(), 5);
+    assert!(
+        requests[3]
+            .input()
+            .last()
+            .and_then(|item| item.get("type").and_then(Value::as_str))
+            == Some("compaction_trigger"),
+        "BodyAfterPrefix accounting must preserve the independent full-window hard stop"
+    );
+    assert!(
+        requests[4]
+            .input()
+            .iter()
+            .any(|item| item.get("type").and_then(Value::as_str) == Some("compaction")),
+        "the hard-stop compact result should be installed before the follow-up request"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn responses_lite_model_output_without_usage_estimates_current_projection() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let large_reasoning = "n".repeat(180_000);
+    let response_mock = responses::mount_sse_sequence(
+        &server,
+        vec![
+            responses::sse(vec![
+                responses::ev_response_created("resp-no-usage-baseline"),
+                responses::ev_assistant_message("msg-no-usage-baseline", "baseline"),
+                responses::ev_completed_with_tokens("resp-no-usage-baseline", 5_000),
+            ]),
+            responses::sse(vec![
+                responses::ev_response_created("resp-no-usage-large"),
+                responses::ev_reasoning_item(
+                    "reasoning-no-usage-large",
+                    &["large"],
+                    &[&large_reasoning],
+                ),
+                responses::ev_function_call("no-usage-tool", "missing_tool", "{}"),
+                completed_without_usage("resp-no-usage-large"),
+            ]),
+            responses::sse(vec![
+                responses::ev_response_created("resp-no-usage-compact"),
+                ev_compaction_item("compact-no-usage", "compact-no-usage-summary"),
+                responses::ev_completed_with_tokens("resp-no-usage-compact", 5_000),
+            ]),
+            responses::sse(vec![
+                responses::ev_response_created("resp-no-usage-done"),
+                responses::ev_assistant_message("msg-no-usage-done", "done"),
+                responses::ev_completed_with_tokens("resp-no-usage-done", 5_000),
+            ]),
+        ],
+    )
+    .await;
+    let mut builder = spine_test_codex()
+        .with_model_info_override("gpt-5.4", |model_info| {
+            model_info.use_responses_lite = true;
+        })
+        .with_config(|config| {
+            config.compact_prompt = Some(SUMMARIZATION_PROMPT.to_string());
+            config.model_context_window = Some(80_000);
+            config.model_auto_compact_token_limit = Some(40_000);
+        });
+    let test = builder.build(&server).await?;
+
+    test.submit_turn("establish a provider usage baseline")
+        .await?;
+    test.submit_turn("record large model output without usage")
+        .await?;
+
+    let requests = response_mock.requests();
+    assert_eq!(requests.len(), 4);
+    assert!(
+        requests[2]
+            .input()
+            .last()
+            .and_then(|item| item.get("type").and_then(Value::as_str))
+            == Some("compaction_trigger"),
+        "stale projected pressure should invoke the normal BaseCodex compact path"
+    );
+    assert!(
+        requests[3]
+            .input()
+            .iter()
+            .any(|item| item.get("type").and_then(Value::as_str) == Some("compaction")),
+        "the post-compact follow-up should use the provider's compacted history"
+    );
+    assert!(
+        !requests[2].body_contains_text(SUMMARIZATION_PROMPT),
+        "model output without usage must invalidate the old provider baseline"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn responses_lite_forced_full_usage_triggers_base_pre_turn_compact() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let response_mock = responses::mount_sse_sequence(
+        &server,
+        vec![
+            responses::sse(vec![
+                responses::ev_response_created("resp-forced-full-seed"),
+                responses::ev_assistant_message("msg-forced-full-seed", "seeded"),
+                responses::ev_completed_with_tokens("resp-forced-full-seed", 5_000),
+            ]),
+            responses::sse_failed(
+                "resp-forced-full-error",
+                "context_length_exceeded",
+                "input exceeds the context window",
+            ),
+            responses::sse(vec![
+                responses::ev_response_created("resp-forced-full-compact"),
+                ev_compaction_item("compact-forced-full", "compact-forced-full-summary"),
+                responses::ev_completed_with_tokens("resp-forced-full-compact", 5_000),
+            ]),
+            responses::sse(vec![
+                responses::ev_response_created("resp-forced-full-done"),
+                responses::ev_assistant_message("msg-forced-full-done", "done"),
+                responses::ev_completed_with_tokens("resp-forced-full-done", 5_000),
+            ]),
+        ],
+    )
+    .await;
+    let mut builder = spine_test_codex()
+        .with_model_info_override("gpt-5.4", |model_info| {
+            model_info.use_responses_lite = true;
+        })
+        .with_config(|config| {
+            config.model_context_window = Some(80_000);
+            config.model_auto_compact_token_limit = Some(40_000);
+        });
+    let test = builder.build(&server).await?;
+
+    test.submit_turn("seed forced-full state").await?;
+    test.submit_turn("trigger forced-full state").await?;
+    test.submit_turn("compact from forced-full state").await?;
+
+    let requests = response_mock.requests();
+    assert_eq!(requests.len(), 4);
+    assert!(
+        requests[2]
+            .input()
+            .last()
+            .and_then(|item| item.get("type").and_then(Value::as_str))
+            == Some("compaction_trigger"),
+        "set_token_usage_full must restore the deliberate BaseCodex scalar for the next pre-turn admission"
+    );
+    assert!(
+        requests[3]
+            .input()
+            .iter()
+            .any(|item| item.get("type").and_then(Value::as_str) == Some("compaction")),
+        "forced-full pre-turn compact should install the compact result before normal sampling"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(not(target_os = "windows"))]
+async fn responses_lite_large_tool_output_preserves_provider_valid_base_pressure() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let output_args = serde_json::json!({
+        "command": "awk 'BEGIN { for (i = 0; i < 60000; i++) printf \"x\" }'",
+        "timeout_ms": 5_000,
+    })
+    .to_string();
+    let response_mock = responses::mount_sse_sequence(
+        &server,
+        vec![
+            responses::sse(vec![
+                responses::ev_response_created("resp-large-tool"),
+                responses::ev_function_call(
+                    "provider-valid-large-output",
+                    "shell_command",
+                    &output_args,
+                ),
+                responses::ev_completed_with_tokens("resp-large-tool", 35_000),
+            ]),
+            responses::sse(vec![
+                responses::ev_response_created("resp-large-tool-compact"),
+                ev_compaction_item("compact-large-tool", "compact-large-tool-summary"),
+                responses::ev_completed_with_tokens("resp-large-tool-compact", 5_000),
+            ]),
+            responses::sse(vec![
+                responses::ev_response_created("resp-large-tool-done"),
+                responses::ev_assistant_message("msg-large-tool-done", "done"),
+                responses::ev_completed_with_tokens("resp-large-tool-done", 5_000),
+            ]),
+        ],
+    )
+    .await;
+    let mut builder = spine_test_codex()
+        .with_model_info_override("gpt-5.4", |model_info| {
+            model_info.use_responses_lite = true;
+            model_info.truncation_policy = TruncationPolicyConfig::bytes(100_000);
+        })
+        .with_config(|config| {
+            config.model_context_window = Some(80_000);
+            config.model_auto_compact_token_limit = Some(40_000);
+        });
+    let test = builder.build(&server).await?;
+
+    test.submit_turn("count a large local tool output from the provider baseline")
+        .await?;
+
+    let requests = response_mock.requests();
+    assert_eq!(requests.len(), 3);
+    assert!(
+        requests[1].input().iter().any(|item| {
+            item.get("type").and_then(Value::as_str) == Some("function_call_output")
+                && item.get("call_id").and_then(Value::as_str)
+                    == Some("provider-valid-large-output")
+        }),
+        "the compact request must contain the pending local tool output"
+    );
+    assert!(
+        requests[1]
+            .input()
+            .last()
+            .and_then(|item| item.get("type").and_then(Value::as_str))
+            == Some("compaction_trigger"),
+        "provider usage plus the pending tool tail should cross the BaseCodex limit"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn responses_lite_retry_preserves_stale_projection_until_real_usage() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let partial_reasoning = "r".repeat(180_000);
+    let response_mock = responses::mount_sse_sequence(
+        &server,
+        vec![
+            responses::sse(vec![
+                responses::ev_response_created("resp-retry-baseline"),
+                responses::ev_assistant_message("msg-retry-baseline", "baseline"),
+                responses::ev_completed_with_tokens("resp-retry-baseline", 5_000),
+            ]),
+            responses::sse(vec![
+                responses::ev_response_created("resp-retry-partial"),
+                responses::ev_reasoning_item(
+                    "reasoning-retry-partial",
+                    &["partial"],
+                    &[&partial_reasoning],
+                ),
+            ]),
+            responses::sse(vec![
+                responses::ev_response_created("resp-retry-no-usage"),
+                responses::ev_function_call("retry-tool", "missing_tool", "{}"),
+                completed_without_usage("resp-retry-no-usage"),
+            ]),
+            responses::sse(vec![
+                responses::ev_response_created("resp-retry-compact"),
+                ev_compaction_item("compact-retry", "compact-retry-summary"),
+                responses::ev_completed_with_tokens("resp-retry-compact", 5_000),
+            ]),
+            responses::sse(vec![
+                responses::ev_response_created("resp-retry-done"),
+                responses::ev_assistant_message("msg-retry-done", "done"),
+                responses::ev_completed_with_tokens("resp-retry-done", 5_000),
+            ]),
+        ],
+    )
+    .await;
+    let mut builder = spine_test_codex()
+        .with_model_info_override("gpt-5.4", |model_info| {
+            model_info.use_responses_lite = true;
+        })
+        .with_config(|config| {
+            config.compact_prompt = Some(SUMMARIZATION_PROMPT.to_string());
+            config.model_context_window = Some(80_000);
+            config.model_auto_compact_token_limit = Some(40_000);
+        });
+    let test = builder.build(&server).await?;
+
+    test.submit_turn("establish a retry baseline").await?;
+    test.submit_turn("retry after partial model output").await?;
+
+    let requests = response_mock.requests();
+    assert_eq!(requests.len(), 5);
+    assert!(
+        requests[3]
+            .input()
+            .last()
+            .and_then(|item| item.get("type").and_then(Value::as_str))
+            == Some("compaction_trigger"),
+        "a retry without usage must not restore the pre-attempt provider baseline"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(not(target_os = "windows"))]
+async fn responses_lite_cancel_keeps_projection_stale_for_next_turn() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let cancelled_reasoning = "c".repeat(180_000);
+    let sleep_args = serde_json::json!({
+        "command": "sleep 60",
+        "timeout_ms": 60_000
+    })
+    .to_string();
+    let response_mock = responses::mount_sse_sequence(
+        &server,
+        vec![
+            responses::sse(vec![
+                responses::ev_response_created("resp-cancel-baseline"),
+                responses::ev_assistant_message("msg-cancel-baseline", "baseline"),
+                responses::ev_completed_with_tokens("resp-cancel-baseline", 5_000),
+            ]),
+            responses::sse(vec![
+                responses::ev_response_created("resp-cancel-large"),
+                responses::ev_reasoning_item(
+                    "reasoning-cancel-large",
+                    &["cancelled"],
+                    &[&cancelled_reasoning],
+                ),
+                responses::ev_function_call("cancel-sleep", "shell_command", &sleep_args),
+                completed_without_usage("resp-cancel-large"),
+            ]),
+            responses::sse(vec![
+                responses::ev_response_created("resp-cancel-compact"),
+                ev_compaction_item("compact-cancel", "compact-cancel-summary"),
+                responses::ev_completed_with_tokens("resp-cancel-compact", 5_000),
+            ]),
+            responses::sse(vec![
+                responses::ev_response_created("resp-cancel-done"),
+                responses::ev_assistant_message("msg-cancel-done", "done"),
+                responses::ev_completed_with_tokens("resp-cancel-done", 5_000),
+            ]),
+        ],
+    )
+    .await;
+    let mut builder = spine_test_codex()
+        .with_model_info_override("gpt-5.4", |model_info| {
+            model_info.use_responses_lite = true;
+        })
+        .with_config(|config| {
+            config.compact_prompt = Some(SUMMARIZATION_PROMPT.to_string());
+            config.model_context_window = Some(80_000);
+            config.model_auto_compact_token_limit = Some(40_000);
+        });
+    let test = builder.build(&server).await?;
+
+    test.submit_turn("establish a cancellation baseline")
+        .await?;
+    test.codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "cancel after model output".to_string(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::ExecCommandBegin(_))
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    test.codex.submit(Op::Interrupt).await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnAborted(_))
+    })
+    .await;
+
+    test.submit_turn("continue after cancellation").await?;
+
+    let requests = response_mock.requests();
+    assert_eq!(requests.len(), 4);
+    assert!(
+        requests[2]
+            .input()
+            .last()
+            .and_then(|item| item.get("type").and_then(Value::as_str))
+            == Some("compaction_trigger"),
+        "cancellation must not restore provider usage for the next turn"
+    );
 
     Ok(())
 }

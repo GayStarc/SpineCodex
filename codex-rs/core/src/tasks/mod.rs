@@ -11,6 +11,7 @@ use std::time::Instant;
 use codex_extension_api::ExtensionData;
 use futures::future::BoxFuture;
 use tokio::select;
+use tokio::sync::Mutex;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::AbortOnDropHandle;
@@ -34,6 +35,7 @@ use crate::session::turn_context::TurnContext;
 use crate::state::ActiveTurn;
 use crate::state::RunningTask;
 use crate::state::TaskKind;
+use crate::state::TurnState;
 use codex_analytics::TurnProfileFact;
 use codex_analytics::TurnTokenUsageFact;
 use codex_login::AuthManager;
@@ -491,31 +493,47 @@ impl Session {
     }
 
     pub async fn abort_all_tasks(self: &Arc<Self>, reason: TurnAbortReason) {
-        let mut aborted_turn = false;
-        let mut active_turn_to_clear = None;
-        let mut turn_context = None;
-        if let Some(mut active_turn) = self.take_active_turn().await {
-            let task = active_turn.task.take();
-            aborted_turn = task.is_some();
-            turn_context = task.as_ref().map(|task| Arc::clone(&task.turn_context));
-            if let Some(task) = task {
-                self.handle_task_abort(task, reason.clone()).await;
+        let projected_compact_enabled =
+            self.enabled(Feature::SpineJit) || self.enabled(Feature::SpineTrim);
+        let compact_abort_guard = if projected_compact_enabled {
+            Some(self.compact_commit_barrier.lock().await)
+        } else {
+            None
+        };
+        let (task, turn_state) = {
+            let mut active = self.active_turn.lock().await;
+            if projected_compact_enabled {
+                let Some(active_turn) = active.as_mut() else {
+                    return;
+                };
+                let Some(task) = active_turn.task.take() else {
+                    *active = None;
+                    return;
+                };
+                active_turn.aborting = true;
+                (task, Arc::clone(&active_turn.turn_state))
+            } else {
+                let Some(mut active_turn) = active.take() else {
+                    return;
+                };
+                let Some(task) = active_turn.task.take() else {
+                    return;
+                };
+                (task, active_turn.turn_state)
             }
-            if aborted_turn {
-                active_turn_to_clear = Some(active_turn);
-            }
+        };
+        let turn_context = Arc::clone(&task.turn_context);
+        self.handle_task_abort(task, reason.clone()).await;
+        self.emit_turn_abort_lifecycle(reason.clone(), turn_context.extension_data.as_ref())
+            .await;
+        // Let interrupted tasks observe cancellation before dropping pending approvals, or an
+        // in-flight approval wait can surface as a model-visible rejection before TurnAborted.
+        self.input_queue.clear_pending(turn_state.as_ref()).await;
+        if projected_compact_enabled {
+            self.clear_aborting_turn(&turn_state).await;
         }
-
-        if let Some(turn_context) = turn_context.as_deref() {
-            self.emit_turn_abort_lifecycle(reason.clone(), turn_context.extension_data.as_ref())
-                .await;
-        }
-        if let Some(active_turn) = active_turn_to_clear {
-            // Let interrupted tasks observe cancellation before dropping pending approvals, or an
-            // in-flight approval wait can surface as a model-visible rejection before TurnAborted.
-            self.input_queue.clear_pending(&active_turn).await;
-        }
-        if reason == TurnAbortReason::Interrupted && aborted_turn {
+        drop(compact_abort_guard);
+        if reason == TurnAbortReason::Interrupted {
             self.maybe_start_turn_for_pending_work().await;
         }
     }
@@ -525,35 +543,52 @@ impl Session {
         turn_id: &str,
         reason: TurnAbortReason,
     ) -> bool {
-        let active_turn = {
+        let projected_compact_enabled =
+            self.enabled(Feature::SpineJit) || self.enabled(Feature::SpineTrim);
+        let compact_abort_guard = if projected_compact_enabled {
+            Some(self.compact_commit_barrier.lock().await)
+        } else {
+            None
+        };
+        let (task, turn_state) = {
             let mut active = self.active_turn.lock().await;
-            if active
-                .as_ref()
-                .and_then(|active_turn| active_turn.task.as_ref())
-                .is_some_and(|task| task.turn_context.sub_id == turn_id)
-            {
-                active.take()
+            if projected_compact_enabled {
+                let Some(active_turn) = active.as_mut() else {
+                    return false;
+                };
+                let Some(task) = active_turn.task.as_ref() else {
+                    return false;
+                };
+                if task.turn_context.sub_id != turn_id {
+                    return false;
+                }
+                let task = active_turn.task.take().expect("active task checked above");
+                active_turn.aborting = true;
+                (task, Arc::clone(&active_turn.turn_state))
             } else {
-                None
+                let matches_turn = active
+                    .as_ref()
+                    .and_then(|active_turn| active_turn.task.as_ref())
+                    .is_some_and(|task| task.turn_context.sub_id == turn_id);
+                if !matches_turn {
+                    return false;
+                }
+                let mut active_turn = active.take().expect("active turn checked above");
+                let task = active_turn.task.take().expect("active task checked above");
+                (task, active_turn.turn_state)
             }
         };
-        let Some(mut active_turn) = active_turn else {
-            return false;
-        };
-
-        let task = active_turn.task.take();
-        let turn_context = task.as_ref().map(|task| Arc::clone(&task.turn_context));
-        if let Some(task) = task {
-            self.handle_task_abort(task, reason.clone()).await;
-        }
-        if let Some(turn_context) = turn_context.as_deref() {
-            self.emit_turn_abort_lifecycle(reason.clone(), turn_context.extension_data.as_ref())
-                .await;
-        }
+        let turn_context = Arc::clone(&task.turn_context);
+        self.handle_task_abort(task, reason.clone()).await;
+        self.emit_turn_abort_lifecycle(reason.clone(), turn_context.extension_data.as_ref())
+            .await;
         // Let interrupted tasks observe cancellation before dropping pending approvals, or an
         // in-flight approval wait can surface as a model-visible rejection before TurnAborted.
-        self.input_queue.clear_pending(&active_turn).await;
-
+        self.input_queue.clear_pending(turn_state.as_ref()).await;
+        if projected_compact_enabled {
+            self.clear_aborting_turn(&turn_state).await;
+        }
+        drop(compact_abort_guard);
         if reason == TurnAbortReason::Interrupted {
             self.maybe_start_turn_for_pending_work().await;
         }
@@ -804,9 +839,15 @@ impl Session {
         }
     }
 
-    async fn take_active_turn(&self) -> Option<ActiveTurn> {
+    async fn clear_aborting_turn(&self, turn_state: &Arc<Mutex<TurnState>>) {
         let mut active = self.active_turn.lock().await;
-        active.take()
+        if active.as_ref().is_some_and(|active_turn| {
+            active_turn.aborting
+                && active_turn.task.is_none()
+                && Arc::ptr_eq(&active_turn.turn_state, turn_state)
+        }) {
+            *active = None;
+        }
     }
 
     pub(crate) async fn close_unified_exec_processes(&self) {
@@ -828,6 +869,10 @@ impl Session {
     }
 
     async fn handle_task_abort(self: &Arc<Self>, task: RunningTask, reason: TurnAbortReason) {
+        // With projected compact enabled, the caller holds compact_commit_barrier and leaves this
+        // turn's aborting reservation installed until abort hooks, interruption history, and
+        // terminal lifecycle events are complete. Feature-off preserves BaseCodex's live-task
+        // removal timing.
         let sub_id = task.turn_context.sub_id.clone();
         let spawn_abort_barrier = self.spine_spawn_lifecycle.begin_abort();
         if task.cancellation_token.is_cancelled() {
@@ -857,7 +902,6 @@ impl Session {
         if spawn_abort_barrier.had_active_transactions() {
             let _ = task.handle.await;
         }
-
         let session_ctx = Arc::new(SessionTaskContext::new(
             Arc::clone(self),
             Arc::clone(&task.turn_extension_data),

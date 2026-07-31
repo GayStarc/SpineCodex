@@ -1,4 +1,5 @@
 use anyhow::Result;
+use codex_core::compact::SUMMARIZATION_PROMPT;
 use codex_core::config::RolloutBudgetConfig;
 use codex_features::Feature;
 use codex_model_provider_info::built_in_model_providers;
@@ -17,6 +18,7 @@ use core_test_support::responses::mount_sse_sequence;
 use core_test_support::responses::sse;
 use core_test_support::responses::start_mock_server;
 use core_test_support::skip_if_no_network;
+use core_test_support::test_codex::spine_test_codex;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
 use pretty_assertions::assert_eq;
@@ -336,6 +338,89 @@ async fn compaction_budget_exhaustion_fails_without_retry(remote_v2: bool) -> Re
     })
     .await;
     assert_eq!(responses.requests().len(), 1, "compaction should not retry");
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn local_compact_budget_failure_does_not_validate_spine_projection() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let responses = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_response_created("compact-over-budget"),
+                ev_completed_with_tokens("compact-over-budget", /*total_tokens*/ 100_000),
+            ]),
+            sse(vec![
+                ev_response_created("normal-after-compact-failure"),
+                ev_completed_with_tokens("normal-after-compact-failure", /*total_tokens*/ 1),
+            ]),
+        ],
+    )
+    .await;
+    let test = spine_test_codex()
+        .with_config(|config| {
+            config.rollout_budget = Some(RolloutBudgetConfig {
+                limit_tokens: 10,
+                reminder_at_remaining_tokens: vec![5],
+                ..rollout_budget()
+            });
+            config.model_provider.name = "OpenAI-compatible test provider".to_string();
+            config.model_context_window = Some(200_000);
+            config.model_auto_compact_token_limit = Some(40_000);
+        })
+        .build(&server)
+        .await?;
+
+    test.codex.submit(Op::Compact).await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(
+            event,
+            EventMsg::Error(error)
+                if error.codex_error_info == Some(CodexErrorInfo::SessionBudgetExceeded)
+        )
+    })
+    .await;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+
+    test.codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "normal request after failed compact".to_string(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(
+            event,
+            EventMsg::Error(error)
+                if error.codex_error_info == Some(CodexErrorInfo::SessionBudgetExceeded)
+        )
+    })
+    .await;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+
+    let requests = responses.requests();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[0].body_contains_text(SUMMARIZATION_PROMPT));
+    assert!(
+        !requests[1].body_contains_text(SUMMARIZATION_PROMPT),
+        "usage from a failed compact request must not validate normal projected pressure"
+    );
 
     Ok(())
 }

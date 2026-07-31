@@ -177,6 +177,7 @@ use opentelemetry_sdk::metrics::data::MetricData;
 use opentelemetry_sdk::metrics::data::ResourceMetrics;
 use std::path::Path;
 use std::time::Duration;
+use tokio::sync::Notify;
 use tokio::sync::Semaphore;
 use tokio::time::sleep;
 use tokio::time::timeout;
@@ -2988,8 +2989,9 @@ async fn start_new_context_window_assigns_and_persists_item_ids() {
         Arc::new(build_world_state_from_turn_context(session.as_ref(), &turn_context).await);
 
     session
-        .start_new_context_window(turn_context.as_ref(), world_state)
-        .await;
+        .start_new_context_window(&turn_context, world_state)
+        .await
+        .expect("new context window should commit");
 
     let live_history = session.clone_history().await;
     assert!(!live_history.raw_items().is_empty());
@@ -3020,6 +3022,472 @@ async fn start_new_context_window_assigns_and_persists_item_ids() {
     assert_eq!(
         persisted_replacement_history.map(Vec::as_slice),
         Some(live_history.raw_items())
+    );
+}
+
+#[tokio::test]
+async fn compact_abort_gate_waits_for_durable_live_commit() {
+    let (mut session, turn_context, _rx) = make_session_and_context_with_auth_and_config_and_rx(
+        CodexAuth::from_api_key("Test API Key"),
+        Vec::new(),
+        |config| {
+            let _ = config.features.enable(Feature::SpineJit);
+        },
+    )
+    .await;
+    let store = attach_in_memory_thread_store(
+        Arc::get_mut(&mut session).expect("session should still be uniquely owned"),
+    )
+    .await;
+    let original_history = vec![user_message("history before compact")];
+    session
+        .replace_history(
+            original_history.clone(),
+            /*reference_context_item*/ None,
+        )
+        .await;
+    let original_prefill = {
+        let mut state = session.state.lock().await;
+        let claim = state
+            .begin_auto_compact_window_sampling_request(/*estimated_input_tokens*/ 111)
+            .expect("feature-on first request should claim the window prefill");
+        state.record_auto_compact_window_server_prefill_from_usage(
+            Some(claim),
+            &TokenUsage {
+                input_tokens: 222,
+                total_tokens: 222,
+                ..Default::default()
+            },
+            turn_context.model_info.slug.as_str(),
+        );
+        state.auto_compact_window_snapshot()
+    };
+
+    let replacement_history = vec![user_message("history after compact")];
+    let auto_compact_window = session.next_auto_compact_window().await;
+    let (window_number, window_ids) = auto_compact_window;
+    let compacted_item = CompactedItem {
+        message: "abort-safe compact".to_string(),
+        replacement_history: None,
+        window_number: Some(window_number),
+        first_window_id: Some(window_ids.first_window_id.to_string()),
+        previous_window_id: window_ids.previous_window_id.map(|id| id.to_string()),
+        window_id: Some(window_ids.window_id.to_string()),
+    };
+
+    // Hold the live-state lock so the compact operation can durably append the compact record
+    // but cannot publish the replacement history. A hard abort must wait on the same gate.
+    let state_guard = session.state.lock().await;
+    let caller = tokio::spawn({
+        let session = Arc::clone(&session);
+        let turn_context = Arc::clone(&turn_context);
+        let replacement_history = replacement_history.clone();
+        async move {
+            session
+                .replace_compacted_history(
+                    turn_context,
+                    replacement_history,
+                    /*reference_context_item*/ None,
+                    /*world_state_baseline*/ None,
+                    auto_compact_window,
+                    compacted_item,
+                )
+                .await
+        }
+    });
+
+    timeout(Duration::from_secs(2), async {
+        loop {
+            if store.calls().await.append_items >= 1 {
+                break;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("compact record should be appended before live-state publication");
+    let persisted = session
+        .live_thread()
+        .expect("test persistence should be enabled")
+        .load_history(/*include_archived*/ false)
+        .await
+        .expect("load durable compact record");
+    assert!(persisted.items.iter().any(
+        |item| matches!(item, RolloutItem::Compacted(compacted) if compacted.message == "abort-safe compact")
+    ));
+    assert_eq!(
+        state_guard.history.raw_items(),
+        original_history.as_slice(),
+        "durability must precede live-state publication"
+    );
+    assert_eq!(
+        state_guard.auto_compact_window_snapshot(),
+        original_prefill,
+        "durability alone must not reset the live window baseline"
+    );
+
+    let mut abort_gate = tokio::spawn({
+        let session = Arc::clone(&session);
+        async move {
+            let _guard = session.compact_commit_barrier.lock().await;
+        }
+    });
+    assert!(
+        timeout(Duration::from_millis(50), &mut abort_gate)
+            .await
+            .is_err(),
+        "hard abort must wait while compact owns the commit/abort gate"
+    );
+    drop(state_guard);
+
+    timeout(Duration::from_secs(2), caller)
+        .await
+        .expect("compact commit should finish after the live-state lock opens")
+        .expect("compact commit task should not fail")
+        .expect("compact commit should succeed");
+    timeout(Duration::from_secs(2), abort_gate)
+        .await
+        .expect("abort gate should open after compact finishes")
+        .expect("abort gate waiter should not fail");
+    {
+        let state = session.state.lock().await;
+        assert_eq!(state.history.raw_items(), replacement_history.as_slice());
+        assert_eq!(state.auto_compact_window_number(), window_number);
+    }
+    let session_start_source = timeout(Duration::from_secs(2), async {
+        loop {
+            if let Some(source) = session.take_pending_session_start_source().await {
+                break source;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("compact commit should finish its post-commit bookkeeping");
+    assert!(matches!(
+        session_start_source,
+        codex_hooks::SessionStartSource::Compact
+    ));
+    assert_eq!(
+        session.state.lock().await.auto_compact_window_snapshot(),
+        crate::state::AutoCompactWindowSnapshot {
+            estimated_prefill_input_tokens: None,
+            server_prefill_input_tokens: None,
+        },
+        "the successful live window install should reset both baseline coordinates"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn abort_waiting_for_compact_keeps_turn_reserved() {
+    let (session, turn_context, _rx) = make_session_and_context_with_auth_and_config_and_rx(
+        CodexAuth::from_api_key("Test API Key"),
+        Vec::new(),
+        |config| {
+            let _ = config.features.enable(Feature::SpineJit);
+        },
+    )
+    .await;
+    session
+        .spawn_task(
+            Arc::clone(&turn_context),
+            Vec::new(),
+            NeverEndingTask {
+                kind: TaskKind::Regular,
+                listen_to_cancellation_token: false,
+            },
+        )
+        .await;
+
+    let compact_guard = session.compact_commit_barrier.lock().await;
+    let mut abort_task = tokio::spawn({
+        let session = Arc::clone(&session);
+        async move {
+            session.abort_all_tasks(TurnAbortReason::Interrupted).await;
+        }
+    });
+    assert!(
+        timeout(Duration::from_millis(150), &mut abort_task)
+            .await
+            .is_err(),
+        "abort must wait while compact owns the commit/abort gate"
+    );
+    assert!(
+        session.active_turn.lock().await.is_some(),
+        "the aborting turn must remain reserved while compact finishes"
+    );
+
+    let item = user_message("extension work must not overtake compact+abort");
+    let err = session
+        .try_start_turn_if_idle(vec![item.clone()])
+        .await
+        .expect_err("idle work must observe the aborting turn as busy");
+    assert_eq!(TryStartTurnIfIdleRejectionReason::Busy, err.reason());
+    assert_eq!(vec![item], err.into_input());
+
+    drop(compact_guard);
+    timeout(Duration::from_secs(2), abort_task)
+        .await
+        .expect("abort should finish after compact releases the gate")
+        .expect("abort task should not fail");
+    assert!(session.active_turn.lock().await.is_none());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn aborting_turn_rejects_late_injection() {
+    struct BlockingAbortTask {
+        abort_started: Arc<Notify>,
+        abort_release: Arc<Notify>,
+    }
+
+    impl SessionTask for BlockingAbortTask {
+        fn kind(&self) -> TaskKind {
+            TaskKind::Regular
+        }
+
+        fn span_name(&self) -> &'static str {
+            "session_task.blocking_abort"
+        }
+
+        async fn run(
+            self: Arc<Self>,
+            _session: Arc<SessionTaskContext>,
+            _ctx: Arc<TurnContext>,
+            _input: Vec<TurnInput>,
+            _cancellation_token: CancellationToken,
+        ) -> SessionTaskResult {
+            loop {
+                sleep(Duration::from_secs(60)).await;
+            }
+        }
+
+        async fn abort(&self, _session: Arc<SessionTaskContext>, _ctx: Arc<TurnContext>) {
+            self.abort_started.notify_one();
+            self.abort_release.notified().await;
+        }
+    }
+
+    let (session, turn_context, _rx) = make_session_and_context_with_auth_and_config_and_rx(
+        CodexAuth::from_api_key("Test API Key"),
+        Vec::new(),
+        |config| {
+            let _ = config.features.enable(Feature::SpineJit);
+        },
+    )
+    .await;
+    let abort_started = Arc::new(Notify::new());
+    let abort_release = Arc::new(Notify::new());
+    session
+        .spawn_task(
+            Arc::clone(&turn_context),
+            Vec::new(),
+            BlockingAbortTask {
+                abort_started: Arc::clone(&abort_started),
+                abort_release: Arc::clone(&abort_release),
+            },
+        )
+        .await;
+
+    let abort_task = tokio::spawn({
+        let session = Arc::clone(&session);
+        async move {
+            session.abort_all_tasks(TurnAbortReason::Interrupted).await;
+        }
+    });
+    timeout(Duration::from_secs(2), abort_started.notified())
+        .await
+        .expect("abort hook should start");
+    {
+        let active_turn = session.active_turn.lock().await;
+        assert!(
+            active_turn
+                .as_ref()
+                .is_some_and(|active_turn| active_turn.aborting && active_turn.task.is_none()),
+            "abort lifecycle should retain a non-running turn reservation"
+        );
+    }
+
+    let item = user_message("late extension input");
+    assert_eq!(
+        Err(vec![item.clone()]),
+        session.inject_if_running(vec![item]).await,
+        "a non-running abort reservation must not accept input that cleanup will discard"
+    );
+
+    abort_release.notify_one();
+    timeout(Duration::from_secs(2), abort_task)
+        .await
+        .expect("abort should finish after its hook is released")
+        .expect("abort task should not fail");
+    assert!(session.active_turn.lock().await.is_none());
+}
+
+#[tokio::test]
+async fn compact_persistence_failure_does_not_publish_live_state() {
+    let (mut session, turn_context, _rx) = make_session_and_context_with_auth_and_config_and_rx(
+        CodexAuth::from_api_key("Test API Key"),
+        Vec::new(),
+        |config| {
+            let _ = config.features.enable(Feature::SpineJit);
+        },
+    )
+    .await;
+    attach_thread_persistence(
+        Arc::get_mut(&mut session).expect("session should still be uniquely owned"),
+    )
+    .await;
+    let original_history = vec![user_message("history before failed persistence")];
+    session
+        .replace_history(
+            original_history.clone(),
+            /*reference_context_item*/ None,
+        )
+        .await;
+    let (original_window_number, original_window_ids, original_prefill) = {
+        let mut state = session.state.lock().await;
+        let claim = state
+            .begin_auto_compact_window_sampling_request(/*estimated_input_tokens*/ 333)
+            .expect("feature-on first request should claim the window prefill");
+        state.record_auto_compact_window_server_prefill_from_usage(
+            Some(claim),
+            &TokenUsage {
+                input_tokens: 444,
+                total_tokens: 444,
+                ..Default::default()
+            },
+            turn_context.model_info.slug.as_str(),
+        );
+        (
+            state.auto_compact_window_number(),
+            state.auto_compact_window_ids(),
+            state.auto_compact_window_snapshot(),
+        )
+    };
+    session
+        .live_thread()
+        .expect("test persistence should be enabled")
+        .shutdown()
+        .await
+        .expect("shut down the live writer");
+
+    let replacement_history = vec![user_message("history after failed persistence")];
+    let auto_compact_window = session.next_auto_compact_window().await;
+    let (window_number, window_ids) = auto_compact_window;
+    let result = session
+        .replace_compacted_history(
+            Arc::clone(&turn_context),
+            replacement_history,
+            /*reference_context_item*/ None,
+            /*world_state_baseline*/ None,
+            auto_compact_window,
+            CompactedItem {
+                message: "must not become live".to_string(),
+                replacement_history: None,
+                window_number: Some(window_number),
+                first_window_id: Some(window_ids.first_window_id.to_string()),
+                previous_window_id: window_ids.previous_window_id.map(|id| id.to_string()),
+                window_id: Some(window_ids.window_id.to_string()),
+            },
+        )
+        .await;
+    assert!(
+        matches!(
+            result,
+            Err(CodexErr::Fatal(message))
+                if message.contains("failed to persist native compact record")
+        ),
+        "critical compact persistence failure must be surfaced"
+    );
+
+    let state = session.state.lock().await;
+    assert_eq!(state.history.raw_items(), original_history.as_slice());
+    assert_eq!(state.auto_compact_window_number(), original_window_number);
+    assert_eq!(state.auto_compact_window_ids(), original_window_ids);
+    assert_eq!(state.auto_compact_window_snapshot(), original_prefill);
+}
+
+#[tokio::test]
+async fn feature_off_compact_persistence_remains_best_effort() {
+    let (mut session, turn_context, _rx) = make_session_and_context_with_auth_and_config_and_rx(
+        CodexAuth::from_api_key("Test API Key"),
+        Vec::new(),
+        |config| {
+            let _ = config.features.disable(Feature::SpineJit);
+            let _ = config.features.disable(Feature::SpineTrim);
+        },
+    )
+    .await;
+    attach_thread_persistence(
+        Arc::get_mut(&mut session).expect("session should still be uniquely owned"),
+    )
+    .await;
+    session
+        .live_thread()
+        .expect("test persistence should be enabled")
+        .shutdown()
+        .await
+        .expect("shut down the live writer");
+
+    let replacement_history = vec![user_message("feature-off replacement")];
+    let auto_compact_window = session.next_auto_compact_window().await;
+    let (window_number, window_ids) = auto_compact_window;
+    assert_eq!(
+        session.state.lock().await.auto_compact_window_number(),
+        window_number,
+        "feature-off preserves BaseCodex's immediate window advance"
+    );
+    session
+        .replace_compacted_history(
+            Arc::clone(&turn_context),
+            replacement_history.clone(),
+            /*reference_context_item*/ None,
+            /*world_state_baseline*/ None,
+            auto_compact_window,
+            CompactedItem {
+                message: "feature-off compact".to_string(),
+                replacement_history: None,
+                window_number: Some(window_number),
+                first_window_id: Some(window_ids.first_window_id.to_string()),
+                previous_window_id: window_ids.previous_window_id.map(|id| id.to_string()),
+                window_id: Some(window_ids.window_id.to_string()),
+            },
+        )
+        .await
+        .expect("feature-off compact persistence remains best effort");
+
+    let state = session.state.lock().await;
+    assert_eq!(
+        state.clone_history().raw_items(),
+        replacement_history.as_slice()
+    );
+    assert_eq!(state.auto_compact_window_number(), window_number);
+}
+
+#[tokio::test]
+async fn feature_off_new_context_clears_prefill_at_window_advance() {
+    let (session, _turn_context, _rx) = make_session_and_context_with_auth_and_config_and_rx(
+        CodexAuth::from_api_key("Test API Key"),
+        Vec::new(),
+        |config| {
+            let _ = config.features.disable(Feature::SpineJit);
+            let _ = config.features.disable(Feature::SpineTrim);
+        },
+    )
+    .await;
+    {
+        let mut state = session.state.lock().await;
+        state.set_auto_compact_window_estimated_prefill(/*tokens*/ 123);
+    }
+
+    let (window_number, _) = session.next_new_context_window().await;
+    let state = session.state.lock().await;
+    assert_eq!(state.auto_compact_window_number(), window_number);
+    assert_eq!(
+        state.auto_compact_window_snapshot(),
+        crate::state::AutoCompactWindowSnapshot {
+            estimated_prefill_input_tokens: None,
+            server_prefill_input_tokens: None,
+        }
     );
 }
 
@@ -5765,6 +6233,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         state: Mutex::new(state),
         spine_spawn_batch_coordinator: Mutex::new(Default::default()),
         spine_spawn_lifecycle: Default::default(),
+        spawn_failure_record: Mutex::new(None),
         managed_network_proxy_refresh_lock: Semaphore::new(/*permits*/ 1),
         features: config.features.clone(),
         spinetree_memory_projection: None,
@@ -5772,6 +6241,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         pending_mcp_server_refresh_config: Mutex::new(None),
         conversation: Arc::new(RealtimeConversationManager::new()),
         active_turn: Mutex::new(None),
+        compact_commit_barrier: Arc::new(Mutex::new(())),
         input_queue: super::input_queue::InputQueue::new(),
         guardian_review_session: crate::guardian::GuardianReviewSessionManager::default(),
         services,
@@ -7899,6 +8369,7 @@ where
         state: Mutex::new(state),
         spine_spawn_batch_coordinator: Mutex::new(Default::default()),
         spine_spawn_lifecycle: Default::default(),
+        spawn_failure_record: Mutex::new(None),
         managed_network_proxy_refresh_lock: Semaphore::new(/*permits*/ 1),
         features: config.features.clone(),
         spinetree_memory_projection: None,
@@ -7906,6 +8377,7 @@ where
         pending_mcp_server_refresh_config: Mutex::new(None),
         conversation: Arc::new(RealtimeConversationManager::new()),
         active_turn: Mutex::new(None),
+        compact_commit_barrier: Arc::new(Mutex::new(())),
         input_queue: super::input_queue::InputQueue::new(),
         guardian_review_session: crate::guardian::GuardianReviewSessionManager::default(),
         services,
@@ -10827,7 +11299,12 @@ async fn sample_rollout(
     let user_messages1 = collect_user_messages(&snapshot1);
     let rebuilt1 = compact::build_compacted_history(Vec::new(), &user_messages1, summary1);
     live_history.replace(rebuilt1);
-    let (window_number, window_ids) = session.advance_auto_compact_window().await;
+    let (window_number, window_ids) = session.next_auto_compact_window().await;
+    session
+        .state
+        .lock()
+        .await
+        .install_auto_compact_window(window_number, window_ids);
     rollout_items.push(RolloutItem::Compacted(CompactedItem {
         message: summary1.to_string(),
         replacement_history: None,
@@ -10874,7 +11351,12 @@ async fn sample_rollout(
     let user_messages2 = collect_user_messages(&snapshot2);
     let rebuilt2 = compact::build_compacted_history(Vec::new(), &user_messages2, summary2);
     live_history.replace(rebuilt2);
-    let (window_number, window_ids) = session.advance_auto_compact_window().await;
+    let (window_number, window_ids) = session.next_auto_compact_window().await;
+    session
+        .state
+        .lock()
+        .await
+        .install_auto_compact_window(window_number, window_ids);
     rollout_items.push(RolloutItem::Compacted(CompactedItem {
         message: summary2.to_string(),
         replacement_history: None,

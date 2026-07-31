@@ -1,6 +1,7 @@
 //! Session-wide mutable state.
 
 use codex_protocol::models::AdditionalPermissionProfile;
+use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::RolloutItem;
 use codex_sandboxing::policy_transforms::merge_permission_profiles;
@@ -11,8 +12,12 @@ use std::collections::VecDeque;
 use super::AdditionalContextStore;
 use super::auto_compact_window::AutoCompactWindow;
 use super::auto_compact_window::AutoCompactWindowIds;
+use super::auto_compact_window::AutoCompactWindowPrefillClaim;
+#[cfg(test)]
 use super::auto_compact_window::AutoCompactWindowSnapshot;
+use crate::TurnContext;
 use crate::context_manager::ContextManager;
+use crate::context_manager::is_model_generated_item;
 use crate::session::PreviousTurnSettings;
 use crate::session::session::SessionConfiguration;
 use crate::session::time_reminder::CurrentTimeReminderState;
@@ -22,6 +27,19 @@ use codex_protocol::protocol::TokenUsage;
 use codex_protocol::protocol::TokenUsageInfo;
 use codex_protocol::protocol::TurnContextItem;
 use codex_utils_output_truncation::TruncationPolicy;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProjectedUsageBasis {
+    ProviderValid,
+    EstimateCurrent,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ContextPressureSnapshot {
+    pub(crate) active_context_tokens: i64,
+    pub(crate) body_after_prefix_tokens: i64,
+    pub(crate) body_after_prefix_prefill_tokens: Option<i64>,
+}
 
 /// Persistent, session-scoped state previously stored directly on `Session`.
 pub(crate) struct SessionState {
@@ -45,6 +63,8 @@ pub(crate) struct SessionState {
     granted_permissions_by_environment_id: HashMap<String, AdditionalPermissionProfile>,
     next_turn_is_first: bool,
     spine_rollout: Option<Vec<RolloutItem>>,
+    projected_usage_basis: ProjectedUsageBasis,
+    projected_usage_model: Option<String>,
 }
 
 impl SessionState {
@@ -81,6 +101,8 @@ impl SessionState {
             granted_permissions_by_environment_id: HashMap::new(),
             next_turn_is_first: true,
             spine_rollout,
+            projected_usage_basis: ProjectedUsageBasis::ProviderValid,
+            projected_usage_model: None,
         }
     }
 
@@ -96,6 +118,47 @@ impl SessionState {
     pub(crate) fn previous_turn_settings(&self) -> Option<PreviousTurnSettings> {
         self.previous_turn_settings.clone()
     }
+
+    pub(crate) fn projected_usage_enabled(&self) -> bool {
+        self.session_configuration.spine_jit_enabled()
+            || self.session_configuration.spine_trim_enabled()
+    }
+
+    pub(crate) fn projected_history_snapshot(&self) -> Option<Vec<ResponseItem>> {
+        self.projected_usage_enabled()
+            .then(|| self.clone_history().into_raw_items())
+    }
+
+    pub(crate) fn reconcile_projected_history(&mut self, before: Option<&[ResponseItem]>) {
+        let Some(before) = before else {
+            return;
+        };
+        let after = self.clone_history();
+        let after = after.raw_items();
+        if !after.starts_with(before) {
+            self.mark_projected_usage_stale();
+            return;
+        }
+        if after[before.len()..].iter().any(is_model_generated_item) {
+            self.mark_projected_usage_stale();
+        }
+    }
+
+    pub(crate) fn mark_projected_usage_stale(&mut self) {
+        if !self.projected_usage_enabled() {
+            return;
+        }
+        self.projected_usage_basis = ProjectedUsageBasis::EstimateCurrent;
+        self.projected_usage_model = None;
+    }
+
+    fn mark_projected_usage_valid(&mut self, model: Option<&str>) {
+        if self.projected_usage_enabled() {
+            self.projected_usage_basis = ProjectedUsageBasis::ProviderValid;
+            self.projected_usage_model = model.map(str::to_string);
+        }
+    }
+
     pub(crate) fn set_previous_turn_settings(
         &mut self,
         previous_turn_settings: Option<PreviousTurnSettings>,
@@ -305,6 +368,7 @@ impl SessionState {
             rollout.clear();
             rollout.extend_from_slice(items);
         }
+        self.mark_projected_usage_stale();
     }
 
     pub(crate) fn validate_spine_control(
@@ -389,6 +453,15 @@ impl SessionState {
         self.history
             .set_reference_context_item(reference_context_item);
         self.auto_compact_window.clear_prefill();
+        self.mark_projected_usage_stale();
+    }
+
+    pub(crate) fn replace_last_turn_images(&mut self, placeholder: &str) -> bool {
+        let replaced = self.history.replace_last_turn_images(placeholder);
+        if replaced {
+            self.mark_projected_usage_stale();
+        }
+        replaced
     }
 
     pub(crate) fn set_token_info(&mut self, info: Option<TokenUsageInfo>) {
@@ -404,26 +477,65 @@ impl SessionState {
     }
 
     // Token/rate limit helpers
-    pub(crate) fn update_token_info_from_usage(
+    pub(crate) fn update_token_info_from_non_sampling_usage(
         &mut self,
         usage: &TokenUsage,
         model_context_window: Option<i64>,
     ) {
         self.history.update_token_info(usage, model_context_window);
+        self.mark_projected_usage_stale();
     }
 
-    pub(crate) fn ensure_auto_compact_window_server_prefill_from_usage(
+    pub(crate) fn update_token_info_from_sampling_usage(
         &mut self,
         usage: &TokenUsage,
+        model_context_window: Option<i64>,
+        model: &str,
     ) {
+        self.history.update_token_info(usage, model_context_window);
+        self.mark_projected_usage_valid(Some(model));
+    }
+
+    pub(crate) fn begin_auto_compact_window_sampling_request(
+        &mut self,
+        estimated_input_tokens: i64,
+    ) -> Option<AutoCompactWindowPrefillClaim> {
+        if !self.projected_usage_enabled() {
+            return None;
+        }
         self.auto_compact_window
-            .ensure_server_observed_prefill_from_usage(usage);
+            .begin_projected_sampling_request(estimated_input_tokens)
+    }
+
+    pub(crate) fn needs_auto_compact_window_sampling_request_prefill(&self) -> bool {
+        self.projected_usage_enabled()
+            && self
+                .auto_compact_window
+                .needs_projected_sampling_request_prefill()
+    }
+
+    pub(crate) fn record_auto_compact_window_server_prefill_from_usage(
+        &mut self,
+        claim: Option<AutoCompactWindowPrefillClaim>,
+        usage: &TokenUsage,
+        model: &str,
+    ) {
+        if self.projected_usage_enabled() {
+            if let Some(claim) = claim {
+                self.auto_compact_window
+                    .record_claimed_server_prefill(claim, usage, model);
+            }
+        } else {
+            self.auto_compact_window
+                .ensure_server_observed_prefill_from_usage(usage, model);
+        }
     }
 
     pub(crate) fn set_auto_compact_window_estimated_prefill(&mut self, tokens: i64) {
         self.auto_compact_window.set_estimated_prefill(tokens);
     }
 
+    #[cfg(test)]
     pub(crate) fn auto_compact_window_snapshot(&self) -> AutoCompactWindowSnapshot {
         self.auto_compact_window.snapshot()
     }
@@ -448,8 +560,20 @@ impl SessionState {
         self.auto_compact_window.restore(window_number, ids);
     }
 
-    pub(crate) fn advance_auto_compact_window(&mut self) -> (u64, AutoCompactWindowIds) {
-        self.auto_compact_window.advance()
+    pub(crate) fn next_auto_compact_window(&self) -> (u64, AutoCompactWindowIds) {
+        self.auto_compact_window.next()
+    }
+
+    pub(crate) fn install_auto_compact_window(
+        &mut self,
+        window_number: u64,
+        ids: AutoCompactWindowIds,
+    ) {
+        self.auto_compact_window.install(window_number, ids);
+    }
+
+    pub(crate) fn clear_auto_compact_window_prefill(&mut self) {
+        self.auto_compact_window.clear_prefill();
     }
 
     pub(crate) fn request_new_context_window(&mut self) {
@@ -458,12 +582,6 @@ impl SessionState {
 
     pub(crate) fn take_new_context_window_request(&mut self) -> bool {
         self.auto_compact_window.take_new_context_window_request()
-    }
-
-    pub(crate) fn start_new_context_window(&mut self) -> (u64, AutoCompactWindowIds) {
-        let window = self.auto_compact_window.advance();
-        self.auto_compact_window.clear_prefill();
-        window
     }
 
     pub(crate) fn token_info(&self) -> Option<TokenUsageInfo> {
@@ -485,11 +603,106 @@ impl SessionState {
 
     pub(crate) fn set_token_usage_full(&mut self, context_window: i64) {
         self.history.set_token_usage_full(context_window);
+        self.mark_projected_usage_valid(None);
     }
 
     pub(crate) fn get_total_token_usage(&self, server_reasoning_included: bool) -> i64 {
-        self.history
-            .get_total_token_usage(server_reasoning_included)
+        if !self.projected_usage_enabled() {
+            return self
+                .history
+                .get_total_token_usage(server_reasoning_included);
+        }
+
+        match self.projected_usage_basis {
+            ProjectedUsageBasis::ProviderValid => self
+                .clone_history()
+                .get_total_token_usage(server_reasoning_included),
+            ProjectedUsageBasis::EstimateCurrent => {
+                self.estimate_projected_context(&self.clone_history())
+            }
+        }
+    }
+
+    pub(crate) fn context_pressure(
+        &self,
+        server_reasoning_included: bool,
+        model: &str,
+    ) -> ContextPressureSnapshot {
+        if !self.projected_usage_enabled() {
+            let active_context_tokens = self
+                .history
+                .get_total_token_usage(server_reasoning_included);
+            let prefill = self.auto_compact_window.basecodex_prefill_input_tokens();
+            return ContextPressureSnapshot {
+                active_context_tokens,
+                body_after_prefix_tokens: active_context_tokens
+                    .saturating_sub(prefill.unwrap_or(active_context_tokens)),
+                body_after_prefix_prefill_tokens: prefill,
+            };
+        }
+
+        let projected = self.clone_history();
+        let provider_valid = matches!(
+            self.projected_usage_basis,
+            ProjectedUsageBasis::ProviderValid
+        );
+        let active_context_tokens = match self.projected_usage_basis {
+            ProjectedUsageBasis::ProviderValid => {
+                projected.get_total_token_usage(server_reasoning_included)
+            }
+            ProjectedUsageBasis::EstimateCurrent => self.estimate_projected_context(&projected),
+        };
+        if provider_valid
+            && self.projected_usage_model.as_deref() == Some(model)
+            && let Some(prefill) = self
+                .auto_compact_window
+                .server_prefill_input_tokens_for_model(model)
+        {
+            return ContextPressureSnapshot {
+                active_context_tokens,
+                body_after_prefix_tokens: active_context_tokens.saturating_sub(prefill),
+                body_after_prefix_prefill_tokens: Some(prefill),
+            };
+        }
+
+        let estimated_context_tokens = if provider_valid {
+            self.estimate_projected_context(&projected)
+        } else {
+            active_context_tokens
+        };
+        let prefill = self.auto_compact_window.estimated_prefill_input_tokens();
+        ContextPressureSnapshot {
+            active_context_tokens,
+            body_after_prefix_tokens: estimated_context_tokens
+                .saturating_sub(prefill.unwrap_or(estimated_context_tokens)),
+            body_after_prefix_prefill_tokens: prefill,
+        }
+    }
+
+    fn estimate_projected_context(&self, projected: &ContextManager) -> i64 {
+        projected
+            .estimate_token_count_with_base_instructions(&BaseInstructions {
+                text: self.session_configuration.base_instructions().to_string(),
+            })
+            .unwrap_or(i64::MAX)
+    }
+
+    pub(crate) fn estimate_current_context(&self, turn_context: &TurnContext) -> Option<i64> {
+        if self.projected_usage_enabled() {
+            self.clone_history().estimate_token_count(turn_context)
+        } else {
+            self.history.estimate_token_count(turn_context)
+        }
+    }
+
+    pub(crate) fn estimated_tokens_after_last_model_generated_item(&self) -> i64 {
+        if self.projected_usage_enabled() {
+            self.clone_history()
+                .estimated_tokens_after_last_model_generated_item()
+        } else {
+            self.history
+                .estimated_tokens_after_last_model_generated_item()
+        }
     }
 
     pub(crate) fn set_server_reasoning_included(&mut self, included: bool) {

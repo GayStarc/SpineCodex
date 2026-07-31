@@ -233,8 +233,8 @@ impl InputQueue {
     }
 
     /// Clear any pending waiters and input buffered for the current turn.
-    pub(crate) async fn clear_pending(&self, active_turn: &ActiveTurn) {
-        let mut turn_state = active_turn.turn_state.lock().await;
+    pub(crate) async fn clear_pending(&self, turn_state: &Mutex<TurnState>) {
+        let mut turn_state = turn_state.lock().await;
         turn_state.clear_pending_waiters();
         turn_state.pending_input.items.clear();
     }

@@ -331,7 +331,8 @@ async fn run_compact_task_inner_impl(
         // belongs to this compaction turn.
         summary_item.set_turn_id_if_missing(&turn_context.sub_id);
     }
-    let (window_number, window_ids) = sess.advance_auto_compact_window().await;
+    let auto_compact_window = sess.next_auto_compact_window().await;
+    let (window_number, window_ids) = auto_compact_window;
 
     let (initial_context, world_state_baseline) = build_compaction_initial_context(
         sess.as_ref(),
@@ -358,13 +359,14 @@ async fn run_compact_task_inner_impl(
         window_id: Some(window_ids.window_id.to_string()),
     };
     sess.replace_compacted_history(
-        turn_context.as_ref(),
+        Arc::clone(&turn_context),
         new_history,
         reference_context_item,
         world_state_baseline,
+        auto_compact_window,
         compacted_item,
     )
-    .await;
+    .await?;
     sess.recompute_token_usage(&turn_context).await;
 
     sess.emit_turn_item_completed(&turn_context, compaction_item)

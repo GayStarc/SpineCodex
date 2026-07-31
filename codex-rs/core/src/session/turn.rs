@@ -45,6 +45,7 @@ use crate::session::session::Session;
 use crate::session::step_context::StepContext;
 use crate::session::turn_context::TurnContext;
 use crate::spine::spawn_salvage;
+use crate::state::AutoCompactWindowPrefillClaim;
 use crate::stream_events_utils::HandleOutputCtx;
 use crate::stream_events_utils::TurnItemContributorPolicy;
 use crate::stream_events_utils::finalize_non_tool_response_item;
@@ -278,14 +279,6 @@ pub(crate) async fn run_turn(
             }
             .instrument(trace_span!("run_turn.prepare_legacy_hook_input"))
             .await;
-            let sampling_request_input: Vec<ResponseItem> = async {
-                sess.clone_history()
-                    .await
-                    .for_prompt(&turn_context.model_info.input_modalities)
-            }
-            .instrument(trace_span!("run_turn.prepare_sampling_request_input"))
-            .await;
-
             let responses_metadata = turn_context.turn_metadata_state.to_responses_metadata(
                 sess.installation_id.clone(),
                 window_id,
@@ -298,7 +291,6 @@ pub(crate) async fn run_turn(
                 Arc::clone(&turn_diff_tracker),
                 &mut client_session,
                 &responses_metadata,
-                sampling_request_input,
                 cancellation_token.child_token(),
             )
             .await?;
@@ -441,7 +433,7 @@ pub(crate) async fn run_turn(
                     error_or_panic(
                         "Invalid image detected; sanitizing tool output to prevent poisoning",
                     );
-                    if state.history.replace_last_turn_images("Invalid image") {
+                    if state.replace_last_turn_images("Invalid image") {
                         continue;
                     }
                 }
@@ -1135,11 +1127,14 @@ async fn run_sampling_request(
     turn_diff_tracker: SharedTurnDiffTracker,
     client_session: &mut ModelClientSession,
     responses_metadata: &CodexResponsesMetadata,
-    input: Vec<ResponseItem>,
     cancellation_token: CancellationToken,
 ) -> CodexResult<(SamplingRequestResult, Vec<ResponseItem>)> {
     let turn_context = Arc::clone(&step_context.turn);
     let router = built_tools(sess.as_ref(), step_context.as_ref(), &cancellation_token).await?;
+    let (input, mut prefill_claim) = sess
+        .prepare_sampling_request_input(turn_context.as_ref())
+        .instrument(trace_span!("run_turn.prepare_sampling_request_input"))
+        .await;
 
     let base_instructions = sess.get_base_instructions().await;
 
@@ -1187,6 +1182,7 @@ async fn run_sampling_request(
             responses_metadata,
             Arc::clone(&turn_diff_tracker),
             &prompt,
+            prefill_claim.take(),
             cancellation_token.child_token(),
         )
         .await
@@ -1949,6 +1945,13 @@ async fn drain_in_flight(
     has_spine_control_call: bool,
     current_provider_input_tokens: Option<i64>,
 ) -> CodexResult<()> {
+    let track_projected_usage = turn_context.config.features.enabled(Feature::SpineJit)
+        || turn_context.config.features.enabled(Feature::SpineTrim);
+    let projected_before = if in_flight.is_empty() || !track_projected_usage {
+        None
+    } else {
+        sess.state.lock().await.projected_history_snapshot()
+    };
     let mut all_outputs_recorded = true;
     let mut has_spine_transition_call = has_spine_control_call;
     while let Some(res) = in_flight.next().await {
@@ -1980,9 +1983,21 @@ async fn drain_in_flight(
             }
             Err(err) => {
                 all_outputs_recorded = false;
+                if let Some(projected_before) = projected_before.as_deref() {
+                    sess.state
+                        .lock()
+                        .await
+                        .reconcile_projected_history(Some(projected_before));
+                }
                 error_or_panic(format!("in-flight tool future failed during drain: {err}"));
             }
         }
+    }
+    if let Some(projected_before) = projected_before.as_deref() {
+        sess.state
+            .lock()
+            .await
+            .reconcile_projected_history(Some(projected_before));
     }
     if has_spine_transition_call && all_outputs_recorded {
         sess.record_spine_transition_status(&turn_context, current_provider_input_tokens)
@@ -2023,6 +2038,7 @@ async fn try_run_sampling_request(
     responses_metadata: &CodexResponsesMetadata,
     turn_diff_tracker: SharedTurnDiffTracker,
     prompt: &Prompt,
+    prefill_claim: Option<AutoCompactWindowPrefillClaim>,
     cancellation_token: CancellationToken,
 ) -> CodexResult<SamplingRequestResult> {
     feedback_tags!(
@@ -2371,7 +2387,11 @@ async fn try_run_sampling_request(
                     .as_ref()
                     .and_then(|usage| (usage.input_tokens > 0).then_some(usage.input_tokens));
                 let budget_result = sess
-                    .record_token_usage_info(&turn_context, token_usage.as_ref())
+                    .record_sampling_token_usage_info(
+                        &turn_context,
+                        token_usage.as_ref(),
+                        prefill_claim,
+                    )
                     .await;
                 should_emit_token_count = true;
                 should_emit_turn_diff = true;
