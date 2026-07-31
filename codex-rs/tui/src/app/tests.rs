@@ -477,6 +477,7 @@ async fn history_lookup_response_is_routed_to_requesting_thread() -> Result<()> 
 async fn spine_projection_fifo_is_independent_of_full_thread_channel() -> Result<()> {
     let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
     let thread_id = ThreadId::new();
+    app.primary_thread_id = Some(thread_id);
     app.thread_event_channels
         .insert(thread_id, ThreadEventChannel::new(/*capacity*/ 1));
     app.set_thread_active(thread_id, /*active*/ true).await;
@@ -564,7 +565,14 @@ async fn inactive_thread_replay_restores_spawn_progress_projection() -> Result<(
     let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
     let parent_thread_id = ThreadId::new();
     let child_thread_id = ThreadId::new();
-    app.ensure_thread_channel(parent_thread_id);
+    app.thread_event_channels.insert(
+        parent_thread_id,
+        ThreadEventChannel::new_with_session(
+            THREAD_EVENT_CHANNEL_CAPACITY,
+            test_thread_session(parent_thread_id, test_path_buf("/tmp/inactive-parent")),
+            Vec::new(),
+        ),
+    );
     while app_event_rx.try_recv().is_ok() {}
 
     app.enqueue_thread_notification(
@@ -692,6 +700,7 @@ async fn committed_spine_tree_change_inserts_history_without_a_live_tail() -> Re
     let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
     let thread_id = ThreadId::new();
     let cwd = tempdir()?;
+    app.primary_thread_id = Some(thread_id);
     app.chat_widget
         .handle_thread_session_quiet(test_thread_session(thread_id, cwd.path().to_path_buf()));
     while app_event_rx.try_recv().is_ok() {}
@@ -816,6 +825,7 @@ async fn committed_spine_tree_change_inserts_history_without_a_live_tail() -> Re
 async fn automatic_spine_history_replaces_only_a_trailing_same_turn_cell() -> Result<()> {
     let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
     let thread_id = ThreadId::new();
+    app.primary_thread_id = Some(thread_id);
     app.chat_widget
         .handle_thread_session_quiet(test_thread_session(
             thread_id,
@@ -914,6 +924,15 @@ async fn inactive_spine_history_coalesces_and_is_consumed_once_on_view_refresh()
     let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
     let active_thread_id = ThreadId::new();
     let inactive_thread_id = ThreadId::new();
+    app.primary_thread_id = Some(active_thread_id);
+    app.thread_event_channels.insert(
+        inactive_thread_id,
+        ThreadEventChannel::new_with_session(
+            THREAD_EVENT_CHANNEL_CAPACITY,
+            test_thread_session(inactive_thread_id, test_path_buf("/tmp/inactive-spine")),
+            Vec::new(),
+        ),
+    );
     app.chat_widget
         .handle_thread_session_quiet(test_thread_session(
             active_thread_id,
@@ -1799,6 +1818,7 @@ async fn app_owned_spawn_projection_removes_overlay_only_on_tree_commit() -> Res
 async fn incomplete_parent_turn_clears_only_its_unsettled_spawn_overlays() -> Result<()> {
     let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
     let parent_thread_id = ThreadId::new();
+    app.primary_thread_id = Some(parent_thread_id);
     app.chat_widget
         .handle_thread_session_quiet(test_thread_session(
             parent_thread_id,
@@ -4629,7 +4649,8 @@ async fn inactive_thread_approval_badge_clears_after_turn_completion_notificatio
 }
 
 #[tokio::test]
-async fn inactive_thread_started_notification_initializes_replay_session() -> Result<()> {
+async fn owned_non_primary_thread_started_initializes_session_and_admits_followup_notification()
+-> Result<()> {
     let mut app = make_test_app().await;
     let temp_dir = tempdir()?;
     let main_thread_id =
@@ -4656,6 +4677,10 @@ async fn inactive_thread_started_notification_initializes_replay_session() -> Re
             Vec::new(),
         ),
     );
+    app.thread_event_channels
+        .insert(agent_thread_id, ThreadEventChannel::new(/*capacity*/ 4));
+    app.side_threads
+        .insert(agent_thread_id, SideThreadState::new(main_thread_id));
 
     let rollout_path = temp_dir.path().join("agent-rollout.jsonl");
     let rollout = serde_json::json!({
@@ -4701,16 +4726,25 @@ async fn inactive_thread_started_notification_initializes_replay_session() -> Re
         }),
     )
     .await?;
+    app.enqueue_thread_notification(
+        agent_thread_id,
+        turn_started_notification(agent_thread_id, "turn-after-start"),
+    )
+    .await?;
 
-    let store = app
-        .thread_event_channels
-        .get(&agent_thread_id)
-        .expect("agent thread channel")
-        .store
-        .lock()
-        .await;
-    let session = store.session.clone().expect("inferred session");
-    drop(store);
+    let (session, active_turn_id) = {
+        let store = app
+            .thread_event_channels
+            .get(&agent_thread_id)
+            .expect("agent thread channel")
+            .store
+            .lock()
+            .await;
+        (
+            store.session.clone().expect("inferred session"),
+            store.active_turn_id.clone(),
+        )
+    };
 
     assert_eq!(session.thread_id, agent_thread_id);
     assert_eq!(session.thread_name, Some("agent thread".to_string()));
@@ -4723,6 +4757,7 @@ async fn inactive_thread_started_notification_initializes_replay_session() -> Re
         vec![test_path_buf("/tmp/agent").abs(), shared_root]
     );
     assert_eq!(session.rollout_path, Some(rollout_path));
+    assert_eq!(active_turn_id.as_deref(), Some("turn-after-start"));
     assert_eq!(
         app.agent_navigation.get(&agent_thread_id),
         Some(&AgentPickerThreadEntry {
@@ -4738,8 +4773,7 @@ async fn inactive_thread_started_notification_initializes_replay_session() -> Re
 }
 
 #[tokio::test]
-async fn inactive_thread_started_notification_preserves_primary_model_when_path_missing()
--> Result<()> {
+async fn pending_review_thread_started_preserves_primary_model_when_path_missing() -> Result<()> {
     let mut app = make_test_app().await;
     let main_thread_id =
         ThreadId::from_string("00000000-0000-0000-0000-000000000301").expect("valid thread");
@@ -4764,6 +4798,15 @@ async fn inactive_thread_started_notification_preserves_primary_model_when_path_
             Vec::new(),
         ),
     );
+    app.thread_event_channels
+        .insert(agent_thread_id, ThreadEventChannel::new(/*capacity*/ 4));
+    app.thread_event_channels
+        .get(&agent_thread_id)
+        .expect("pending review thread channel")
+        .store
+        .lock()
+        .await
+        .active_turn_id = Some("review-turn".to_string());
 
     app.enqueue_thread_notification(
         agent_thread_id,
@@ -5595,6 +5638,248 @@ async fn discard_closed_side_thread_removes_local_state_without_server_rpc() {
     assert!(!app.side_threads.contains_key(&side_thread_id));
     assert!(!app.thread_event_channels.contains_key(&side_thread_id));
     assert_eq!(app.agent_navigation.get(&side_thread_id), None);
+}
+
+#[tokio::test]
+async fn discard_closed_side_thread_removes_spine_state_and_rejects_delayed_events() -> Result<()> {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let parent_thread_id = ThreadId::new();
+    let side_thread_id = ThreadId::new();
+    let other_thread_id = ThreadId::new();
+    app.primary_thread_id = Some(parent_thread_id);
+    app.chat_widget
+        .handle_thread_session_quiet(test_thread_session(
+            side_thread_id,
+            test_path_buf("/tmp/project"),
+        ));
+    app.active_thread_id = Some(side_thread_id);
+    app.side_threads
+        .insert(side_thread_id, SideThreadState::new(parent_thread_id));
+    app.thread_event_channels
+        .insert(side_thread_id, ThreadEventChannel::new(/*capacity*/ 4));
+
+    let side_snapshot = app_spine_snapshot(side_thread_id, "turn-side", 1, None);
+    {
+        let state = app.spine_tree_views.entry(side_thread_id).or_default();
+        state.apply_tree_update(side_snapshot.clone());
+        state.apply_spawn_progress(SpineSpawnProgressUpdatedNotification {
+            thread_id: side_thread_id.to_string(),
+            turn_id: "turn-side".to_string(),
+            call_id: "spawn-side".to_string(),
+            tasks: vec![SpineSpawnTaskProgress {
+                ordinal: 0,
+                summary: "side worker".to_string(),
+                thread_id: ThreadId::new().to_string(),
+                agent_path: Some("/root/side-worker".to_string()),
+                status: CollabAgentStatus::Running,
+            }],
+        });
+        app.chat_widget
+            .set_spine_tree_view(Some(side_snapshot), state.render_cell());
+    }
+    app.spine_tree_views
+        .entry(other_thread_id)
+        .or_default()
+        .apply_tree_update(app_spine_snapshot(other_thread_id, "turn-other", 1, None));
+    app.side_threads
+        .insert(other_thread_id, SideThreadState::new(parent_thread_id));
+    app.thread_event_channels
+        .insert(other_thread_id, ThreadEventChannel::new(/*capacity*/ 4));
+    app.agent_navigation.upsert(
+        other_thread_id,
+        Some("Other".to_string()),
+        Some("side".to_string()),
+        /*is_closed*/ false,
+    );
+    app.spine_projection_rollback_fences
+        .insert(side_thread_id, 2);
+    app.spine_projection_rollback_fences
+        .insert(other_thread_id, 1);
+    assert!(app.chat_widget.active_cell_transcript_key().is_some());
+    while app_event_rx.try_recv().is_ok() {}
+    app.enqueue_thread_notification(
+        side_thread_id,
+        ServerNotification::SpineSpawnProgressUpdated(SpineSpawnProgressUpdatedNotification {
+            thread_id: side_thread_id.to_string(),
+            turn_id: "turn-side".to_string(),
+            call_id: "spawn-queued-before-discard".to_string(),
+            tasks: vec![SpineSpawnTaskProgress {
+                ordinal: 0,
+                summary: "queued worker".to_string(),
+                thread_id: ThreadId::new().to_string(),
+                agent_path: Some("/root/queued-worker".to_string()),
+                status: CollabAgentStatus::Running,
+            }],
+        }),
+    )
+    .await?;
+    let queued_projection = app_event_rx
+        .try_recv()
+        .expect("pre-discard projection should be queued");
+
+    app.discard_closed_side_thread(side_thread_id).await;
+
+    assert!(!app.spine_tree_views.contains_key(&side_thread_id));
+    assert!(
+        !app.spine_projection_rollback_fences
+            .contains_key(&side_thread_id)
+    );
+    assert!(app.spine_tree_views.contains_key(&other_thread_id));
+    assert_eq!(
+        app.spine_projection_rollback_fences.get(&other_thread_id),
+        Some(&1)
+    );
+    assert!(app.side_threads.contains_key(&other_thread_id));
+    assert!(app.thread_event_channels.contains_key(&other_thread_id));
+    assert!(app.agent_navigation.get(&other_thread_id).is_some());
+    assert!(app.chat_widget.active_cell_transcript_key().is_none());
+    assert!(!app.thread_event_channels.contains_key(&side_thread_id));
+
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    let mut app_server =
+        crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
+    app.handle_event(&mut tui, &mut app_server, queued_projection)
+        .await?;
+    assert!(
+        !app.spine_tree_views.contains_key(&side_thread_id),
+        "a projection queued before discard must not recreate retired thread state"
+    );
+
+    app.enqueue_thread_notification(
+        side_thread_id,
+        ServerNotification::McpServerStatusUpdated(McpServerStatusUpdatedNotification {
+            thread_id: Some(side_thread_id.to_string()),
+            name: "stale-discovery".to_string(),
+            status: McpServerStartupState::Failed,
+            error: Some("buffered before delayed start".to_string()),
+            failure_reason: None,
+        }),
+    )
+    .await?;
+    {
+        let store = app
+            .thread_event_channels
+            .get(&side_thread_id)
+            .expect("ordinary discovery may create a buffer-only channel")
+            .store
+            .lock()
+            .await;
+        assert!(store.session.is_none());
+        assert!(store.active_turn_id().is_none());
+    }
+    app.enqueue_thread_notification(
+        side_thread_id,
+        ServerNotification::ThreadStarted(ThreadStartedNotification {
+            thread: Thread {
+                id: side_thread_id.to_string(),
+                extra: None,
+                session_id: side_thread_id.to_string(),
+                forked_from_id: Some(parent_thread_id.to_string()),
+                parent_thread_id: Some(parent_thread_id.to_string()),
+                preview: "retired side thread".to_string(),
+                ephemeral: true,
+                history_mode: Default::default(),
+                model_provider: "openai".to_string(),
+                created_at: 1,
+                updated_at: 2,
+                recency_at: Some(2),
+                status: codex_app_server_protocol::ThreadStatus::Idle,
+                path: None,
+                cwd: test_path_buf("/tmp/project").abs(),
+                cli_version: "0.0.0".to_string(),
+                source: SessionSource::Unknown,
+                thread_source: None,
+                agent_nickname: Some("Retired".to_string()),
+                agent_role: Some("side".to_string()),
+                git_info: None,
+                name: Some("retired side thread".to_string()),
+                turns: Vec::new(),
+            },
+        }),
+    )
+    .await?;
+    app.enqueue_thread_notification(
+        side_thread_id,
+        ServerNotification::SpineTreeUpdated(app_spine_snapshot(
+            side_thread_id,
+            "turn-side",
+            3,
+            Some("late after discard"),
+        )),
+    )
+    .await?;
+    let store = app
+        .thread_event_channels
+        .get(&side_thread_id)
+        .expect("weak discovery channel should remain available")
+        .store
+        .lock()
+        .await;
+    assert!(
+        store.session.is_none(),
+        "a delayed ThreadStarted must not promote a weak discovery channel"
+    );
+    drop(store);
+    assert!(
+        app.agent_navigation.get(&side_thread_id).is_none(),
+        "a delayed ThreadStarted must not restore retired navigation state"
+    );
+    assert!(
+        !app.spine_tree_views.contains_key(&side_thread_id),
+        "a projection after delayed ThreadStarted must not restore retired overlay state"
+    );
+    assert!(
+        app_event_rx.try_recv().is_err(),
+        "a late notification must not enqueue a retired thread projection"
+    );
+    app_server.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn explicit_same_id_reattach_restores_spine_projection_ownership() -> Result<()> {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let parent_thread_id = ThreadId::new();
+    let side_thread_id = ThreadId::new();
+    app.primary_thread_id = Some(parent_thread_id);
+    app.side_threads
+        .insert(side_thread_id, SideThreadState::new(parent_thread_id));
+    app.thread_event_channels.insert(
+        side_thread_id,
+        ThreadEventChannel::new_with_session(
+            THREAD_EVENT_CHANNEL_CAPACITY,
+            test_thread_session(side_thread_id, test_path_buf("/tmp/original-side")),
+            Vec::new(),
+        ),
+    );
+
+    app.discard_closed_side_thread(side_thread_id).await;
+    assert!(!app.thread_event_channels.contains_key(&side_thread_id));
+
+    app.thread_event_channels.insert(
+        side_thread_id,
+        ThreadEventChannel::new_with_session(
+            THREAD_EVENT_CHANNEL_CAPACITY,
+            test_thread_session(side_thread_id, test_path_buf("/tmp/reattached-side")),
+            Vec::new(),
+        ),
+    );
+    app.enqueue_thread_notification(
+        side_thread_id,
+        ServerNotification::SpineTreeUpdated(app_spine_snapshot(
+            side_thread_id,
+            "turn-reattached",
+            1,
+            Some("reattached"),
+        )),
+    )
+    .await?;
+
+    assert!(matches!(
+        app_event_rx.try_recv(),
+        Ok(AppEvent::UpsertSpineTreeCell { .. })
+    ));
+    Ok(())
 }
 
 #[tokio::test]

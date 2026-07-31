@@ -49,6 +49,30 @@ impl App {
             .or_insert_with(|| ThreadEventChannel::new(THREAD_EVENT_CHANNEL_CAPACITY))
     }
 
+    /// Returns whether this app owns a concrete lifecycle for `thread_id`.
+    ///
+    /// A sessionless, idle channel is only a discovery buffer. It must not authorize
+    /// `ThreadStarted` promotion or a Spine projection. A pending active turn is also an owner:
+    /// detached review installs that bounded token from its typed response before the event loop
+    /// can drain the matching `ThreadStarted`.
+    pub(super) async fn owns_thread_lifecycle_state(&self, thread_id: ThreadId) -> bool {
+        if self.primary_thread_id == Some(thread_id)
+            || self.active_thread_id == Some(thread_id)
+            || self.side_threads.contains_key(&thread_id)
+        {
+            return true;
+        }
+        let Some(store) = self
+            .thread_event_channels
+            .get(&thread_id)
+            .map(|channel| Arc::clone(&channel.store))
+        else {
+            return false;
+        };
+        let store = store.lock().await;
+        store.session.is_some() || store.active_turn_id().is_some()
+    }
+
     pub(super) async fn set_thread_active(&mut self, thread_id: ThreadId, active: bool) {
         if let Some(channel) = self.thread_event_channels.get_mut(&thread_id) {
             let mut store = channel.store.lock().await;
@@ -881,6 +905,20 @@ impl App {
         thread_id: ThreadId,
         notification: ServerNotification,
     ) -> Result<()> {
+        if matches!(notification, ServerNotification::ThreadStarted(_))
+            && !self.owns_thread_lifecycle_state(thread_id).await
+        {
+            return Ok(());
+        }
+        if matches!(
+            notification,
+            ServerNotification::SpineTreeUpdated(_)
+                | ServerNotification::SpineSpawnProgressUpdated(_)
+                | ServerNotification::ThreadRolledBack(_)
+        ) && !self.owns_thread_lifecycle_state(thread_id).await
+        {
+            return Ok(());
+        }
         if matches!(notification, ServerNotification::ThreadSettingsUpdated(_))
             && self.primary_thread_id.is_some()
             && self.primary_thread_id != Some(thread_id)

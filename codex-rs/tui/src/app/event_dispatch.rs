@@ -240,6 +240,9 @@ impl App {
                 let Some(parent_thread_id) = ThreadId::from_string(&snapshot.thread_id).ok() else {
                     return Ok(AppRunControl::Continue);
                 };
+                if !self.owns_thread_lifecycle_state(parent_thread_id).await {
+                    return Ok(AppRunControl::Continue);
+                }
                 if self
                     .spine_projection_rollback_fences
                     .contains_key(&parent_thread_id)
@@ -275,6 +278,9 @@ impl App {
                 else {
                     return Ok(AppRunControl::Continue);
                 };
+                if !self.owns_thread_lifecycle_state(parent_thread_id).await {
+                    return Ok(AppRunControl::Continue);
+                }
                 if self
                     .spine_projection_rollback_fences
                     .contains_key(&parent_thread_id)
