@@ -1,141 +1,198 @@
-<h1 align="center">SpineCodex: Just-in-Time Context Tree Compilation for Cost-Efficient Long-Horizon Tasks</h1>
+<p align="center">
+  <img src="./.github/assets/spinecodex-tree.svg" width="88" alt="SpineCodex tree mark" />
+</p>
 
-<p align="center"><strong>Trees are beautiful. Life begins with division and differentiation.</strong></p>
-<p align="center">Maintained by <a href="https://ghabix.github.io">Jiahong Xiang</a> and Kunqiu Chen.</p>
+<h1 align="center">SpineJIT: Just-in-Time Context Tree Compilation for Cost-Efficient Recursive Subagent Scaling</h1>
 
-## Quickstart
+<p align="center"><em>Life begins with division and differentiation.</em></p>
 
-Install SpineCodex, then run it inside a project directory:
+<p align="center">Based on <a href="https://github.com/openai/codex">OpenAI Codex</a>. Maintained by <a href="https://ghabix.github.io">Jiahong Xiang</a> and <a href="https://camsyn.github.io">Kunqiu Chen</a>.</p>
 
-```bash
-npm install -g @spinejit/spine-codex
-spine-codex
-```
-
-The package installs its own `spine-codex` command and does not replace the
-official `codex` command.
-
-## Update SpineCodex
-
-Update a global npm installation to the latest release:
+## Get started
 
 ```bash
 npm install -g @spinejit/spine-codex@latest
-spine-codex --version
+spine-codex
 ```
+
+## Why SpineJIT
+
+| Linear context                                     | SpineCodex                                                                                                                                                                                                                     |
+| -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| ❌**Run out of context?**                    | ✅**256K → 2.5M Effective Working Context**SpineJIT compiles completed branches into semantic Node Memory, extending effective working context beyond the native window.                                                |
+| ❌**Drift after repeated compaction?**       | **✅Minimum Effective Context. Maximum Focus.**<br />Through the SpineTree, the agent manages tasks and context as one unified system, staying focused on the minimum context required by the current task.              |
+| ❌**Lose patience and focus on long tasks?** | **✅Recursive Subagent Scaling on Demand.**<br />SpineJIT lets the agent recursively unfold into specialized subagents on demand, bringing divide-and-conquer structure and greater reasoning depth to complex problems. |
 
 ## Experimental features
 
-Run `/experimental` in the TUI to enable either feature. Both are disabled by
-default; save the selection and start a new conversation for it to take effect.
+| Feature                                                       | Purpose                                                                                                                                                                     |
+| ------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Spine Spawn** (`spine_spawn`)                       | At any node, concurrently spawn multiple differentiated branch agents that inherit its history, recursively collaborate, and converge through cache-friendly context reuse. |
+| **Memory Projection** (`spinetree_memory_projection`) | Project compiled Node Memory into inspectable Markdown.                                                                                                                     |
 
-- **Spine spawn (`spine_spawn`)** runs differentiated branches concurrently,
-  then joins their terminal results into the current Spine tree. It requires
-  SpineJIT and is available only for direct, non-Plan model calls.
-- **Spinetree memory projection (`spinetree_memory_projection`)** projects
-  closed-node memory as read-only Markdown under `.codex/spinetree/` for local
-  inspection. It also maintains a derived `USER.md` from the active typed
-  rollout history and requires SpineJIT.
+Run `/experimental` to enable Spine Spawn or Memory Projection, then save and
+start a new conversation.
 
-## Why SpineCodex
+## Long-horizon performance
 
-Long Codex tasks tend to hit three practical limits:
+Across three long-horizon coding benchmarks, SpineCodex delivers stronger
+outcomes: **1.89× resolved tasks at 27% lower total cost** on SWE-Milestone,
+**+10.80pp average score** on ProgramBench, and **+9.2pp mean score** on
+FrontierSWE.
 
-- **The context window fills before the work is finished.** Important earlier
-  requirements must compete with an ever-growing working history.
-- **The agent loses focus and persistence.** It may repeat settled work, drift
-  from the original goal, skip unfinished details, or produce a weaker final
-  result.
-- **Token usage and cost keep growing.** Every turn carries more intermediate
-  analysis and tool output, even when much of it is no longer relevant to the
-  current step.
+### SWE-Milestone (ICML 2026)
 
-These problems share one root cause: base Codex manages working context as a
-line. New work is appended until the context approaches its limit, then a broad
-compaction rewrites the history. Long sessions alternate between carrying too
-much detail and reconstructing many different task scopes as one summary.
+*Long-horizon software development · 80 milestones · GPT-5.6 · sol high*
 
-## Why a tree?
+| System         | Resolved | Total cost |
+| -------------- | -------: | ---------: |
+| BaseCodex      |        9 |    $764.18 |
+| **SpineCodex** |   **17** | **$556.46** |
 
-Long-horizon work is recursive: understand a problem, split it into smaller
-problems, solve one, return its result, and continue. A linear context records
-when work happened, but not which task owns it or where its result should
-return. A task tree preserves those relationships.
+**1.89× resolved tasks at 27% lower total cost.**
 
-```text
-linear context:  all details --------------------------------> global compact
-tree context:    stable prefix | mem(task A) | mem(task B) | live task details
+### ProgramBench
+
+*Whole-repo program reconstruction · Random sample: 50 of 200 tasks · GPT-5.6 · Sol high · conservative cost estimate*
+
+| System         | Avg. score | Tasks scoring >95% | Cost |
+| -------------- | ---------: | -----------------: | ---: |
+| BaseCodex      |     62.55% |               2/50 | $188.12 |
+| **SpineCodex** | **73.35%** |           **7/50** | **$475.10** |
+
+**+10.80pp average score and 3.5× high-scoring tasks.**
+
+### FrontierSWE
+
+*Ultra-long-horizon coding · 9-task evaluation · GPT-5.6 · high · estimated API cost per trial*
+
+| System         | Mean score | Best score | Cost |
+| -------------- | ---------: | ---------: | ---: |
+| BaseCodex      |       33.5 |       37.9 | $20.16 |
+| **SpineCodex** |   **42.7** |   **46.8** | **$37.29** |
+
+**+9.2pp mean score and +8.9pp best score.**
+
+## How SpineJIT works
+
+**TL;DR:** SpineJIT replaces the live suffix of a context with shorter memory,
+while keeping the prefix unchanged so it can continue to hit the prompt cache.
+
+To control this suffix replacement precisely, SpineJIT is implemented as a
+just-in-time compilation and context-mapping pipeline:
+
+$$
+\text{context messages}
+\rightarrow \text{Spine tokens}
+\rightarrow \text{SpineTree (ParseStack)}
+\rightarrow \text{new context}
+$$
+
+The pipeline has two main stages.
+
+### 1. JIT-compile context into a SpineTree
+
+SpineJIT treats a context $C$---a message list, or simply a sentence whose characters are messages---as a stream to compile.
+
+At each sampling boundary, it turns newly appended messages and control events into **Spine tokens** and updates a live LR(0) ParseStack:
+
+SpineJIT uses four token kinds:
+
+$$
+\Sigma_{\mathrm{Spine}} = \{\mathrm{Message},\ \mathrm{Open},\ \mathrm{Close},\ \mathrm{SpineSpawnNode}\}
+$$
+
+`Message` represents a raw context item. `Open`, `Close`, and
+`SpineSpawnNode` are special tokens emitted by SpineJIT at the corresponding
+sampling boundaries.
+
+$$
+\begin{aligned}
+\mathrm{SpineTree} &\to \mathrm{Nodes}\ \mathrm{End} \\
+\mathrm{Nodes} &\to \mathrm{Node} \mid \mathrm{Nodes}\ \mathrm{Node} \\
+\mathrm{Node} &\to \mathrm{Message} \mid \mathrm{SpineTreeNode} \\
+\mathrm{SpineTreeNode} &\to \mathrm{Open}\ \mathrm{Nodes}\ \mathrm{Close} \mid \mathrm{SpineSpawnNode}
+\end{aligned}
+$$
+
+`End` is only the logical end of a session; a live session never emits it.
+Therefore, the ParseStack is the live SpineTree, and the reduction `Open Nodes Close -> SpineTreeNode` turns a closed subtree into one node.
+
+In short, SpineJIT uses LR(0) JIT compilation to map context $C$ to a Spine Tree $PS$:
+
+$$
+PS = \mathrm{compile}(C)
+$$
+
+### 2. Map the SpineTree into a new context
+
+The structured SpineTree can now be mapped into a shorter context while preserving its stable prefix. For ParseStack $PS$, define:
+
+$$
+C' = f(PS) = \prod_{i=0}^{n} h(PS[i])
+$$
+
+$$
+h(X) =
+\begin{cases}
+\prod_{x \in X} h(x), & X = \mathrm{Nodes} \\
+\mathrm{raw}(X), & X = \mathrm{Message} \\
+\mathrm{memory}(X), & X = \mathrm{SpineTreeNode} \\
+\mathrm{spine\_node\_desc}(X), & X = \mathrm{Open}
+\end{cases}
+$$
+
+Here, $\prod$ means ordered concatenation.
+
+The mapping is deliberately small:
+
+- `Message` keeps its original content through $\mathrm{raw}(X)$.
+- A closed `SpineTreeNode` is replaced by its shorter $\mathrm{memory}(X)$.
+- An unmatched `Open` is represented by a concise
+  $\mathrm{spine\_node\_desc}(X)$, helping the LLM delimit the currently live
+  Spine node.
+
+As parsing progresses, completed work in the context suffix is reduced into a `SpineTreeNode` and then projected as memory. Earlier context remains unchanged:
+
+$$
+\mathrm{prefix} \cdot \mathrm{suffix}
+\longrightarrow
+\mathrm{prefix} \cdot \mathrm{memory}
+$$
+
+This is the central idea of SpineJIT: compress the context where work has finished, without invalidating the reusable prefix.
+
+### 3. How SpineJIT inserts Spine control tokens
+
+The LLM decides when to open or close a `SpineTreeNode` from the current context. The guiding objective is to maximize the average relevance of the remaining context to the current task.
+
+Here, a **sampling** means one complete processing cycle for a model response: the response itself together with any tool calls it produces.
+
+SpineJIT exposes Spine tools to let the LLM express these decisions. After a successful tool call in a sampling step, SpineJIT inserts the corresponding control token at a precise boundary:
+
+| Tool call       | Inserted token      | Position      |
+| --------------- | ------------------- | ------------- |
+| `spine.open`  | `Open`            | Pre-sampling  |
+| `spine.close` | `Close`           | Pre-sampling  |
+| `spine.next`  | `Close Open`      | Pre-sampling  |
+| `spine.spawn` | `SpineSpawnNode`s | Post-sampling |
+
+These tokens connect the model's task-boundary decisions to the LR(0) parser, which continuously updates the ParseStack and therefore the context seen by the next sampling step.
+
+## Citation
+
+A technical report on SpineJIT will be released soon.
+
+If you use SpineCodex in your research, please cite this repository:
+
+```bibtex
+@software{xiang2026spinecodex,
+  title = {SpineJIT: Just-in-Time Context Tree Compilation for Cost-Efficient Recursive Subagent Scaling},
+  author = {Jiahong Xiang and Kunqiu Chen and Yuqun Zhang},
+  year = {2026},
+  url = {https://github.com/GhabiX/SpineCodex}
+}
 ```
-
-This structure gives SpineCodex four practical advantages:
-
-- **Local compilation with a stable prefix.** A completed branch can be
-  replaced by memory without rewriting earlier context. Future requests carry
-  fewer repeated details, and the unchanged prefix remains reusable by prompt
-  caching.
-- **A natural task-memory boundary.** Each child owns its local exploration.
-  When it finishes, the decisions and result needed by the parent return as
-  Node Memory, while the live task keeps the model's detailed attention.
-- **A divide-and-conquer scaling boundary.** Routine work can stay shallow;
-  difficult work can split recursively and receive more test-time reasoning
-  where it is needed.
-- **A natural Agent Spawn boundary.** A node already defines the child task,
-  its inherited context, and the memory it returns. SpineCodex uses the same
-  boundary for independent child agents through the experimental `spine_spawn`
-  feature.
-
-The tree does not make the model's context window infinite. It makes more of
-that window useful by compiling completed work throughout the task instead of
-waiting for one global rewrite.
-
-## SpineJIT: an online LR(0) context compiler
-
-Source code arrives as a linear token stream, but a compiler recovers its
-nested syntax tree. Agent work has the same mismatch: messages and tool calls
-arrive as a linear stream, while the task itself is hierarchical.
-
-SpineJIT defines a small context grammar and runs an online LR(0) parser over
-the agent stream:
-
-```text
-linear agent events
-  -> context tokens
-  -> LR(0) shift/reduce
-  -> task tree
-  -> model context
-
-Nodes    -> Node | Nodes Node
-Node     -> msg | toolcall | TaskTree
-TaskTree -> open Nodes close
-```
-
-The task tree is not a branching UI layered on top of a transcript. It is the
-parse tree of the context language and the state from which the next model
-context is compiled.
-
-Ordinary messages and completed tool calls are shifted into the live task.
-`spine.open` shifts an `open` boundary and starts a child. When
-`spine.close` completes the grammar rule `open Nodes close`, the parser reduces
-the entire subtree to one `TaskTree`, compiles its detailed suffix into Node
-Memory, and returns to the parent. `spine.next` is the same reduce followed by
-the next sibling's `open`.
-
-The parser uses structured control events rather than guessing task boundaries
-from prose. Closed subtrees project as memory; the live path projects in full
-detail; the context before the reduced suffix stays unchanged. That projection
-is the compiler output.
-
-This is **Just-in-Time Context Compilation**: parsing happens incrementally as
-the trajectory grows, and compilation happens exactly when a task becomes
-complete. Unlike threshold-driven global compaction, SpineJIT performs a local,
-grammar-driven reduce at the semantic boundary where the information is still
-well scoped.
-
-## Using SpineCodex
-
-Run SpineCodex like Codex. SpineJIT is enabled by default, and the agent manages
-the task tree as it works; there is no tree to maintain by hand. Use
-`/spine-tree` in the TUI to inspect the current tree and live task.
 
 ## Project
 
