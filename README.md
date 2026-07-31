@@ -17,11 +17,11 @@ spine-codex
 
 ## Why SpineJIT
 
-| Linear context                                     | SpineCodex                                                                                                                                                                                                                     |
-| -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| ❌**Run out of context?**                    | ✅**256K → 2.5M Effective Working Context**SpineJIT compiles completed branches into semantic Node Memory, extending effective working context beyond the native window.                                                |
-| ❌**Drift after repeated compaction?**       | **✅Minimum Effective Context. Maximum Focus.**<br />Through the SpineTree, the agent manages tasks and context as one unified system, staying focused on the minimum context required by the current task.              |
-| ❌**Lose patience and focus on long tasks?** | **✅Recursive Subagent Scaling on Demand.**<br />SpineJIT lets the agent recursively unfold into specialized subagents on demand, bringing divide-and-conquer structure and greater reasoning depth to complex problems. |
+| Linear context                              | SpineCodex                                                                                                                                                                                                                      |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ❌ **Run out of context?**                  | ✅ **256K → 2.5M Effective Working Context**<br />SpineJIT compiles completed branches into semantic Node Memory, extending effective working context beyond the native window.                                                   |
+| ❌ **Drift after repeated compaction?**     | ✅ **Minimum Effective Context. Maximum Focus.**<br />Through the SpineTree, the agent manages tasks and context as one unified system, staying focused on the minimum context required by the current task.                       |
+| ❌ **Lose patience and focus on long tasks?** | ✅ **Recursive Subagent Scaling on Demand.**<br />SpineJIT lets the agent recursively unfold into specialized subagents on demand, bringing divide-and-conquer structure and greater reasoning depth to complex problems.          |
 
 ## Experimental features
 
@@ -138,7 +138,7 @@ h(X) =
 \prod_{x \in X} h(x), & X = \mathrm{Nodes} \\
 \mathrm{raw}(X), & X = \mathrm{Message} \\
 \mathrm{memory}(X), & X = \mathrm{SpineTreeNode} \\
-\mathrm{spine\_node\_desc}(X), & X = \mathrm{Open}
+\mathrm{spine\\_node\\_desc}(X), & X = \mathrm{Open}
 \end{cases}
 $$
 
@@ -149,7 +149,7 @@ The mapping is deliberately small:
 - `Message` keeps its original content through $\mathrm{raw}(X)$.
 - A closed `SpineTreeNode` is replaced by its shorter $\mathrm{memory}(X)$.
 - An unmatched `Open` is represented by a concise
-  $\mathrm{spine\_node\_desc}(X)$, helping the LLM delimit the currently live
+  $\mathrm{spine\\_node\\_desc}(X)$, helping the LLM delimit the currently live
   Spine node.
 
 As parsing progresses, completed work in the context suffix is reduced into a `SpineTreeNode` and then projected as memory. Earlier context remains unchanged:
