@@ -5,7 +5,7 @@
 <p align="center">Based on <a href="https://github.com/openai/codex">OpenAI Codex</a>. Maintained by <a href="https://ghabix.github.io">Jiahong Xiang</a> and <a href="https://camsyn.github.io">Kunqiu Chen</a>.</p>
 
 <p align="center">
-  <a href="https://github.com/GhabiX/SpineCodex/releases/latest">
+  <a href="https://ghabix.github.io/SpineCodex/">
     <img src="./.github/assets/spinecodex-loop.webp" width="1200" alt="SpineCodex context tree growing through recursive agent spawning" />
   </a>
 </p>
