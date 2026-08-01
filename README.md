@@ -8,6 +8,12 @@
 
 <p align="center">Based on <a href="https://github.com/openai/codex">OpenAI Codex</a>. Maintained by <a href="https://ghabix.github.io">Jiahong Xiang</a> and <a href="https://camsyn.github.io">Kunqiu Chen</a>.</p>
 
+<p align="center">
+  <a href="https://github.com/GhabiX/SpineCodex/releases/latest">
+    <img src="./.github/assets/spinecodex-loop.webp" width="1200" alt="SpineCodex context tree growing through recursive agent spawning" />
+  </a>
+</p>
+
 ## Get started
 
 ```bash
@@ -141,7 +147,7 @@ h(X) =
 \prod_{x \in X} h(x), & X = \mathrm{Nodes} \\
 \mathrm{raw}(X), & X = \mathrm{Message} \\
 \mathrm{memory}(X), & X = \mathrm{SpineTreeNode} \\
-\mathrm{spine\_node\_desc}(X), & X = \mathrm{Open}
+\mathrm{spine\\_node\\_desc}(X), & X = \mathrm{Open}
 \end{cases}
 $$
 
