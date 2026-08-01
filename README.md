@@ -1,8 +1,4 @@
-<p align="center">
-  <img src="./.github/assets/spinecodex-tree.svg" width="88" alt="SpineCodex tree mark" />
-</p>
-
-<h1 align="center">Agent Morphogenesis: Just-in-Time Context Tree Compilation for Cost-Efficient Recursive Subagent Scaling</h1>
+<h1 align="center"><img src="./.github/assets/spinecodex-tree.svg" width="56" alt="SpineCodex tree mark" /> SpineCodex</h1>
 
 <p align="center"><em>Life begins with division and differentiation. An agent owns its own morphogenesis.</em></p>
 
