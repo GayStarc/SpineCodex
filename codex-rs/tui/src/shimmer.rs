@@ -40,6 +40,36 @@ pub(crate) fn green_shimmer_spans(text: &str) -> Vec<Span<'static>> {
     )
 }
 
+pub(crate) fn green_then_default_shimmer_spans(
+    green_text: &str,
+    default_text: &str,
+) -> Vec<Span<'static>> {
+    let green_len = green_text.chars().count();
+    let total_len = green_len + default_text.chars().count();
+    if total_len == 0 {
+        return Vec::new();
+    }
+
+    let pos = sweep_position(total_len);
+    let mut spans = shimmer_spans_with_palette_at_position(
+        green_text,
+        /*offset*/ 0,
+        pos,
+        MOTION_GREEN_RGB,
+        (160, 255, 190),
+        ShimmerFallback::Solid(Color::Green),
+    );
+    spans.extend(shimmer_spans_with_palette_at_position(
+        default_text,
+        green_len,
+        pos,
+        default_fg().unwrap_or((128, 128, 128)),
+        default_bg().unwrap_or((255, 255, 255)),
+        ShimmerFallback::Intensity,
+    ));
+    spans
+}
+
 pub(crate) fn spine_brand_shimmer_spans(text: &str) -> Vec<Span<'static>> {
     shimmer_spans_with_style(text, spine_brand_style_for_intensity)
 }
@@ -68,11 +98,34 @@ fn shimmer_spans_with_palette(
     highlight_color: (u8, u8, u8),
     fallback: ShimmerFallback,
 ) -> Vec<Span<'static>> {
+    let text_len = text.chars().count();
+    if text_len == 0 {
+        return Vec::new();
+    }
+
+    shimmer_spans_with_palette_at_position(
+        text,
+        /*offset*/ 0,
+        sweep_position(text_len),
+        base_color,
+        highlight_color,
+        fallback,
+    )
+}
+
+fn shimmer_spans_with_palette_at_position(
+    text: &str,
+    offset: usize,
+    pos: usize,
+    base_color: (u8, u8, u8),
+    highlight_color: (u8, u8, u8),
+    fallback: ShimmerFallback,
+) -> Vec<Span<'static>> {
     let has_true_color = supports_color::on_cached(supports_color::Stream::Stdout)
         .map(|level| level.has_16m)
         .unwrap_or(false);
 
-    shimmer_spans_with_style(text, |intensity| {
+    shimmer_spans_with_style_at_position(text, offset, pos, |intensity| {
         if has_true_color {
             let highlight = intensity.clamp(0.0, 1.0);
             let (r, g, b) = blend(highlight_color, base_color, highlight * 0.9);
@@ -91,17 +144,27 @@ fn shimmer_spans_with_style(
     text: &str,
     style_for_intensity: impl Fn(f32) -> Style,
 ) -> Vec<Span<'static>> {
-    let chars: Vec<char> = text.chars().collect();
-    if chars.is_empty() {
+    let text_len = text.chars().count();
+    if text_len == 0 {
         return Vec::new();
     }
     // Use time-based sweep synchronized to process start.
-    let padding = 10usize;
-    let pos = sweep_position(chars.len());
+    let pos = sweep_position(text_len);
 
-    let mut spans: Vec<Span<'static>> = Vec::with_capacity(chars.len());
+    shimmer_spans_with_style_at_position(text, /*offset*/ 0, pos, style_for_intensity)
+}
+
+fn shimmer_spans_with_style_at_position(
+    text: &str,
+    offset: usize,
+    pos: usize,
+    style_for_intensity: impl Fn(f32) -> Style,
+) -> Vec<Span<'static>> {
+    let chars: Vec<char> = text.chars().collect();
+    let padding = 10usize;
+    let mut spans = Vec::with_capacity(chars.len());
     for (i, ch) in chars.iter().enumerate() {
-        let intensity = band_intensity(i, pos, padding);
+        let intensity = band_intensity(offset + i, pos, padding);
         spans.push(Span::styled(ch.to_string(), style_for_intensity(intensity)));
     }
     spans
@@ -153,3 +216,7 @@ fn spine_brand_style_for_intensity(intensity: f32) -> Style {
         style.add_modifier(Modifier::BOLD)
     }
 }
+
+#[cfg(test)]
+#[path = "shimmer_tests.rs"]
+mod tests;

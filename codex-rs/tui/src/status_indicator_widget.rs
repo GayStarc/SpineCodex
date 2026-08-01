@@ -28,6 +28,7 @@ use crate::motion::ReducedMotionIndicator;
 use crate::motion::activity_indicator;
 use crate::motion::green_growth_marker;
 use crate::motion::green_shimmer_text;
+use crate::motion::green_then_default_shimmer_text;
 use crate::motion::shimmer_text;
 use crate::render::renderable::Renderable;
 use crate::text_formatting::capitalize_first;
@@ -275,6 +276,7 @@ impl Renderable for StatusIndicatorWidget {
         let motion_mode = MotionMode::from_animations_enabled(self.animations_enabled);
 
         let mut spans = Vec::with_capacity(7);
+        let mut organic_activity_word = None;
         if (self.header == "Working" || self.header_is_reasoning)
             && let Some(activity_word) = self.organic_working_word
         {
@@ -282,7 +284,7 @@ impl Renderable for StatusIndicatorWidget {
             spans.push(" ".into());
             spans.push(indicator);
             spans.push(" ".into());
-            spans.extend(green_shimmer_text(activity_word, motion_mode));
+            organic_activity_word = Some(activity_word);
         } else {
             if let Some(indicator) = activity_indicator(
                 Some(self.last_resume_at),
@@ -317,21 +319,32 @@ impl Renderable for StatusIndicatorWidget {
             suffix_spans.push(message.clone().dim());
         }
 
-        if self.header_is_reasoning
-            && self.organic_working_word.is_some()
-            && !self.header.is_empty()
-        {
-            let prefix_width = line_width(&Line::from(spans.clone()));
-            let suffix_width = line_width(&Line::from(suffix_spans.clone()));
-            let available_width =
-                usize::from(area.width).saturating_sub(prefix_width + suffix_width);
-            if available_width >= 3 {
-                spans.push(": ".into());
-                let title = truncate_line_with_ellipsis_if_overflow(
-                    Line::from(shimmer_text(&self.header, motion_mode)),
-                    available_width.saturating_sub(2),
-                );
-                spans.extend(title.spans);
+        if let Some(activity_word) = organic_activity_word {
+            if self.header_is_reasoning && !self.header.is_empty() {
+                let prefix_width =
+                    line_width(&Line::from(spans.clone())) + UnicodeWidthStr::width(activity_word);
+                let suffix_width = line_width(&Line::from(suffix_spans.clone()));
+                let available_width =
+                    usize::from(area.width).saturating_sub(prefix_width + suffix_width);
+                if available_width >= 3 {
+                    let title = truncate_line_with_ellipsis_if_overflow(
+                        Line::from(self.header.clone()),
+                        available_width.saturating_sub(2),
+                    );
+                    let mut default_text = String::from(": ");
+                    for span in title.spans {
+                        default_text.push_str(span.content.as_ref());
+                    }
+                    spans.extend(green_then_default_shimmer_text(
+                        activity_word,
+                        &default_text,
+                        motion_mode,
+                    ));
+                } else {
+                    spans.extend(green_shimmer_text(activity_word, motion_mode));
+                }
+            } else {
+                spans.extend(green_shimmer_text(activity_word, motion_mode));
             }
         }
         spans.extend(suffix_spans);
@@ -447,9 +460,9 @@ mod tests {
         widget.is_paused = true;
         widget.elapsed_running = Duration::ZERO;
 
-        assert_eq!(
+        insta::assert_snapshot!(
             render_status_line(&widget, /*width*/ 120),
-            " ϒ Blooming: Planning memory rollout inspection (0s • esc to interrupt)"
+            @" ϒ Blooming: Planning memory rollout inspection (0s • esc to interrupt)"
         );
     }
 
@@ -543,12 +556,7 @@ mod tests {
         widget.elapsed_running = Duration::ZERO;
 
         let rendered = render_status_line(&widget, /*width*/ 40);
-        assert!(rendered.starts_with(" ϒ Blooming"), "{rendered}");
-        assert!(rendered.ends_with("(0s • esc to interrupt)"), "{rendered}");
-        assert!(
-            !rendered.contains("Planning memory rollout inspection"),
-            "{rendered}"
-        );
+        assert_eq!(rendered, " ϒ Blooming: Pl… (0s • esc to interrupt)");
     }
 
     #[test]

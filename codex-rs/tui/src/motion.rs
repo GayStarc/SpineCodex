@@ -15,6 +15,7 @@ use ratatui::text::Span;
 
 use crate::product_brand::SPINE_BRAND_COLOR;
 use crate::shimmer::green_shimmer_spans;
+use crate::shimmer::green_then_default_shimmer_spans;
 use crate::shimmer::motion_green_style;
 use crate::shimmer::shimmer_spans;
 use crate::shimmer::spine_brand_shimmer_spans;
@@ -156,6 +157,26 @@ pub(crate) fn green_shimmer_text(text: &str, motion_mode: MotionMode) -> Vec<Spa
     }
 }
 
+pub(crate) fn green_then_default_shimmer_text(
+    green_text: &str,
+    default_text: &str,
+    motion_mode: MotionMode,
+) -> Vec<Span<'static>> {
+    match motion_mode {
+        MotionMode::Animated => green_then_default_shimmer_spans(green_text, default_text),
+        MotionMode::Reduced => {
+            let mut spans = Vec::with_capacity(2);
+            if !green_text.is_empty() {
+                spans.push(Span::styled(green_text.to_string(), motion_green_style()));
+            }
+            if !default_text.is_empty() {
+                spans.push(default_text.to_string().into());
+            }
+            spans
+        }
+    }
+}
+
 pub(crate) fn spine_brand_shimmer_text(text: &str, motion_mode: MotionMode) -> Vec<Span<'static>> {
     match motion_mode {
         MotionMode::Animated => spine_brand_shimmer_spans(text),
@@ -224,6 +245,17 @@ mod tests {
         assert_eq!(
             shimmer_text("", MotionMode::Reduced),
             Vec::<Span<'static>>::new()
+        );
+    }
+
+    #[test]
+    fn reduced_motion_segmented_shimmer_preserves_both_palettes() {
+        assert_eq!(
+            green_then_default_shimmer_text("Blooming", ": Planning", MotionMode::Reduced),
+            vec![
+                Span::styled("Blooming", motion_green_style()),
+                ": Planning".into(),
+            ]
         );
     }
 
