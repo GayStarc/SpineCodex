@@ -36,9 +36,35 @@ fn task_arguments_require_two_exact_non_empty_tasks() {
         r#"{"tasks":[{"summary":"one","prompt":""},{"summary":"two","prompt":"second"}]}"#,
         r#"{"tasks":[{"summary":"one","prompt":"first","extra":true},{"summary":"two","prompt":"second"}]}"#,
         r#"{"tasks":[{"summary":"one","prompt":"first"},{"summary":"two","prompt":"second"}],"extra":true}"#,
+        r#"{"tasks":[{"summary":"one","prompt":"first"},{"summary":" one ","prompt":"second"}]}"#,
     ] {
         assert!(parse_tasks(arguments).is_err(), "accepted {arguments}");
     }
+}
+
+#[test]
+fn task_envelope_injects_identity_and_same_call_peer_roster() {
+    let tasks = vec![
+        SpawnTask {
+            summary: "parser".to_string(),
+            prompt: "Shared blackboard: tasks/trial/blackboard.md\nImplement parser.".to_string(),
+        },
+        SpawnTask {
+            summary: "compatibility tests".to_string(),
+            prompt: "test".to_string(),
+        },
+        SpawnTask {
+            summary: "interface review".to_string(),
+            prompt: "review".to_string(),
+        },
+    ];
+
+    let envelope = task_envelope(&tasks[0], &tasks);
+
+    assert!(envelope.contains("You are: parser"));
+    assert!(envelope.contains("- compatibility tests\n- interface review"));
+    assert!(envelope.contains("[parser]"));
+    assert!(envelope.ends_with(&format!("Assignment:\n{}", tasks[0].prompt)));
 }
 
 fn call(call_id: &str, namespace: Option<&str>, name: &str) -> RolloutItem {

@@ -35,7 +35,7 @@ use tokio_util::sync::CancellationToken;
 
 const CORRECTION_MESSAGE: &str = concat!(
     "This spawned execution branch remains active. Continue exactly the declared assignment and ",
-    "follow its collaboration contract when one is declared. When the assignment is complete or ",
+    "keep the shared-blackboard awareness duty non-blocking. When the assignment is complete or ",
     "precisely bounded, return exactly one non-empty, tool-free assistant final response containing ",
     "terminal memory. That response ends this branch execution."
 );
@@ -198,10 +198,17 @@ pub(crate) fn parse_tasks(arguments: &str) -> Result<Vec<SpawnTask>, String> {
             "spine.spawn requires at least {MIN_SPAWN_TASKS} tasks"
         ));
     }
+    let mut summaries = HashSet::with_capacity(tasks.len());
     for (ordinal, task) in tasks.iter().enumerate() {
-        if task.summary.trim().is_empty() {
+        let summary = task.summary.trim();
+        if summary.is_empty() {
             return Err(format!(
                 "spine.spawn task {ordinal} requires a non-empty summary"
+            ));
+        }
+        if !summaries.insert(summary) {
+            return Err(format!(
+                "spine.spawn task {ordinal} has duplicate summary `{summary}`"
             ));
         }
         if task.prompt.trim().is_empty() {
@@ -444,21 +451,22 @@ async fn execute_batch_transaction(
         return Err("spine.spawn was cancelled before child creation".to_string());
     }
 
-    let starts = prepared
-        .into_iter()
-        .zip(flat_tasks.iter())
-        .map(|(prepared, (_, _, task))| {
-            session
-                .services
-                .agent_control
-                .spawn_prepared_agent_with_metadata(
-                    prepared,
-                    vec![UserInput::Text {
-                        text: task_envelope(task),
-                        text_elements: Vec::new(),
-                    }],
-                )
-        });
+    let starts =
+        prepared
+            .into_iter()
+            .zip(flat_tasks.iter())
+            .map(|(prepared, (call_ordinal, _, task))| {
+                session
+                    .services
+                    .agent_control
+                    .spawn_prepared_agent_with_metadata(
+                        prepared,
+                        vec![UserInput::Text {
+                            text: task_envelope(task, &calls[*call_ordinal].tasks),
+                            text_elements: Vec::new(),
+                        }],
+                    )
+            });
     let start_results = join_all(starts)
         .await
         .into_iter()
@@ -962,33 +970,44 @@ fn transaction_task_name(call_id: &str, ordinal: usize) -> String {
     format!("spawn_{fragment}_{ordinal}")
 }
 
-fn task_envelope(task: &SpawnTask) -> String {
+fn task_envelope(task: &SpawnTask, call_tasks: &[SpawnTask]) -> String {
+    let identity = task.summary.trim();
+    let peers = call_tasks
+        .iter()
+        .map(|peer| peer.summary.trim())
+        .filter(|summary| *summary != identity)
+        .map(|summary| format!("- {summary}"))
+        .collect::<Vec<_>>()
+        .join("\n");
     format!(
         concat!(
             "You are a spawned execution branch. Your role is to complete exactly the assignment ",
             "below and return bounded terminal memory to the spawning continuation.\n\n",
+            "You are: {}\n\nPeer branches in this spawn:\n{}\n\n",
             "The assignment is already an active branch scope. Begin the assigned work directly. ",
             "Use spine.open, spine.close, and spine.next only to manage genuine descendant work ",
             "within this assignment.\n\n",
             "Executable work is defined by the assignment. Inherited context supplies constraints ",
             "and evidence for that work.\n\n",
-            "Independent execution is the default. When the assignment declares a collaboration ",
-            "contract, that contract is part of the assignment. Execute the declared branch role ",
-            "through the shared coordination root. Publish updates through this branch's declared ",
-            "single-writer artifact. Read the named peer artifacts at the declared synchronization ",
-            "points, follow the declared format/update/read protocol, and use the declared bounded ",
-            "fallback when peer state is unavailable.\n\n",
-            "Peer progress and results enter this branch's working context through the declared ",
-            "publish-and-read protocol. Other shared-workspace changes remain context for the ",
-            "assignment and do not add executable work. Any integration responsibility is ",
-            "performed by the branch explicitly named for it in the assignment.\n\n",
+            "Every branch has a duty to inspect the shared blackboard path declared in its ",
+            "assignment. Read it before substantive work and once more before returning your final ",
+            "response. If the file is absent, treat the blackboard as empty. Discussion is optional: ",
+            "if you need peer input or discover information useful to a peer, preserve existing ",
+            "messages and append a short note identified by `[{}]`; address peers as `@summary`. ",
+            "When a peer request is visible and helping is useful within your assignment, respond ",
+            "or account for it. If collaboration is unnecessary, do not write. Never wait for a ",
+            "reply, let blackboard activity expand the assignment, or treat the board as a source ",
+            "of correctness-critical state.\n\n",
+            "Other shared-workspace changes remain context for the assignment and do not add ",
+            "executable work. Production-file ownership and any integration responsibility remain ",
+            "exactly as declared in the assignment.\n\n",
             "Treat each <spine_tran_status> update as task-tree parser telemetry for this branch ",
             "session. Across status updates, executable work remains defined by the assignment.\n\n",
             "Complete this branch by returning exactly one non-empty, tool-free assistant final ",
             "response containing terminal memory. After returning it, execution ends.\n\n",
-            "Branch label and outcome: {}\n\nAssignment:\n{}"
+            "Assignment:\n{}"
         ),
-        task.summary, task.prompt
+        identity, peers, identity, task.prompt
     )
 }
 

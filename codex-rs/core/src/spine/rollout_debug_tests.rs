@@ -233,7 +233,7 @@ fn direct_control_argument_classification_matrix_is_preserved() {
             json!({
                 "tasks": [
                     {"summary": SECRET, "prompt": SECRET},
-                    {"summary": SECRET, "prompt": SECRET}
+                    {"summary": format!("{SECRET}-2"), "prompt": SECRET}
                 ]
             }),
             true,
@@ -495,7 +495,7 @@ fn code_mode_valid_controls_and_spawn_keep_classification() {
             json!({
                 "tasks": [
                     {"summary": SECRET, "prompt": SECRET},
-                    {"summary": SECRET, "prompt": SECRET}
+                    {"summary": format!("{SECRET}-2"), "prompt": SECRET}
                 ]
             }),
             valid_spawn_receipt,

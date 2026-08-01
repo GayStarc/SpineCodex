@@ -29,7 +29,10 @@ const SPAWN_DESCRIPTION: &str = concat!(
     "Fission the current work into two or more concurrent peer branches created from the current full history. ",
     "Each branch receives a differentiated assignment and must own a semantically independent direction: either resolve a concrete uncertainty or produce an independently verifiable outcome, with an explicit scope, evidence boundary, and completion predicate. ",
     "A branch may investigate, review, or implement directly and must return one terminal final memory. ",
-    "If branches need to coordinate, give every affected branch a distinct summary and predeclare the same shared-workspace artifact contract in every affected task prompt. ",
+    "Give every branch a concise summary that is unique within this spawn call; the runtime uses it as the branch's public identity. ",
+    "Before fission, choose one task-local shared blackboard path and repeat the same `Shared blackboard: <path>` line verbatim in every task prompt. ",
+    "Every branch must inspect the blackboard before substantive work and once more before its final response. Discussion is optional: post only when seeking peer input or sharing useful findings, respond when useful, and never wait for a reply. ",
+    "Use `[summary]` to identify a post and `@summary` to address a peer. The blackboard is best-effort awareness, not a source of correctness-critical state. ",
     "For exploration or review, treat inherited analytical conclusions as hypotheses to verify, refine, or falsify against primary evidence. ",
     "The original continuation is suspended during the fission; no supervisory model remains active. ",
     "Join waits for every branch, records their terminal results as closed task nodes under the current Spine scope atomically in input order, and then resumes the original continuation. ",
@@ -121,7 +124,7 @@ pub(crate) fn create_spine_spawn_tool(max_tasks: usize) -> ToolSpec {
             (
                 "prompt".to_string(),
                 JsonSchema::string(Some(
-                    "Complete initial branch assignment. If coordination is required, identify relevant peer branch summaries and roles, the common coordination root (recommended basename: `coordination_{task_id}_{timestamp}/`), this branch's single-writer coordination path, the artifact format and update/read protocol, synchronization points, and a bounded fallback for unavailable peer coordination state.".to_string(),
+                    "Complete initial branch assignment. Repeat verbatim the same task-local `Shared blackboard: <path>` line used in every task prompt in this spawn. The branch identity is this task's summary. Blackboard discussion is optional and must never become a dependency or expand the assignment.".to_string(),
                 )),
             ),
         ]),
