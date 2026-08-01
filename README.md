@@ -2,9 +2,9 @@
   <img src="./.github/assets/spinecodex-tree.svg" width="88" alt="SpineCodex tree mark" />
 </p>
 
-<h1 align="center">SpineJIT: Just-in-Time Context Tree Compilation for Cost-Efficient Recursive Subagent Scaling</h1>
+<h1 align="center">Agent Morphogenesis: Just-in-Time Context Tree Compilation for Cost-Efficient Recursive Subagent Scaling</h1>
 
-<p align="center"><em>Life begins with division and differentiation.</em></p>
+<p align="center"><em>Life begins with division and differentiation. An agent owns its own morphogenesis.</em></p>
 
 <p align="center">Based on <a href="https://github.com/openai/codex">OpenAI Codex</a>. Maintained by <a href="https://ghabix.github.io">Jiahong Xiang</a> and <a href="https://camsyn.github.io">Kunqiu Chen</a>.</p>
 
@@ -15,13 +15,16 @@ npm install -g @spinejit/spine-codex@latest
 spine-codex
 ```
 
-## Why SpineJIT
+## Why SpineCodex
 
-| Linear context                              | SpineCodex                                                                                                                                                                                                                      |
-| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| ❌ **Run out of context?**                  | ✅ **256K → 2.5M Effective Working Context**<br />SpineJIT compiles completed branches into semantic Node Memory, extending effective working context beyond the native window.                                                   |
-| ❌ **Drift after repeated compaction?**     | ✅ **Minimum Effective Context. Maximum Focus.**<br />Through the SpineTree, the agent manages tasks and context as one unified system, staying focused on the minimum context required by the current task.                       |
-| ❌ **Lose patience and focus on long tasks?** | ✅ **Recursive Subagent Scaling on Demand.**<br />SpineJIT lets the agent recursively unfold into specialized subagents on demand, bringing divide-and-conquer structure and greater reasoning depth to complex problems.          |
+**Agent Morphogenesis:** each task shapes its own context and execution through
+just-in-time context tree compilation and recursive subagent scaling.
+
+| Linear context                                     | SpineCodex                                                                                                                                                                                                                     |
+| -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| ❌**Run out of context?**                    | ✅**256K → 2.5M Effective Working Context**<br />SpineJIT compiles completed branches into semantic Node Memory, extending effective working context beyond the native window.                                          |
+| ❌**Drift after repeated compaction?**       | ✅**Minimum Effective Context. Maximum Focus.**<br />Through the SpineTree, the agent manages tasks and context as one unified system, staying focused on the minimum context required by the current task.              |
+| ❌**Lose patience and focus on long tasks?** | ✅**Recursive Subagent Scaling on Demand.**<br />SpineJIT lets the agent recursively unfold into specialized subagents on demand, bringing divide-and-conquer structure and greater reasoning depth to complex problems. |
 
 ## Experimental features
 
@@ -44,10 +47,10 @@ FrontierSWE.
 
 *Long-horizon software development · 80 milestones · GPT-5.6 · sol high*
 
-| System         | Resolved | Total cost |
-| -------------- | -------: | ---------: |
-| BaseCodex      |        9 |    $764.18 |
-| **SpineCodex** |   **17** | **$556.46** |
+| System               |     Resolved |        Total cost |
+| -------------------- | -----------: | ----------------: |
+| BaseCodex            |            9 |           $764.18 |
+| **SpineCodex** | **17** | **$556.46** |
 
 **1.89× resolved tasks at 27% lower total cost.**
 
@@ -55,10 +58,10 @@ FrontierSWE.
 
 *Whole-repo program reconstruction · Random sample: 50 of 200 tasks · GPT-5.6 · Sol high · conservative cost estimate*
 
-| System         | Avg. score | Tasks scoring >95% | Cost |
-| -------------- | ---------: | -----------------: | ---: |
-| BaseCodex      |     62.55% |               2/50 | $188.12 |
-| **SpineCodex** | **73.35%** |           **7/50** | **$475.10** |
+| System               |       Avg. score | Tasks scoring >95% |              Cost |
+| -------------------- | ---------------: | -----------------: | ----------------: |
+| BaseCodex            |           62.55% |               2/50 |           $188.12 |
+| **SpineCodex** | **73.35%** |     **7/50** | **$475.10** |
 
 **+10.80pp average score and 3.5× high-scoring tasks.**
 
@@ -66,10 +69,10 @@ FrontierSWE.
 
 *Ultra-long-horizon coding · 9-task evaluation · GPT-5.6 · high · estimated API cost per trial*
 
-| System         | Mean score | Best score | Cost |
-| -------------- | ---------: | ---------: | ---: |
-| BaseCodex      |       33.5 |       37.9 | $20.16 |
-| **SpineCodex** |   **42.7** |   **46.8** | **$37.29** |
+| System               |     Mean score |     Best score |             Cost |
+| -------------------- | -------------: | -------------: | ---------------: |
+| BaseCodex            |           33.5 |           37.9 |           $20.16 |
+| **SpineCodex** | **42.7** | **46.8** | **$37.29** |
 
 **+9.2pp mean score and +8.9pp best score.**
 
@@ -138,7 +141,7 @@ h(X) =
 \prod_{x \in X} h(x), & X = \mathrm{Nodes} \\
 \mathrm{raw}(X), & X = \mathrm{Message} \\
 \mathrm{memory}(X), & X = \mathrm{SpineTreeNode} \\
-\mathrm{spine\\_node\\_desc}(X), & X = \mathrm{Open}
+\mathrm{spine\_node\_desc}(X), & X = \mathrm{Open}
 \end{cases}
 $$
 
@@ -187,7 +190,7 @@ If you use SpineCodex in your research, please cite this repository:
 
 ```bibtex
 @software{xiang2026spinecodex,
-  title = {SpineJIT: Just-in-Time Context Tree Compilation for Cost-Efficient Recursive Subagent Scaling},
+  title = {Agent Morphogenesis: Just-in-Time Context Tree Compilation for Cost-Efficient Recursive Subagent Scaling},
   author = {Jiahong Xiang and Kunqiu Chen and Yuqun Zhang},
   year = {2026},
   url = {https://github.com/GhabiX/SpineCodex}
