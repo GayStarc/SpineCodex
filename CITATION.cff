@@ -1,6 +1,6 @@
 cff-version: 1.2.0
 message: "If you use SpineCodex in your research, please cite this software."
-title: "SpineJIT: Just-in-Time Context Tree Compilation for Cost-Efficient Recursive Subagent Scaling"
+title: "Agent Morphogenesis: Just-in-Time Context Tree Compilation for Cost-Efficient Recursive Subagent Scaling"
 type: software
 authors:
   - family-names: Xiang
