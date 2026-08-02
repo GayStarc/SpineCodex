@@ -143,7 +143,7 @@ h(X) =
 \prod_{x \in X} h(x), & X = \mathrm{Nodes} \\
 \mathrm{raw}(X), & X = \mathrm{Message} \\
 \mathrm{memory}(X), & X = \mathrm{SpineTreeNode} \\
-\mathrm{spine\_node\_desc}(X), & X = \mathrm{Open}
+\mathrm{spine\\_node\\_desc}(X), & X = \mathrm{Open}
 \end{cases}
 $$
 
