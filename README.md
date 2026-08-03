@@ -19,6 +19,8 @@ FrontierSWE.
 
 ## Get started
 
+Just install and run—SpineCodex automatically inherits your existing Codex configuration and works out of the box.
+
 ```bash
 npm install -g @spinejit/spine-codex@latest
 spine-codex
