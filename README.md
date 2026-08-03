@@ -4,11 +4,18 @@
 
 <p align="center">Based on <a href="https://github.com/openai/codex">OpenAI Codex</a>. Maintained by <a href="https://ghabix.github.io">Jiahong Xiang</a> and <a href="https://camsyn.github.io">Kunqiu Chen</a>.</p>
 
-<p align="center">
-  <a href="https://ghabix.github.io/SpineCodex/">
-    <img src="./.github/assets/spinecodex-loop.webp" width="1200" alt="SpineCodex context tree growing through recursive agent spawning" />
-  </a>
-</p>
+## Why SpineCodex
+
+**Cost-efficient for long-horizon SWE:** **1.89× as many resolved tasks at 27%
+lower total cost** on SWE-Milestone. **Stronger on frontier challenges:**
+**+10.80pp average score** on ProgramBench and **+9.2pp mean score** on
+FrontierSWE.
+
+| Linear context                                     | SpineCodex                                                                                                                                                                                                                     |
+| -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| ❌**Run out of context?**                    | ✅**256K → 2.5M Effective Working Context**<br />SpineJIT compiles completed branches into semantic Node Memory, extending effective working context beyond the native window.                                          |
+| ❌**Drift after repeated compaction?**       | ✅**Minimum Effective Context. Maximum Focus.**<br />Through the SpineTree, the agent manages tasks and context as one unified system, staying focused on the minimum context required by the current task.              |
+| ❌**Lose patience and focus on long tasks?** | ✅**Recursive Subagent Scaling on Demand.**<br />SpineJIT lets the agent recursively unfold into specialized subagents on demand, bringing divide-and-conquer structure and greater reasoning depth to complex problems. |
 
 ## Get started
 
@@ -16,17 +23,6 @@
 npm install -g @spinejit/spine-codex@latest
 spine-codex
 ```
-
-## Why SpineCodex
-
-**Agent Morphogenesis:** each task shapes its own context and execution through
-just-in-time context tree compilation and recursive subagent scaling.
-
-| Linear context                                     | SpineCodex                                                                                                                                                                                                                     |
-| -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| ❌**Run out of context?**                    | ✅**256K → 2.5M Effective Working Context**<br />SpineJIT compiles completed branches into semantic Node Memory, extending effective working context beyond the native window.                                          |
-| ❌**Drift after repeated compaction?**       | ✅**Minimum Effective Context. Maximum Focus.**<br />Through the SpineTree, the agent manages tasks and context as one unified system, staying focused on the minimum context required by the current task.              |
-| ❌**Lose patience and focus on long tasks?** | ✅**Recursive Subagent Scaling on Demand.**<br />SpineJIT lets the agent recursively unfold into specialized subagents on demand, bringing divide-and-conquer structure and greater reasoning depth to complex problems. |
 
 ## Experimental features
 
@@ -37,6 +33,14 @@ just-in-time context tree compilation and recursive subagent scaling.
 
 Run `/experimental` to enable Spine Spawn or Memory Projection, then save and
 start a new conversation.
+
+<p align="center">
+  <a href="./.github/assets/spinecodex-loop.webp">
+    <img src="./.github/assets/spinecodex-loop.webp" width="1200" alt="SpineCodex context tree growing through recursive agent spawning" />
+  </a>
+  <br />
+  <sub>Click to view the full animation.</sub>
+</p>
 
 ## Long-horizon performance
 
@@ -79,6 +83,9 @@ FrontierSWE.
 **+9.2pp mean score and +8.9pp best score.**
 
 ## How SpineJIT works
+
+**Agent Morphogenesis:** Each task shapes its own context and execution through
+just-in-time context-tree compilation and recursive subagent scaling.
 
 **TL;DR:** SpineJIT replaces the live suffix of a context with shorter memory,
 while keeping the prefix unchanged so it can continue to hit the prompt cache.
