@@ -47,15 +47,30 @@ fn task_envelope_injects_identity_and_same_call_peer_roster() {
     let tasks = vec![
         SpawnTask {
             summary: "parser".to_string(),
-            prompt: "Shared blackboard: tasks/trial/blackboard.md\nImplement parser.".to_string(),
+            prompt: concat!(
+                "Shared collaboration directory: tasks/trial/collab\n",
+                "My collaboration file: tasks/trial/collab/parser.md\n",
+                "Implement parser."
+            )
+            .to_string(),
         },
         SpawnTask {
             summary: "compatibility tests".to_string(),
-            prompt: "test".to_string(),
+            prompt: concat!(
+                "Shared collaboration directory: tasks/trial/collab\n",
+                "My collaboration file: tasks/trial/collab/compatibility-tests.md\n",
+                "Test compatibility."
+            )
+            .to_string(),
         },
         SpawnTask {
             summary: "interface review".to_string(),
-            prompt: "review".to_string(),
+            prompt: concat!(
+                "Shared collaboration directory: tasks/trial/collab\n",
+                "My collaboration file: tasks/trial/collab/interface-review.md\n",
+                "Review the interface."
+            )
+            .to_string(),
         },
     ];
 
@@ -63,7 +78,7 @@ fn task_envelope_injects_identity_and_same_call_peer_roster() {
 
     assert!(envelope.contains("You are: parser"));
     assert!(envelope.contains("- compatibility tests\n- interface review"));
-    assert!(envelope.contains("[parser]"));
+    assert!(envelope.contains("tasks/trial/collab/parser.md"));
     assert!(envelope.ends_with(&format!("Assignment:\n{}", tasks[0].prompt)));
 }
 

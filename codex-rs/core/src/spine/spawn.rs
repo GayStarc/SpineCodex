@@ -34,10 +34,11 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 const CORRECTION_MESSAGE: &str = concat!(
-    "This spawned execution branch remains active. Continue exactly the declared assignment and ",
-    "keep the shared-blackboard awareness duty non-blocking. When the assignment is complete or ",
-    "precisely bounded, return exactly one non-empty, tool-free assistant final response containing ",
-    "terminal memory. That response ends this branch execution."
+    "This spawned execution branch remains active. Continue exactly the declared\n",
+    "assignment and follow its collaboration contract when one is declared. When the\n",
+    "assignment is complete or precisely bounded, return exactly one non-empty,\n",
+    "tool-free assistant final response containing terminal memory. That response\n",
+    "ends this branch execution."
 );
 pub(crate) const MIN_SPAWN_TASKS: usize = 2;
 
@@ -989,15 +990,21 @@ fn task_envelope(task: &SpawnTask, call_tasks: &[SpawnTask]) -> String {
             "within this assignment.\n\n",
             "Executable work is defined by the assignment. Inherited context supplies constraints ",
             "and evidence for that work.\n\n",
-            "Every branch has a duty to inspect the shared blackboard path declared in its ",
-            "assignment. Read it before substantive work and once more before returning your final ",
-            "response. If the file is absent, treat the blackboard as empty. Discussion is optional: ",
-            "if you need peer input or discover information useful to a peer, preserve existing ",
-            "messages and append a short note identified by `[{}]`; address peers as `@summary`. ",
-            "When a peer request is visible and helping is useful within your assignment, respond ",
-            "or account for it. If collaboration is unnecessary, do not write. Never wait for a ",
-            "reply, let blackboard activity expand the assignment, or treat the board as a source ",
-            "of correctness-critical state.\n\n",
+            "When the assignment declares a collaboration contract, follow its named root, peer ",
+            "roles, artifact format, update/read protocol, synchronization points, and bounded ",
+            "fallback. Inspect the coordination root before substantive work. Coordinate through it ",
+            "to minimize unnecessary duplicate work: respect assigned scopes, share reusable ",
+            "evidence early, and independently verify load-bearing or disputed claims. Within the ",
+            "coordination root, write only your declared single-writer artifact and read peer ",
+            "artifacts through the declared protocol, even when the investigated source and evidence ",
+            "are otherwise read-only. Unless the contract provides locking or atomic append, preserve ",
+            "your artifact append-only. Publish findings, conflicts, or requests useful to peers at ",
+            "the declared synchronization points. Before returning your final response, perform the ",
+            "declared final peer read and state which peer deltas you incorporated. Never write a ",
+            "peer artifact, let collaboration expand the assignment, make completion depend on peer ",
+            "state, or treat collaboration artifacts as correctness-critical evidence. If the root ",
+            "or peer state is unavailable or incomplete, use the declared bounded fallback; do not ",
+            "invent another coordination path.\n\n",
             "Other shared-workspace changes remain context for the assignment and do not add ",
             "executable work. Production-file ownership and any integration responsibility remain ",
             "exactly as declared in the assignment.\n\n",
@@ -1007,7 +1014,7 @@ fn task_envelope(task: &SpawnTask, call_tasks: &[SpawnTask]) -> String {
             "response containing terminal memory. After returning it, execution ends.\n\n",
             "Assignment:\n{}"
         ),
-        identity, peers, identity, task.prompt
+        identity, peers, task.prompt
     )
 }
 

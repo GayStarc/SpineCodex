@@ -47,10 +47,11 @@ const FIRST_PARENT_PROMPT: &str = "run the lifecycle spawn batch";
 const SECOND_PARENT_PROMPT: &str = "run the replacement spawn batch";
 const BRANCH_PROMPT_MARKER: &str = "You are a spawned execution branch.";
 const CORRECTION_MESSAGE: &str = concat!(
-    "This spawned execution branch remains active. Continue exactly the declared assignment and ",
-    "follow its collaboration contract when one is declared. When the assignment is complete or ",
-    "precisely bounded, return exactly one non-empty, tool-free assistant final response containing ",
-    "terminal memory. That response ends this branch execution."
+    "This spawned execution branch remains active. Continue exactly the declared\n",
+    "assignment and follow its collaboration contract when one is declared. When the\n",
+    "assignment is complete or precisely bounded, return exactly one non-empty,\n",
+    "tool-free assistant final response containing terminal memory. That response\n",
+    "ends this branch execution."
 );
 const CODE_MODE_SPINE_CARRIER_MARKER: &str = "spine.code_mode.output.v1";
 
@@ -58,6 +59,16 @@ fn body_contains(request: &wiremock::Request, text: &str) -> bool {
     decoded_body(request)
         .and_then(|body| serde_json::from_slice::<Value>(&body).ok())
         .is_some_and(|body| body.to_string().contains(text))
+}
+
+fn body_contains_json_text(request: &wiremock::Request, text: &str) -> bool {
+    let json_fragment = serde_json::to_string(text)
+        .expect("serialize text to JSON")
+        .trim_matches('"')
+        .to_string();
+    decoded_body(request)
+        .and_then(|body| serde_json::from_slice::<Value>(&body).ok())
+        .is_some_and(|body| body.to_string().contains(&json_fragment))
 }
 
 fn child_task_marker(request: &wiremock::Request, marker: &str) -> bool {
@@ -1065,7 +1076,7 @@ async fn intermediate_message_is_corrected_once_and_never_reaches_parent_model()
         &server,
         |request: &wiremock::Request| {
             has_function_call_output(request, "child-yield-call")
-                && body_contains(request, CORRECTION_MESSAGE)
+                && body_contains_json_text(request, CORRECTION_MESSAGE)
         },
         sse(vec![
             ev_response_created("corrected-child-final-response"),
@@ -1274,7 +1285,7 @@ async fn descendant_root_message_is_corrected_while_branch_internal_message_is_d
             has_function_call_output(request, D0_SEND_BRANCH_CALL_ID)
                 && has_function_call_output(request, D0_SEND_ROOT_CALL_ID)
                 && has_function_call_output(request, D0_WAIT_CALL_ID)
-                && body_contains(request, CORRECTION_MESSAGE)
+                && body_contains_json_text(request, CORRECTION_MESSAGE)
         },
         sse(vec![
             ev_response_created("d0-corrected-response"),
