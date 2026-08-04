@@ -156,6 +156,27 @@ fn finish(
     )
 }
 
+fn finish_with_input_tokens(
+    planner: &mut SamplingPlanner,
+    handle: &SamplingHandle,
+    started: &SamplingArchiveRecord,
+    post_boundary: u64,
+    commit_id: &str,
+    input_tokens: u64,
+) -> SamplingCommitOutput {
+    let sealed = handle.seal(ContextEpoch::ZERO).expect("seal");
+    let prepared = planner
+        .prepare_sampling_with_input_tokens(
+            sealed,
+            BoundaryId::new(namespace(), ContextEpoch::ZERO, post_boundary),
+            SamplingCommitId::parse(namespace(), commit_id).expect("commit"),
+            started_digest(started),
+            Some(input_tokens),
+        )
+        .expect("prepare");
+    planner.install_prepared(prepared).expect("install")
+}
+
 fn finish_at_epoch(
     planner: &mut SamplingPlanner,
     handle: &SamplingHandle,
@@ -221,7 +242,8 @@ fn open_trace(
             summary: "scope".to_string(),
         },
     );
-    let output = finish(&mut planner, &handle, &started, 3, "commit-open");
+    let output =
+        finish_with_input_tokens(&mut planner, &handle, &started, 3, "commit-open", 10_000);
     let input = vec![
         ReplayInput::Source(user),
         ReplayInput::Archive(started),
@@ -254,7 +276,14 @@ fn jit_replay_equivalence_preserves_tree_context_and_memory() {
             summary: "scope".to_string(),
         },
     );
-    finish(&mut planner, &open_handle, &open_started, 3, "commit-open");
+    finish_with_input_tokens(
+        &mut planner,
+        &open_handle,
+        &open_started,
+        3,
+        "commit-open",
+        10_000,
+    );
 
     let second_user = user(4, "follow-up");
     planner
@@ -278,12 +307,13 @@ fn jit_replay_equivalence_preserves_tree_context_and_memory() {
             memory: "finished".to_string(),
         },
     );
-    let close = finish(
+    let close = finish_with_input_tokens(
         &mut planner,
         &close_handle,
         &close_started,
         6,
         "commit-close",
+        80_000,
     );
 
     input.extend([
@@ -320,6 +350,8 @@ fn jit_replay_equivalence_preserves_tree_context_and_memory() {
         vec![open.record.commit_id, close.record.commit_id]
     );
     assert_eq!(replay.tree.cursor, replay.projection.cursor);
+    assert_eq!(planner.current_input_tokens(), Some(10_000));
+    assert_eq!(replay.into_runtime().current_input_tokens(), Some(10_000));
 }
 
 #[test]

@@ -178,6 +178,11 @@ impl SessionSpineRuntime {
         }
     }
 
+    pub(crate) fn current_input_tokens(&self) -> Option<i64> {
+        self.with_coordinator(|coordinator| coordinator.current_input_tokens())
+            .flatten()
+    }
+
     pub(crate) fn compact_live(&mut self, history: &mut ContextManager) {
         if let Some(result) =
             self.with_coordinator(|coordinator| coordinator.compact_live(history.raw_items()))

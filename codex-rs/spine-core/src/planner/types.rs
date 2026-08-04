@@ -11,6 +11,7 @@ use crate::SpineCompactBarrierV1;
 use crate::SpineCompiler;
 use crate::SpineProjection;
 use crate::ThreadNamespace;
+use crate::pressure::InputPressureState;
 
 pub struct PreparedSamplingCommit {
     pub(super) record: SamplingCommit,
@@ -50,6 +51,7 @@ pub(crate) struct RecoveredPlannerState {
     pub previous_pre_boundary: Option<BoundaryId>,
     pub previous_commit_id: Option<SamplingCommitId>,
     pub committed_plan: Option<ContextPlanRecipe>,
+    pub input_pressure: InputPressureState,
 }
 
 pub(super) struct CandidatePlannerState {
@@ -61,6 +63,7 @@ pub(super) struct CandidatePlannerState {
     pub(super) previous_pre_boundary: Option<BoundaryId>,
     pub(super) previous_commit_id: Option<SamplingCommitId>,
     pub(super) next_projection_ordinal: u64,
+    pub(super) input_pressure: InputPressureState,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

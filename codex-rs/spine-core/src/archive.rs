@@ -114,6 +114,8 @@ pub struct SamplingCommit {
     pub pre_boundary: BoundaryId,
     pub post_boundary: BoundaryId,
     pub previous_commit_id: Option<SamplingCommitId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_tokens: Option<u64>,
     pub executions: Vec<CommittedSpineExecution>,
     pub source_digest: RecordDigest,
     pub record_digest: RecordDigest,

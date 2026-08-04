@@ -22,7 +22,7 @@ impl Session {
     ) -> Result<(), Vec<ResponseItem>> {
         let mut active = self.active_turn.lock().await;
         match active.as_mut() {
-            Some(active_turn) if !active_turn.aborting => {
+            Some(active_turn) => {
                 self.input_queue
                     .extend_pending_input_for_turn_state(
                         active_turn.turn_state.as_ref(),
@@ -31,7 +31,7 @@ impl Session {
                     .await;
                 Ok(())
             }
-            Some(_) | None => Err(input),
+            None => Err(input),
         }
     }
 

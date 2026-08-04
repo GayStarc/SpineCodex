@@ -237,6 +237,7 @@ impl SamplingRuntime {
     fn prepare_sampling(
         &mut self,
         handle: SamplingHandle,
+        input_tokens: Option<u64>,
     ) -> Result<PreparedSamplingCommit, PlannerError> {
         let attempt_id = handle.attempt().attempt_id().clone();
         let (pending, started_record_digest) = {
@@ -270,11 +271,12 @@ impl SamplingRuntime {
             .last_boundary()
             .cloned()
             .unwrap_or_else(|| handle.attempt().pre_boundary().clone());
-        let prepared = match self.planner.prepare_sampling(
+        let prepared = match self.planner.prepare_sampling_with_input_tokens(
             sealed,
             post_boundary,
             commit_id.clone(),
             started_record_digest,
+            input_tokens,
         ) {
             Ok(prepared) => prepared,
             Err(error) => {
@@ -298,11 +300,21 @@ impl SamplingRuntime {
         handle: SamplingHandle,
         terminal: SamplingTerminal,
     ) -> Result<SamplingFinish, PlannerError> {
+        self.finish_sampling_with_input_tokens(handle, terminal, None)
+    }
+
+    pub fn finish_sampling_with_input_tokens(
+        &mut self,
+        handle: SamplingHandle,
+        terminal: SamplingTerminal,
+        input_tokens: Option<u64>,
+    ) -> Result<SamplingFinish, PlannerError> {
         if terminal != SamplingTerminal::Completed && !self.active_sampling_has_delta(&handle) {
             self.abort_sampling(&handle)?;
             return Ok(SamplingFinish::OrphanedStart);
         }
-        self.prepare_sampling(handle).map(SamplingFinish::Prepared)
+        self.prepare_sampling(handle, input_tokens)
+            .map(SamplingFinish::Prepared)
     }
 
     /// Returns whether aborting the host task could discard canonical sampling work.
@@ -385,6 +397,10 @@ impl SamplingRuntime {
 
     pub fn projection(&self) -> &SpineProjection {
         self.planner.projection()
+    }
+
+    pub fn current_input_tokens(&self) -> Option<u64> {
+        self.planner.current_input_tokens()
     }
 
     pub fn thread(&self) -> &ThreadNamespace {

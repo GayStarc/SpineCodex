@@ -57,7 +57,7 @@ fn execution(
                 ordinal.saturating_mul(2).saturating_add(1),
             ),
         },
-        execution_id: execution_id,
+        execution_id,
         ordinal: AdmissionOrdinal::new(ordinal),
         origin: ExecutionOrigin::Direct {
             call_id: format!("call-{ordinal}"),
@@ -79,6 +79,7 @@ fn commit(summary: &str) -> SamplingArchiveRecord {
         pre_boundary: BoundaryId::new(thread.clone(), epoch, 8),
         post_boundary: BoundaryId::new(thread.clone(), epoch, 9),
         previous_commit_id: None,
+        input_tokens: None,
         executions: vec![execution(&thread, epoch, 0, summary.to_string())],
         source_digest: digest('a'),
         record_digest: digest('0'),
@@ -177,6 +178,28 @@ fn sampling_archive_round_trips_started_and_self_contained_commit() {
     assert_eq!(
         SamplingArchiveRecord::decode(&encoded).expect("decode complete execution"),
         record
+    );
+
+    let legacy = commit("legacy");
+    let encoded = legacy.encode().expect("encode legacy commit");
+    assert!(
+        !String::from_utf8_lossy(&encoded).contains("input_tokens"),
+        "an absent pressure sample must preserve the legacy canonical encoding"
+    );
+    assert_eq!(
+        SamplingArchiveRecord::decode(&encoded).expect("decode legacy commit"),
+        legacy
+    );
+
+    let mut pressure = commit_record(commit("pressure"));
+    pressure.input_tokens = Some(42_000);
+    let pressure = SamplingArchiveRecord::SamplingCommit(pressure)
+        .finalize_digest()
+        .expect("finalize pressure commit");
+    let encoded = pressure.encode().expect("encode pressure commit");
+    assert_eq!(
+        SamplingArchiveRecord::decode(&encoded).expect("decode pressure commit"),
+        pressure
     );
 }
 

@@ -28,6 +28,7 @@ use crate::ThreadNamespace;
 use crate::TrimRequest;
 use crate::TrimTicket;
 use crate::archive::SAMPLING_STARTED_SCHEMA;
+use crate::pressure::InputPressureState;
 use crate::sampling_delta::FactBindingMode;
 use crate::sampling_delta::SamplingDeltaError;
 use crate::sampling_delta::preview_source_delta;
@@ -60,6 +61,7 @@ pub(crate) struct SamplingPlanner {
     previous_pre_boundary: Option<BoundaryId>,
     previous_commit_id: Option<SamplingCommitId>,
     committed_plan: Option<ContextPlanRecipe>,
+    input_pressure: InputPressureState,
     next_projection_ordinal: u64,
     active_attempt: Option<SamplingAttemptId>,
     jit_enabled: bool,
@@ -88,6 +90,7 @@ impl SamplingPlanner {
             previous_pre_boundary: None,
             previous_commit_id: None,
             committed_plan: None,
+            input_pressure: InputPressureState::default(),
             next_projection_ordinal: 0,
             active_attempt: None,
             jit_enabled,
@@ -230,12 +233,30 @@ impl SamplingPlanner {
         Ok(())
     }
 
+    #[cfg(test)]
     pub fn prepare_sampling(
         &mut self,
         sealed: SealedSampling,
         post_boundary: BoundaryId,
         commit_id: SamplingCommitId,
         started_record_digest: RecordDigest,
+    ) -> Result<PreparedSamplingCommit, PlannerError> {
+        self.prepare_sampling_with_input_tokens(
+            sealed,
+            post_boundary,
+            commit_id,
+            started_record_digest,
+            None,
+        )
+    }
+
+    pub(crate) fn prepare_sampling_with_input_tokens(
+        &mut self,
+        sealed: SealedSampling,
+        post_boundary: BoundaryId,
+        commit_id: SamplingCommitId,
+        started_record_digest: RecordDigest,
+        input_tokens: Option<u64>,
     ) -> Result<PreparedSamplingCommit, PlannerError> {
         self.require_active(sealed.attempt().attempt_id())?;
         self.validate_commit_scope(&sealed, &post_boundary, &commit_id)?;
@@ -273,6 +294,11 @@ impl SamplingPlanner {
             self.spawn_enabled,
         )?;
         let pre_boundary = sealed.attempt().pre_boundary().clone();
+        let mut input_pressure = self.input_pressure.clone();
+        input_pressure.apply_sampling(
+            input_tokens,
+            ordered_facts.iter().map(|fact| &fact.operation),
+        );
         let executions = ordered_facts
             .into_iter()
             .zip(fact_sources)
@@ -297,6 +323,7 @@ impl SamplingPlanner {
             pre_boundary: pre_boundary.clone(),
             post_boundary,
             previous_commit_id: self.previous_commit_id.clone(),
+            input_tokens,
             executions,
             source_digest: snapshot.digest().clone(),
             record_digest: RecordDigest::parse("0".repeat(64)).map_err(PlannerError::Archive)?,
@@ -323,6 +350,7 @@ impl SamplingPlanner {
                 previous_pre_boundary: Some(pre_boundary),
                 previous_commit_id: Some(commit_id),
                 next_projection_ordinal: projection_ordinal,
+                input_pressure,
             },
         };
         self.active_attempt = None;
@@ -350,6 +378,7 @@ impl SamplingPlanner {
         self.previous_pre_boundary = prepared.candidate.previous_pre_boundary;
         self.previous_commit_id = prepared.candidate.previous_commit_id;
         self.next_projection_ordinal = prepared.candidate.next_projection_ordinal;
+        self.input_pressure = prepared.candidate.input_pressure;
         self.committed_plan = Some(prepared.plan.clone());
         Ok(SamplingCommitOutput {
             record: prepared.record,
@@ -377,6 +406,10 @@ impl SamplingPlanner {
 
     pub(crate) const fn epoch(&self) -> ContextEpoch {
         self.epoch
+    }
+
+    pub(crate) fn current_input_tokens(&self) -> Option<u64> {
+        self.input_pressure.current_input_tokens()
     }
 
     pub(crate) fn prepare_compact(
@@ -424,6 +457,7 @@ impl SamplingPlanner {
         candidate.committed_source_cells = candidate.source.snapshot().cells().len();
         candidate.previous_pre_boundary = None;
         candidate.next_projection_ordinal = 0;
+        candidate.input_pressure.compact();
         let snapshot = candidate.source.snapshot();
         candidate.committed_plan = Some(build_context_plan(
             &snapshot,
@@ -492,6 +526,7 @@ impl SamplingPlanner {
             previous_pre_boundary: state.previous_pre_boundary,
             previous_commit_id: state.previous_commit_id,
             committed_plan: state.committed_plan,
+            input_pressure: state.input_pressure,
             next_projection_ordinal,
             active_attempt: None,
             jit_enabled,

@@ -46,7 +46,6 @@ use crate::session::session::Session;
 use crate::session::step_context::StepContext;
 use crate::session::turn_context::TurnContext;
 use crate::spine::spawn_salvage;
-use crate::state::AutoCompactWindowPrefillClaim;
 use crate::stream_events_utils::HandleOutputCtx;
 use crate::stream_events_utils::TurnItemContributorPolicy;
 use crate::stream_events_utils::finalize_non_tool_response_item;
@@ -915,7 +914,7 @@ async fn maybe_run_previous_model_inline_compact(
     let Some(new_context_window) = turn_context.model_context_window() else {
         return Ok(());
     };
-    let active_context_tokens = sess.get_total_token_usage().await;
+    let active_context_tokens = sess.get_compact_input_pressure().await;
     let previous_model_limit_reached = match turn_context
         .config
         .model_auto_compact_token_limit_scope
@@ -1136,7 +1135,7 @@ async fn run_sampling_request(
 ) -> CodexResult<(SamplingRequestResult, Vec<ResponseItem>)> {
     let turn_context = Arc::clone(&step_context.turn);
     let router = built_tools(sess.as_ref(), step_context.as_ref(), &cancellation_token).await?;
-    let (input, mut prefill_claim) = sess
+    let input = sess
         .prepare_sampling_request_input(turn_context.as_ref())
         .instrument(trace_span!("run_turn.prepare_sampling_request_input"))
         .await;
@@ -1184,7 +1183,6 @@ async fn run_sampling_request(
             responses_metadata,
             Arc::clone(&turn_diff_tracker),
             &prompt,
-            prefill_claim.take(),
             cancellation_token.child_token(),
         )
         .await
@@ -1947,13 +1945,6 @@ async fn drain_in_flight(
     sess: Arc<Session>,
     turn_context: Arc<TurnContext>,
 ) -> CodexResult<()> {
-    let track_projected_usage = turn_context.config.features.enabled(Feature::SpineJit)
-        || turn_context.config.features.enabled(Feature::SpineTrim);
-    let projected_before = if in_flight.is_empty() || !track_projected_usage {
-        None
-    } else {
-        sess.state.lock().await.projected_history_snapshot()
-    };
     while let Some(res) = in_flight.next().await {
         match res {
             Ok(response_input) => {
@@ -1968,21 +1959,9 @@ async fn drain_in_flight(
                 .await;
             }
             Err(err) => {
-                if let Some(projected_before) = projected_before.as_deref() {
-                    sess.state
-                        .lock()
-                        .await
-                        .reconcile_projected_history(Some(projected_before));
-                }
                 error_or_panic(format!("in-flight tool future failed during drain: {err}"));
             }
         }
-    }
-    if let Some(projected_before) = projected_before.as_deref() {
-        sess.state
-            .lock()
-            .await
-            .reconcile_projected_history(Some(projected_before));
     }
     Ok(())
 }
@@ -2019,7 +1998,6 @@ async fn try_run_sampling_request(
     responses_metadata: &CodexResponsesMetadata,
     turn_diff_tracker: SharedTurnDiffTracker,
     prompt: &Prompt,
-    prefill_claim: Option<AutoCompactWindowPrefillClaim>,
     cancellation_token: CancellationToken,
 ) -> CodexResult<SamplingRequestResult> {
     feedback_tags!(
@@ -2071,6 +2049,7 @@ async fn try_run_sampling_request(
     )> = None;
     let mut should_emit_turn_diff = false;
     let mut should_emit_token_count = false;
+    let mut confirmed_input_tokens = None;
     let reasoning_effort = turn_context.effective_reasoning_effort_for_tracing();
     let plan_mode = turn_context.collaboration_mode.mode == ModeKind::Plan;
     let mut assistant_message_stream_parsers = AssistantMessageStreamParsers::new(plan_mode);
@@ -2359,6 +2338,7 @@ async fn try_run_sampling_request(
                 end_turn,
                 ..
             } => {
+                confirmed_input_tokens = token_usage.as_ref().map(|usage| usage.input_tokens);
                 flush_assistant_text_segments_all(
                     &sess,
                     &turn_context,
@@ -2367,11 +2347,7 @@ async fn try_run_sampling_request(
                 )
                 .await;
                 let budget_result = sess
-                    .record_sampling_token_usage_info(
-                        &turn_context,
-                        token_usage.as_ref(),
-                        prefill_claim,
-                    )
+                    .record_token_usage_info(&turn_context, token_usage.as_ref())
                     .await;
                 should_emit_token_count = true;
                 should_emit_turn_diff = true;
@@ -2565,7 +2541,9 @@ async fn try_run_sampling_request(
     };
     // Spine MODIFIED: Commit once all source and execution effects are terminal.
     if let Some(attempt) = spine_sampling_attempt.take()
-        && let Err(error) = sess.finish_spine_sampling(attempt, terminal).await
+        && let Err(error) = sess
+            .finish_spine_sampling_with_input_tokens(attempt, terminal, confirmed_input_tokens)
+            .await
     {
         let reason = error.to_string();
         sess.latch_spine_durability_fault(reason.clone());

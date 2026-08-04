@@ -184,13 +184,26 @@ impl CodexSpineCoordinator {
         Ok(self.runtime.abort_sampling(attempt)?)
     }
 
+    #[cfg(test)]
     pub(crate) fn finish_canonical_sampling(
         &mut self,
         attempt: SpineSamplingAttempt,
         terminal: SamplingTerminal,
     ) -> Result<Option<CanonicalSamplingCommit>, CoordinatorError> {
+        self.finish_canonical_sampling_with_input_tokens(attempt, terminal, None)
+    }
+
+    pub(crate) fn finish_canonical_sampling_with_input_tokens(
+        &mut self,
+        attempt: SpineSamplingAttempt,
+        terminal: SamplingTerminal,
+        input_tokens: Option<i64>,
+    ) -> Result<Option<CanonicalSamplingCommit>, CoordinatorError> {
         self.require_healthy()?;
-        let SamplingFinish::Prepared(prepared) = self.runtime.finish_sampling(attempt, terminal)?
+        let input_tokens = input_tokens.and_then(|tokens| u64::try_from(tokens).ok());
+        let SamplingFinish::Prepared(prepared) =
+            self.runtime
+                .finish_sampling_with_input_tokens(attempt, terminal, input_tokens)?
         else {
             return Ok(None);
         };
@@ -201,6 +214,12 @@ impl CodexSpineCoordinator {
             transitions: vec![transition],
             prepared,
         }))
+    }
+
+    pub(crate) fn current_input_tokens(&self) -> Option<i64> {
+        self.runtime
+            .current_input_tokens()
+            .and_then(|tokens| i64::try_from(tokens).ok())
     }
 
     #[cfg(test)]

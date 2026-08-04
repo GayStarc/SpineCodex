@@ -24,6 +24,7 @@ use crate::archive::ArchiveError;
 use crate::archive::FactSourceBinding;
 use crate::context_plan::ContextPlanError;
 use crate::planner::RecoveredPlannerState;
+use crate::pressure::InputPressureState;
 use crate::tree_snapshot;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -142,6 +143,7 @@ impl CanonicalReplay {
             attempt_ids: BTreeSet::new(),
             applied_commits: Vec::new(),
             usage_samples: Vec::new(),
+            input_pressure: InputPressureState::default(),
             next_projection_ordinal: 0,
             spawn_enabled: config.is_enabled(crate::Feature::Spawn),
         };
@@ -190,6 +192,7 @@ struct ReplayState {
     attempt_ids: BTreeSet<SamplingAttemptId>,
     applied_commits: Vec<SamplingCommitId>,
     usage_samples: Vec<TokenUsageSample>,
+    input_pressure: InputPressureState,
     next_projection_ordinal: u64,
     spawn_enabled: bool,
 }
@@ -203,6 +206,7 @@ struct ReplayCommit {
     pre_boundary: crate::BoundaryId,
     post_boundary: crate::BoundaryId,
     previous_commit_id: Option<SamplingCommitId>,
+    input_tokens: Option<u64>,
     facts: Vec<crate::ExecutedSpineFact>,
     fact_sources: Vec<FactSourceBinding>,
     source_digest: RecordDigest,
@@ -240,6 +244,7 @@ impl From<SamplingCommit> for ReplayCommit {
             pre_boundary: record.pre_boundary,
             post_boundary: record.post_boundary,
             previous_commit_id: record.previous_commit_id,
+            input_tokens: record.input_tokens,
             facts,
             fact_sources,
             source_digest: record.source_digest,
@@ -350,6 +355,10 @@ impl ReplayState {
             self.spawn_enabled,
         )
         .map_err(ReplayError::Planner)?;
+        self.input_pressure.apply_sampling(
+            record.input_tokens,
+            record.facts.iter().map(|fact| &fact.operation),
+        );
 
         self.parser = parser;
         self.compiler = compiler;
@@ -398,6 +407,7 @@ impl ReplayState {
         self.committed_source_cells = self.source.snapshot().cells().len();
         self.previous_pre_boundary = None;
         self.started.clear();
+        self.input_pressure.compact();
         self.next_projection_ordinal = 0;
         let snapshot = self.source.snapshot();
         self.live_plan = Some(
@@ -436,6 +446,7 @@ impl ReplayState {
                 previous_pre_boundary: self.previous_pre_boundary,
                 previous_commit_id: self.previous_commit_id,
                 committed_plan: committed_plan.clone(),
+                input_pressure: self.input_pressure,
             },
             runtime_config,
         )

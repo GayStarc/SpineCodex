@@ -298,12 +298,6 @@ pub(crate) struct PreviousTurnSettings {
     pub(crate) realtime_active: Option<bool>,
 }
 
-#[derive(Clone, Copy)]
-enum TokenUsageProvenance {
-    Sampling(Option<AutoCompactWindowPrefillClaim>),
-    Other,
-}
-
 #[cfg(test)]
 use crate::SkillMetadata;
 use crate::SkillsService;
@@ -317,8 +311,7 @@ use crate::shell;
 #[cfg(test)]
 use crate::skills::SkillLoadOutcome;
 use crate::state::AutoCompactWindowIds;
-use crate::state::AutoCompactWindowPrefillClaim;
-use crate::state::ContextPressureSnapshot;
+use crate::state::AutoCompactWindowSnapshot;
 use crate::state::PendingRequestPermissions;
 use crate::state::SessionServices;
 use crate::state::SessionState;
@@ -1260,44 +1253,25 @@ impl Session {
         state.get_total_token_usage(state.server_reasoning_included())
     }
 
-    pub(crate) async fn context_pressure(
-        &self,
-        turn_context: &TurnContext,
-    ) -> ContextPressureSnapshot {
+    pub(crate) async fn get_compact_input_pressure(&self) -> i64 {
         let state = self.state.lock().await;
-        state.context_pressure(
-            state.server_reasoning_included(),
-            turn_context.model_info.slug.as_str(),
-        )
+        state
+            .spine_input_pressure()
+            .unwrap_or_else(|| state.get_total_token_usage(state.server_reasoning_included()))
+    }
+
+    pub(crate) async fn auto_compact_window_snapshot(&self) -> AutoCompactWindowSnapshot {
+        let state = self.state.lock().await;
+        state.auto_compact_window_snapshot()
     }
 
     pub(crate) async fn prepare_sampling_request_input(
         &self,
-        turn_context: &TurnContext,
-    ) -> (Vec<ResponseItem>, Option<AutoCompactWindowPrefillClaim>) {
-        let mut state = self.state.lock().await;
+        _turn_context: &TurnContext,
+    ) -> Vec<ResponseItem> {
+        let state = self.state.lock().await;
         let history = state.clone_history();
-        let estimated_prefill_input_tokens = (state
-            .needs_auto_compact_window_sampling_request_prefill()
-            && matches!(
-                turn_context.config.model_auto_compact_token_limit_scope,
-                AutoCompactTokenLimitScope::BodyAfterPrefix
-            ))
-        .then(|| {
-            history
-                .estimate_token_count_with_base_instructions(&BaseInstructions {
-                    text: state.session_configuration.base_instructions().to_string(),
-                })
-                // A missing estimate must not create an over-large baseline that
-                // could suppress scoped compaction.
-                .unwrap_or(0)
-        });
-        let prefill_claim = estimated_prefill_input_tokens
-            .and_then(|tokens| state.begin_auto_compact_window_sampling_request(tokens));
-        (
-            history.for_prompt(&turn_context.model_info.input_modalities),
-            prefill_claim,
-        )
+        history.for_prompt(&_turn_context.model_info.input_modalities)
     }
 
     pub(crate) async fn estimated_tokens_after_last_model_generated_item(&self) -> i64 {
@@ -1326,7 +1300,7 @@ impl Session {
         turn_context: &TurnContext,
     ) -> Option<i64> {
         let state = self.state.lock().await;
-        state.estimate_current_context(turn_context)
+        state.history.estimate_token_count(turn_context)
     }
 
     pub(crate) async fn get_base_instructions(&self) -> BaseInstructions {
@@ -2961,13 +2935,6 @@ impl Session {
                 items.iter(),
                 turn_context.model_info.truncation_policy.into(),
             );
-            if state.projected_usage_enabled()
-                && items
-                    .iter()
-                    .any(crate::context_manager::is_model_generated_item)
-            {
-                state.mark_projected_usage_stale();
-            }
         }
         self.persist_rollout_response_items(items).await;
         self.send_raw_response_items(turn_context, items).await;
@@ -3156,14 +3123,13 @@ impl Session {
     }
 
     pub(crate) async fn replace_compacted_history(
-        self: &Arc<Self>,
-        turn_context: Arc<TurnContext>,
+        &self,
+        turn_context: &TurnContext,
         items: Vec<ResponseItem>,
         reference_context_item: Option<TurnContextItem>,
         world_state_baseline: Option<Arc<WorldState>>,
-        auto_compact_window: (u64, AutoCompactWindowIds),
         compacted_item: CompactedItem,
-    ) -> CodexResult<()> {
+    ) {
         let items = if turn_context.item_ids_enabled() {
             Self::assign_missing_response_item_ids(Cow::Owned(items)).into_owned()
         } else {
@@ -3173,80 +3139,19 @@ impl Session {
             replacement_history: Some(items.clone()),
             ..compacted_item
         };
-        let compacted_rollout_item = RolloutItem::Compacted(compacted_item);
-        if !self.enabled(Feature::SpineJit) && !self.enabled(Feature::SpineTrim) {
-            let world_state_item = self
-                .install_compacted_history_state(
-                    items,
-                    reference_context_item.clone(),
-                    world_state_baseline,
-                    auto_compact_window,
-                )
-                .await;
-            self.persist_rollout_items(std::slice::from_ref(&compacted_rollout_item))
-                .await;
-            self.finish_compacted_history(
-                reference_context_item,
-                world_state_item,
-            )
-            .await;
-            return Ok(());
-        }
-
-        let _compact_commit_guard = self.compact_commit_barrier.lock().await;
-        if let Some(live_thread) = self.live_thread() {
-            live_thread
-                .append_items_durable(std::slice::from_ref(&compacted_rollout_item))
-                .await
-                .map_err(|err| {
-                    CodexErr::Fatal(format!("failed to persist native compact record: {err}"))
-                })?;
-        }
-
-        // The durable compact record is the commit point. Publish its replacement history,
-        // window identity, parser projection, and WorldState baseline together afterward.
-        let world_state_item = self
-            .install_compacted_history_state(
-                items,
-                reference_context_item.clone(),
-                world_state_baseline,
-                auto_compact_window,
-            )
-            .await;
-        self.finish_compacted_history(
-            reference_context_item,
-            world_state_item,
-        )
-        .await;
-        Ok(())
-    }
-
-    async fn install_compacted_history_state(
-        &self,
-        items: Vec<ResponseItem>,
-        reference_context_item: Option<TurnContextItem>,
-        world_state_baseline: Option<Arc<WorldState>>,
-        auto_compact_window: (u64, AutoCompactWindowIds),
-    ) -> Option<WorldStateItem> {
         let mut world_state_item = None;
-        let mut state = self.state.lock().await;
-        state.replace_history(items, reference_context_item);
-        state.compact_spine_live();
-        state.install_auto_compact_window(auto_compact_window.0, auto_compact_window.1);
-        if let Some(world_state) = world_state_baseline {
-            let snapshot = world_state.snapshot();
-            world_state_item = Some(WorldStateItem::full(snapshot.clone().into_value()));
-            state.history.set_world_state_baseline(snapshot);
+        {
+            let mut state = self.state.lock().await;
+            state.replace_history(items, reference_context_item.clone());
+            state.compact_spine_live();
+            if let Some(world_state) = world_state_baseline {
+                let snapshot = world_state.snapshot();
+                world_state_item = Some(WorldStateItem::full(snapshot.clone().into_value()));
+                state.history.set_world_state_baseline(snapshot);
+            }
         }
-        world_state_item
-    }
-
-    async fn finish_compacted_history(
-        &self,
-        reference_context_item: Option<TurnContextItem>,
-        world_state_item: Option<WorldStateItem>,
-    ) {
-        // Persist ancillary snapshots after the replacement history that established them.
+        self.persist_rollout_items(&[RolloutItem::Compacted(compacted_item)])
+            .await;
         if let Some(world_state_item) = world_state_item {
             self.persist_rollout_items(&[RolloutItem::WorldState(world_state_item)])
                 .await;
@@ -3718,9 +3623,7 @@ impl Session {
 
     pub(crate) async fn replace_spine_context_items(&self, items: Vec<ResponseItem>) {
         let mut state = self.state.lock().await;
-        let before = state.projected_history_snapshot();
         crate::spine::replace_context_if_changed(&mut state.history, items);
-        state.reconcile_projected_history(before.as_deref());
     }
 
     pub(crate) async fn current_window_id(&self) -> String {
@@ -3730,23 +3633,9 @@ impl Session {
         format!("{thread_id}:{window_number}")
     }
 
-    pub(crate) async fn next_auto_compact_window(&self) -> (u64, AutoCompactWindowIds) {
+    pub(crate) async fn advance_auto_compact_window(&self) -> (u64, AutoCompactWindowIds) {
         let mut state = self.state.lock().await;
-        let window = state.next_auto_compact_window();
-        if !state.projected_usage_enabled() {
-            state.install_auto_compact_window(window.0, window.1);
-        }
-        window
-    }
-
-    pub(crate) async fn next_new_context_window(&self) -> (u64, AutoCompactWindowIds) {
-        let mut state = self.state.lock().await;
-        let window = state.next_auto_compact_window();
-        if !state.projected_usage_enabled() {
-            state.install_auto_compact_window(window.0, window.1);
-            state.clear_auto_compact_window_prefill();
-        }
-        window
+        state.advance_auto_compact_window()
     }
 
     pub(crate) async fn request_new_context_window(&self) {
@@ -3760,16 +3649,19 @@ impl Session {
     }
 
     pub(crate) async fn start_new_context_window(
-        self: &Arc<Self>,
-        turn_context: &Arc<TurnContext>,
+        &self,
+        turn_context: &TurnContext,
         world_state: Arc<WorldState>,
-    ) -> CodexResult<u64> {
-        let window = self.next_new_context_window().await;
+    ) -> u64 {
+        let window = {
+            let mut state = self.state.lock().await;
+            state.start_new_context_window()
+        };
         let (window_number, window_ids) = window;
         let mcp = self.services.latest_mcp_runtime();
         let context_items = self
             .build_initial_context_with_world_state_and_mcp(
-                turn_context.as_ref(),
+                turn_context,
                 world_state.as_ref(),
                 &mcp,
                 Some(window_ids),
@@ -3777,11 +3669,10 @@ impl Session {
             .await;
         let turn_context_item = turn_context.to_turn_context_item();
         self.replace_compacted_history(
-            Arc::clone(turn_context),
+            turn_context,
             context_items,
             Some(turn_context_item),
             Some(world_state),
-            window,
             CompactedItem {
                 message: String::new(),
                 replacement_history: None,
@@ -3791,9 +3682,9 @@ impl Session {
                 window_id: Some(window_ids.window_id.to_string()),
             },
         )
-        .await?;
-        self.recompute_token_usage(turn_context.as_ref()).await;
-        Ok(window_number)
+        .await;
+        self.recompute_token_usage(turn_context).await;
+        window_number
     }
 
     pub(crate) async fn reference_context_item(&self) -> Option<TurnContextItem> {
@@ -3919,65 +3810,11 @@ impl Session {
         turn_context: &TurnContext,
         token_usage: Option<&TokenUsage>,
     ) -> CodexResult<()> {
-        self.record_token_usage_info_with_provenance(
-            turn_context,
-            token_usage,
-            TokenUsageProvenance::Other,
-        )
-        .await
-    }
-
-    pub(crate) async fn record_sampling_token_usage_info(
-        &self,
-        turn_context: &TurnContext,
-        token_usage: Option<&TokenUsage>,
-        prefill_claim: Option<AutoCompactWindowPrefillClaim>,
-    ) -> CodexResult<()> {
-        self.record_token_usage_info_with_provenance(
-            turn_context,
-            token_usage,
-            TokenUsageProvenance::Sampling(prefill_claim),
-        )
-        .await
-    }
-
-    async fn record_token_usage_info_with_provenance(
-        &self,
-        turn_context: &TurnContext,
-        token_usage: Option<&TokenUsage>,
-        provenance: TokenUsageProvenance,
-    ) -> CodexResult<()> {
         if let Some(token_usage) = token_usage {
             let token_info = {
                 let mut state = self.state.lock().await;
-                match provenance {
-                    TokenUsageProvenance::Sampling(_) => {
-                        state.update_token_info_from_sampling_usage(
-                            token_usage,
-                            turn_context.model_context_window(),
-                            turn_context.model_info.slug.as_str(),
-                        );
-                    }
-                    TokenUsageProvenance::Other => {
-                        state.update_token_info_from_non_sampling_usage(
-                            token_usage,
-                            turn_context.model_context_window(),
-                        );
-                    }
-                }
-                if matches!(
-                    turn_context.config.model_auto_compact_token_limit_scope,
-                    AutoCompactTokenLimitScope::BodyAfterPrefix
-                ) {
-                    state.record_auto_compact_window_server_prefill_from_usage(
-                        match provenance {
-                            TokenUsageProvenance::Sampling(prefill_claim) => prefill_claim,
-                            TokenUsageProvenance::Other => None,
-                        },
-                        token_usage,
-                        turn_context.model_info.slug.as_str(),
-                    );
-                }
+                state
+                    .update_token_info_from_usage(token_usage, turn_context.model_context_window());
                 state.token_info()
             };
             let budget_result = self.record_rollout_budget_usage(token_usage);
@@ -4027,7 +3864,6 @@ impl Session {
             }
 
             state.set_token_info(Some(info));
-            state.mark_projected_usage_stale();
         }
         self.set_auto_compact_window_estimated_prefill_for_scope(
             turn_context,

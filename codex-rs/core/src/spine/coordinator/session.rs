@@ -130,17 +130,32 @@ impl Session {
         }
     }
 
+    #[cfg(test)]
     pub(crate) async fn finish_spine_sampling(
+        &self,
+        attempt: SpineSamplingAttemptGuard,
+        terminal: spine_core::SamplingTerminal,
+    ) -> anyhow::Result<()> {
+        self.finish_spine_sampling_with_input_tokens(attempt, terminal, None)
+            .await
+    }
+
+    pub(crate) async fn finish_spine_sampling_with_input_tokens(
         &self,
         mut attempt: SpineSamplingAttemptGuard,
         terminal: spine_core::SamplingTerminal,
+        input_tokens: Option<i64>,
     ) -> anyhow::Result<()> {
         let commit = {
             let mut coordinator = self.lock_spine_coordinator();
             let coordinator = coordinator
                 .as_mut()
                 .ok_or_else(|| anyhow::anyhow!("Spine coordinator is unavailable"))?;
-            coordinator.finish_canonical_sampling(attempt.take(), terminal)?
+            coordinator.finish_canonical_sampling_with_input_tokens(
+                attempt.take(),
+                terminal,
+                input_tokens,
+            )?
         };
         match commit {
             Some(commit) => self.persist_install_spine_canonical_commit(commit).await,

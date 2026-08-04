@@ -12,6 +12,7 @@ mod identity;
 mod model;
 mod observer;
 mod planner;
+mod pressure;
 mod prompt;
 mod reducer;
 mod replay;

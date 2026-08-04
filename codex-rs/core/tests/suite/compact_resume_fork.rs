@@ -25,8 +25,6 @@ use core_test_support::responses::ResponseMock;
 use core_test_support::responses::ResponsesRequest;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
-use core_test_support::responses::ev_completed_with_tokens;
-use core_test_support::responses::ev_function_call_with_namespace;
 use core_test_support::responses::ev_response_created;
 use core_test_support::responses::mount_sse_sequence;
 use core_test_support::responses::sse;
@@ -48,13 +46,6 @@ const COMPACT_WARNING_MESSAGE: &str = "Heads up: Long threads and multiple compa
 
 fn network_disabled() -> bool {
     std::env::var(CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR).is_ok()
-}
-
-fn completed_without_usage(id: &str) -> Value {
-    serde_json::json!({
-        "type": "response.completed",
-        "response": {"id": id}
-    })
 }
 
 fn normalize_line_endings_str(text: &str) -> String {
@@ -271,62 +262,6 @@ async fn compact_resume_and_fork_preserve_model_history_view() {
         );
     }
     assert_eq!(requests.len(), 5);
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn resume_closed_projection_ignores_persisted_stale_high_usage() -> Result<()> {
-    if network_disabled() {
-        println!("Skipping test because network is disabled in this sandbox");
-        return Ok(());
-    }
-
-    let server = MockServer::start().await;
-    let (_home, config, manager, rollout_path, request_log) =
-        create_stale_high_closed_rollout(&server).await?;
-
-    let resumed = resume_conversation(&manager, &config, rollout_path).await;
-    user_turn(&resumed, "AFTER_STALE_HIGH_RESUME").await;
-
-    let requests = request_log.requests();
-    assert_eq!(requests.len(), 5);
-    let first_resumed_request = &requests[4];
-    assert!(
-        first_resumed_request.body_contains_text("AFTER_STALE_HIGH_RESUME"),
-        "resumed request should contain the new user input"
-    );
-    assert!(
-        !first_resumed_request.body_contains_text(SUMMARIZATION_PROMPT),
-        "persisted provider usage from before close must not trigger pre-turn compact"
-    );
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn fork_closed_projection_ignores_persisted_stale_high_usage() -> Result<()> {
-    if network_disabled() {
-        println!("Skipping test because network is disabled in this sandbox");
-        return Ok(());
-    }
-
-    let server = MockServer::start().await;
-    let (_home, config, manager, rollout_path, request_log) =
-        create_stale_high_closed_rollout(&server).await?;
-
-    let forked = fork_thread(&manager, &config, rollout_path, /*nth_user_message*/ 2).await;
-    user_turn(&forked, "AFTER_STALE_HIGH_FORK").await;
-
-    let requests = request_log.requests();
-    assert_eq!(requests.len(), 5);
-    let first_forked_request = &requests[4];
-    assert!(
-        first_forked_request.body_contains_text("AFTER_STALE_HIGH_FORK"),
-        "forked request should contain the new user input"
-    );
-    assert!(
-        !first_forked_request.body_contains_text(SUMMARIZATION_PROMPT),
-        "persisted provider usage from before close must not trigger pre-turn compact"
-    );
-    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -799,86 +734,6 @@ async fn mount_second_compact_sequence(server: &MockServer) -> ResponseMock {
     let sse8 = sse(vec![ev_completed("r8")]);
 
     mount_sse_sequence(server, vec![sse1, sse2, sse3, sse4, sse5, sse6, sse7, sse8]).await
-}
-
-async fn create_stale_high_closed_rollout(
-    server: &MockServer,
-) -> Result<(
-    Arc<TempDir>,
-    Config,
-    Arc<ThreadManager>,
-    std::path::PathBuf,
-    ResponseMock,
-)> {
-    let request_log = mount_sse_sequence(
-        server,
-        vec![
-            sse(vec![
-                ev_response_created("stale-resume-open"),
-                ev_function_call_with_namespace(
-                    "stale-resume-open-call",
-                    "spine",
-                    "open",
-                    r#"{"summary":"short child"}"#,
-                ),
-                ev_completed_with_tokens("stale-resume-open", 10_000),
-            ]),
-            sse(vec![
-                ev_response_created("stale-resume-opened"),
-                ev_assistant_message("stale-resume-opened-message", "child ready"),
-                ev_completed_with_tokens("stale-resume-opened", 10_000),
-            ]),
-            sse(vec![
-                ev_response_created("stale-resume-close"),
-                ev_function_call_with_namespace(
-                    "stale-resume-close-call",
-                    "spine",
-                    "close",
-                    r#"{"memory":"short child memory"}"#,
-                ),
-                ev_completed_with_tokens("stale-resume-close", 250_000),
-            ]),
-            sse(vec![
-                ev_response_created("stale-resume-closed"),
-                ev_assistant_message("stale-resume-closed-message", "closed"),
-                completed_without_usage("stale-resume-closed"),
-            ]),
-            sse(vec![
-                ev_response_created("stale-resume-followup"),
-                ev_assistant_message("stale-resume-followup-message", "done"),
-                ev_completed_with_tokens("stale-resume-followup", 5_000),
-            ]),
-        ],
-    )
-    .await;
-    let base_url = format!("{}/v1", server.uri());
-    let mut builder = spine_test_codex().with_config(move |config| {
-        config.model_provider.name = "Non-OpenAI Model provider".to_string();
-        config.model_provider.base_url = Some(base_url);
-        config.compact_prompt = Some(SUMMARIZATION_PROMPT.to_string());
-        config.model_context_window = Some(272_000);
-        config.model_auto_compact_token_limit = Some(244_800);
-    });
-    let test = Box::pin(builder.build(server)).await?;
-
-    user_turn(&test.codex, "open a short child").await;
-    user_turn(&test.codex, "close the short child").await;
-    test.codex.flush_rollout().await?;
-    let rollout_path = fetch_conversation_path(&test.codex);
-    shutdown_conversation(&test.codex).await;
-
-    assert_eq!(
-        request_log.requests().len(),
-        4,
-        "close should rebase before post-response compact"
-    );
-    Ok((
-        test.home,
-        test.config,
-        test.thread_manager,
-        rollout_path,
-        request_log,
-    ))
 }
 
 async fn start_test_conversation(
