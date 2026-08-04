@@ -1178,6 +1178,101 @@ async fn intermediate_message_is_corrected_once_and_never_reaches_parent_model()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn completed_without_final_message_is_reminded_once() -> Result<()> {
+    let server = start_mock_server().await;
+    mount_sse_once_match(
+        &server,
+        is_parent_spawn_request,
+        sse(vec![
+            ev_response_created("missing-final-parent-response"),
+            ev_function_call_with_namespace(
+                SPAWN_CALL_ID,
+                SPAWN_NAMESPACE,
+                SPAWN_TOOL,
+                &spawn_args("missing-final-child-marker", "normal-child-marker"),
+            ),
+            ev_completed("missing-final-parent-response"),
+        ]),
+    )
+    .await;
+    mount_response_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            child_task_marker(request, "missing-final-child-marker")
+                && !body_contains_json_text(request, CORRECTION_MESSAGE)
+        },
+        sse_response(sse(vec![
+            ev_response_created("missing-final-child-response"),
+            ev_reasoning_item("missing-final-reasoning", &["incomplete"], &[]),
+            ev_completed("missing-final-child-response"),
+        ])),
+    )
+    .await;
+    let corrected_child = mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            child_task_marker(request, "missing-final-child-marker")
+                && body_contains_json_text(request, CORRECTION_MESSAGE)
+        },
+        sse(vec![
+            ev_response_created("missing-final-correction-response"),
+            ev_assistant_message("missing-final-memory-message", "recovered child memory"),
+            ev_completed("missing-final-correction-response"),
+        ]),
+    )
+    .await;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| child_task_marker(request, "normal-child-marker"),
+        sse(vec![
+            ev_response_created("normal-child-response"),
+            ev_assistant_message("normal-child-message", "normal child memory"),
+            ev_completed("normal-child-response"),
+        ]),
+    )
+    .await;
+    let parent_followup = mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            body_contains(request, "recovered child memory")
+                && body_contains(request, "normal child memory")
+                && !body_contains(request, BRANCH_PROMPT_MARKER)
+        },
+        sse(vec![
+            ev_response_created("missing-final-parent-followup"),
+            ev_assistant_message("missing-final-parent-message", "parent recovered"),
+            ev_completed("missing-final-parent-followup"),
+        ]),
+    )
+    .await;
+
+    let test = spine_builder().build(&server).await?;
+    test.submit_turn(FIRST_PARENT_PROMPT).await?;
+
+    let _parent_request = parent_projection_request(
+        &parent_followup,
+        "recovered child memory",
+        "normal child memory",
+    );
+    wait_for_request(
+        &corrected_child,
+        "missing-final child correction",
+        |request| request.body_contains_text(CORRECTION_MESSAGE),
+    )
+    .await?;
+    assert_eq!(
+        corrected_child
+            .requests()
+            .iter()
+            .filter(|request| request.body_contains_text(CORRECTION_MESSAGE))
+            .count(),
+        1,
+        "a missing final message receives exactly one reminder"
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn descendant_root_message_is_corrected_while_branch_internal_message_is_delivered()
 -> Result<()> {
     const B0_SPAWN_D0_CALL_ID: &str = "b0-spawn-d0";

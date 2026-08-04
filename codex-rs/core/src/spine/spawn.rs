@@ -599,7 +599,7 @@ async fn execute_batch_transaction(
         )
         .await;
     }
-    let waits = live.iter().map(|(ordinal, thread_id, _)| {
+    let waits = live.iter().map(|(ordinal, thread_id, child_path)| {
         let control = session.services.agent_control.clone();
         let session = session.clone();
         let turn = turn.clone();
@@ -610,8 +610,18 @@ async fn execute_batch_transaction(
         let ordinal = *ordinal;
         let call_ordinal = flat_tasks[ordinal].0;
         let thread_id = *thread_id;
+        let child_path = child_path.clone();
+        let parent_path = parent_path.clone();
+        let parent_thread_id = session.thread_id;
         async move {
-            let status = wait_for_terminal(&control, thread_id).await;
+            let status = wait_for_terminal(
+                &control,
+                &parent_path,
+                &child_path,
+                parent_thread_id,
+                thread_id,
+            )
+            .await;
             let failure_record = control.take_spawn_failure_record(thread_id).await;
             let result = result_from_status(ordinal, thread_id, status, failure_record);
             let event = {
@@ -1055,20 +1065,55 @@ fn task_envelope(task: &SpawnTask, call_tasks: &[SpawnTask]) -> String {
 
 async fn wait_for_terminal(
     control: &crate::agent::AgentControl,
+    parent_path: &AgentPath,
+    child_path: &AgentPath,
+    parent_thread_id: ThreadId,
     thread_id: ThreadId,
 ) -> AgentStatus {
     let Ok(mut status_rx) = control.subscribe_status(thread_id).await else {
         return control.get_status(thread_id).await;
     };
+    let mut final_message_reminded = false;
     loop {
         let status = status_rx.borrow_and_update().clone();
         if is_spawn_terminal(&status) {
+            if is_missing_final_message(&status) && !final_message_reminded {
+                final_message_reminded = true;
+                let correction = InterAgentCommunication::new(
+                    parent_path.clone(),
+                    child_path.clone(),
+                    Vec::new(),
+                    CORRECTION_MESSAGE.to_string(),
+                    /*trigger_turn*/ true,
+                );
+                let context = AgentCommunicationContext::new(
+                    AgentCommunicationKind::Message,
+                    parent_thread_id,
+                );
+                if let Err(error) = control
+                    .send_inter_agent_communication(thread_id, correction, context)
+                    .await
+                {
+                    return AgentStatus::Errored(format!(
+                        "failed to request missing final memory: {error}"
+                    ));
+                }
+                if status_rx.changed().await.is_err() {
+                    return control.get_status(thread_id).await;
+                }
+                continue;
+            }
             return status;
         }
         if status_rx.changed().await.is_err() {
             return control.get_status(thread_id).await;
         }
     }
+}
+
+fn is_missing_final_message(status: &AgentStatus) -> bool {
+    matches!(status, AgentStatus::Completed(None))
+        || matches!(status, AgentStatus::Completed(Some(memory)) if memory.trim().is_empty())
 }
 
 fn is_spawn_terminal(status: &AgentStatus) -> bool {
