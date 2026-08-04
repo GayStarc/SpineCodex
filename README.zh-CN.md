@@ -13,7 +13,7 @@
 
 ## 为什么选择 SpineCodex
 
-SpineCodex 是基于 OpenAI Codex CLI 构建并独立维护的发行版。它会继承你现有的 Codex 配置，安装即可使用。在各项基准测试中，它在 SWE-Milestone 上以低 27% 的总成本解决了 **1.89 倍的任务**，在 ProgramBench 上将平均得分提高 **10.80 个百分点**，并在 FrontierSWE 上将平均得分提高 **9.2 个百分点**。
+SpineCodex 是面向复杂、长周期软件工程任务的增强版 [OpenAI Codex CLI](https://github.com/openai/codex)，由我们独立维护。它会继承你现有的 Codex 配置，开箱即用。与 Codex 相比，它在 [SWE-Milestone](https://github.com/DeepCommit-ai/SWE-Milestone) 上以低 27% 的总成本多解决 **89% 的任务**，并将有效工作上下文最多扩展至 **10 倍**。它还在 [ProgramBench](https://programbench.com) 上将平均得分提高 **10.8 分**，并在 [FrontierSWE](https://www.frontierswe.com) 上将平均得分提高 **9.2 分**。
 
 | 线性上下文                        | SpineCodex                                                                                                                          |
 | --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
