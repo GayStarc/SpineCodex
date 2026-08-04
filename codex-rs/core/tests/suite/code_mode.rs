@@ -632,10 +632,28 @@ async fn code_mode_only_restricts_prompt_tools() -> Result<()> {
         vec![
             "exec".to_string(),
             "wait".to_string(),
+            "spine".to_string(),
             "request_user_input".to_string(),
             "web_search".to_string()
         ]
     );
+    let exec_description = first_body
+        .get("tools")
+        .and_then(Value::as_array)
+        .and_then(|tools| {
+            tools
+                .iter()
+                .find(|tool| tool.get("name").and_then(Value::as_str) == Some("exec"))
+        })
+        .and_then(|tool| tool.get("description"))
+        .and_then(Value::as_str)
+        .expect("exec description should be present");
+    for tool in ["open", "close", "next", "trim", "spawn"] {
+        assert!(
+            !exec_description.contains(&format!("spine__{tool}")),
+            "deprecated nested Spine tool `spine__{tool}` must not be exported through exec"
+        );
+    }
 
     Ok(())
 }
@@ -719,6 +737,7 @@ if (!tool) {
         vec![
             "exec".to_string(),
             "wait".to_string(),
+            "spine".to_string(),
             "request_user_input".to_string(),
             "web_search".to_string()
         ]

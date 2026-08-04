@@ -194,14 +194,13 @@ fn executed_spine_fact_rejects_field_origin_and_total_payload_bounds() {
     let mut origin = direct_fact(SpineOperationFact::Open {
         summary: "scope".to_string(),
     });
-    origin.origin = ExecutionOrigin::CodeMode {
-        outer_call_id: "c".repeat(MAX_EXECUTION_ORIGIN_BYTES + 1),
-        invocation_ordinal: 9,
+    origin.origin = ExecutionOrigin::Direct {
+        call_id: "c".repeat(MAX_EXECUTION_ORIGIN_BYTES + 1),
     };
     assert!(matches!(
         origin.validate(),
         Err(ExecutedFactError::FieldTooLarge {
-            field: "origin.outer_call_id",
+            field: "origin.call_id",
             ..
         })
     ));

@@ -150,13 +150,6 @@ fn start_memory_projection_worker(
     tx
 }
 
-#[cfg(test)]
-pub(crate) fn context_tree_update(
-    projection: &spine_core::SpineContextProjection,
-) -> SpineTreeUpdateEvent {
-    tree_update_from_parts(projection.spine(), projection.usage_samples())
-}
-
 pub(crate) fn tree_update_from_parts(
     projection: &spine_core::SpineProjection,
     usage_samples: &[spine_core::TokenUsageSample],

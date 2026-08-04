@@ -163,10 +163,6 @@ fn sampling_archive_round_trips_started_and_self_contained_commit() {
     }
 
     let mut record = commit_record(commit("ignored"));
-    record.executions[0].origin = ExecutionOrigin::CodeMode {
-        outer_call_id: "outer-call".to_string(),
-        invocation_ordinal: 7,
-    };
     record.executions[0].operation = SpineOperationFact::Next {
         closed_memory: "closed memory".to_string(),
         next_summary: "next summary".to_string(),

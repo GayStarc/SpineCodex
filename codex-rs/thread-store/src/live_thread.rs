@@ -150,6 +150,24 @@ impl LiveThread {
         fields(item_count = raw_items.len())
     )]
     pub async fn append_items(&self, raw_items: &[RolloutItem]) -> ThreadStoreResult<()> {
+        self.append_items_with_metadata_policy(raw_items, /*metadata_best_effort*/ false)
+            .await
+    }
+
+    /// Appends rollout items and treats the raw history append as the durability boundary.
+    ///
+    /// Metadata projection failures remain pending for a later retry and do not negate a
+    /// successfully persisted canonical rollout record.
+    pub async fn append_items_durable(&self, raw_items: &[RolloutItem]) -> ThreadStoreResult<()> {
+        self.append_items_with_metadata_policy(raw_items, /*metadata_best_effort*/ true)
+            .await
+    }
+
+    async fn append_items_with_metadata_policy(
+        &self,
+        raw_items: &[RolloutItem],
+        metadata_best_effort: bool,
+    ) -> ThreadStoreResult<()> {
         // Empty appends are intentionally ignored rather than represented as zero-sized batches.
         if raw_items.is_empty() {
             return Ok(());
@@ -180,13 +198,24 @@ impl LiveThread {
             .await
             .observe_appended_items(items.as_slice());
         if let Some(update) = update {
-            self.thread_store
+            let result = self
+                .thread_store
                 .update_thread_metadata(UpdateThreadMetadataParams {
                     thread_id: self.thread_id,
                     patch: update.patch.clone(),
                     include_archived: true,
                 })
-                .await?;
+                .await;
+            if let Err(err) = result {
+                if metadata_best_effort {
+                    warn!(
+                        "failed to update thread metadata after durable rollout append; \
+                         retaining the pending update for retry: {err}"
+                    );
+                    return Ok(());
+                }
+                return Err(err);
+            }
             self.metadata_sync
                 .lock()
                 .await

@@ -1334,17 +1334,6 @@ impl Session {
         state.validate_spine_trim(current_call_id, request)
     }
 
-    pub(crate) async fn validate_spine_trim_request(
-        &self,
-        request: &spine_core::TrimRequest,
-    ) -> Result<(), String> {
-        if let Some(coordinator) = self.lock_spine_coordinator().as_ref() {
-            return coordinator.validate_trim_request(request);
-        }
-        let state = self.state.lock().await;
-        state.validate_spine_trim_request(request)
-    }
-
     // Merges connector IDs into the session-level explicit connector selection.
     #[tracing::instrument(
         level = "trace",

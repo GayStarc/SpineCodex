@@ -43,23 +43,11 @@ impl SpineCompiler {
     }
 
     pub fn eat(&mut self, event: RolloutEvent) -> Result<ProjectionDelta, SpineError> {
-        let retained_bytes = event.retained_bytes();
-        if retained_bytes > MAX_RAW_EVENT_BYTES {
-            return Err(SpineError::ContextLimit {
-                kind: "raw event bytes",
-                max: MAX_RAW_EVENT_BYTES,
-                actual: retained_bytes,
-            });
-        }
-        let boundary = event.boundary();
-        if let Some(previous) = self.projection.last_boundary
-            && boundary < previous
-        {
-            return Err(SpineError::NonMonotonicBoundary {
-                previous,
-                next: boundary,
-            });
-        }
+        validate_event(
+            self.projection.last_boundary,
+            event.boundary(),
+            event.retained_bytes(),
+        )?;
         let mut trim_reducer = self.trim_reducer.clone();
         if let Some(trim_reducer) = &mut trim_reducer {
             trim_reducer.apply(&event);

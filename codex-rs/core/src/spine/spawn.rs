@@ -348,15 +348,10 @@ pub(crate) fn parse_tasks(arguments: &str) -> Result<Vec<SpawnTask>, String> {
     Ok(tasks)
 }
 
-pub(crate) enum SpawnExecutionScope {
-    ResponseGroup(Arc<StepContext>),
-    Isolated { fork_parent_call_id: String },
-}
-
 pub(crate) async fn execute(
     session: Arc<Session>,
     turn: Arc<TurnContext>,
-    scope: SpawnExecutionScope,
+    step_context: Arc<StepContext>,
     call_id: String,
     cancellation_token: CancellationToken,
     tasks: Vec<SpawnTask>,
@@ -365,27 +360,15 @@ pub(crate) async fn execute(
     if tasks.len() > max_tasks {
         return Err(format!("spine.spawn accepts at most {max_tasks} tasks"));
     }
-    let call = match scope {
-        SpawnExecutionScope::ResponseGroup(step_context) => {
-            let call = step_context
-                .spine_spawn_group
-                .spawn_call(&call_id, &cancellation_token)
-                .await?;
-            if call.tasks != tasks {
-                return Err(format!(
-                    "spine.spawn call `{call_id}` arguments changed during group admission"
-                ));
-            }
-            call
-        }
-        SpawnExecutionScope::Isolated {
-            fork_parent_call_id,
-        } => SpawnBatchCall {
-            call_id: call_id.clone(),
-            fork_parent_call_id,
-            tasks,
-        },
-    };
+    let call = step_context
+        .spine_spawn_group
+        .spawn_call(&call_id, &cancellation_token)
+        .await?;
+    if call.tasks != tasks {
+        return Err(format!(
+            "spine.spawn call `{call_id}` arguments changed during group admission"
+        ));
+    }
     execute_batch(session, turn, cancellation_token, &[call])
         .await?
         .remove(&call_id)

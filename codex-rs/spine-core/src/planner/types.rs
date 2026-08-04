@@ -1,13 +1,10 @@
-use super::SamplingPlanner;
 use crate::BoundaryId;
 use crate::ContextEpoch;
 use crate::ContextPlanRecipe;
-use crate::RecordDigest;
 use crate::SamplingCommit;
 use crate::SamplingCommitId;
 use crate::SourceLedger;
 use crate::SpineCharParser;
-use crate::SpineCompactBarrierV1;
 use crate::SpineCompiler;
 use crate::SpineProjection;
 use crate::ThreadNamespace;
@@ -32,12 +29,6 @@ impl PreparedSamplingCommit {
     pub fn projection(&self) -> &SpineProjection {
         &self.projection
     }
-}
-
-pub struct PreparedCompactBarrier {
-    pub(super) barrier: SpineCompactBarrierV1,
-    pub(super) base_source_digest: RecordDigest,
-    pub(super) candidate: SamplingPlanner,
 }
 
 pub(crate) struct RecoveredPlannerState {

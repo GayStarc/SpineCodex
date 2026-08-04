@@ -221,8 +221,6 @@ fn apply_direct_model_only_namespace_overrides(
                     .contains(namespace)
             });
         match runtime.exposure() {
-            // Spine MODIFIED: Treat SDK tools exposed in both direct and Code Mode like other direct tools.
-            // Reason: Namespace overrides must remain authoritative when Spine permits both invocation paths.
             ToolExposure::Direct | ToolExposure::DirectAndCodeMode | ToolExposure::Deferred
                 if configured =>
             {
@@ -455,7 +453,10 @@ fn is_hidden_by_code_mode_only(
 ) -> bool {
     let tool_mode = effective_tool_mode(turn_context);
     tool_mode == ToolMode::CodeModeOnly
-        && exposure != ToolExposure::DirectModelOnly
+        && !matches!(
+            exposure,
+            ToolExposure::DirectModelOnly | ToolExposure::DirectAndCodeMode
+        )
         && codex_code_mode::is_code_mode_nested_tool(&codex_tools::code_mode_name_for_tool_name(
             tool_name,
         ))

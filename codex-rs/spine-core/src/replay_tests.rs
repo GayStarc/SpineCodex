@@ -901,12 +901,7 @@ fn jit_replay_equivalence_survives_compact_and_resumes_sampling() {
         vec![RawBoundary(11)],
     )
     .expect("barrier");
-    let prepared_compact = planner
-        .prepare_compact(barrier.clone())
-        .expect("prepare compact");
-    planner
-        .install_compact(prepared_compact)
-        .expect("install compact");
+    planner.compact(barrier.clone()).expect("compact");
     input.push(ReplayInput::Compact(barrier));
 
     let second_user = user(12, "second");

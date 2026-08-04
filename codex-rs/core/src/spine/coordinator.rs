@@ -48,17 +48,13 @@ pub(crate) type SpineSamplingAttempt = SamplingHandle;
 pub(crate) type SharedSpineCoordinator = Arc<std::sync::Mutex<Option<CodexSpineCoordinator>>>;
 
 pub(crate) struct CanonicalSamplingCommit {
-    transitions: Vec<SpineTransitionItem>,
+    transition: SpineTransitionItem,
     prepared: PreparedSamplingCommit,
 }
 
 impl CanonicalSamplingCommit {
-    pub(crate) fn rollout_items(&self) -> Vec<RolloutItem> {
-        self.transitions
-            .iter()
-            .cloned()
-            .map(RolloutItem::SpineTransition)
-            .collect()
+    pub(crate) fn rollout_item(&self) -> RolloutItem {
+        RolloutItem::SpineTransition(self.transition.clone())
     }
 }
 
@@ -211,7 +207,7 @@ impl CodexSpineCoordinator {
             prepared.durable_record().clone(),
         ))?;
         Ok(Some(CanonicalSamplingCommit {
-            transitions: vec![transition],
+            transition,
             prepared,
         }))
     }
@@ -392,15 +388,6 @@ impl CodexSpineCoordinator {
                 "spine.trim failed: current toolcall is unavailable; do not retry".to_string(),
             );
         }
-        self.validated_trim_fact(request)
-            .map(|_| ())
-            .map_err(|error| error.to_string())
-    }
-
-    pub(crate) fn validate_trim_request(
-        &self,
-        request: &spine_core::TrimRequest,
-    ) -> Result<(), String> {
         self.validated_trim_fact(request)
             .map(|_| ())
             .map_err(|error| error.to_string())

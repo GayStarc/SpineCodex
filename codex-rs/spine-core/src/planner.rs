@@ -44,7 +44,6 @@ pub(crate) use context_builder::build_context_plan;
 pub use error::PlannerError;
 pub use error::PlannerTransitionError;
 use types::CandidatePlannerState;
-pub(crate) use types::PreparedCompactBarrier;
 pub use types::PreparedSamplingCommit;
 pub(crate) use types::RecoveredPlannerState;
 pub use types::SamplingCommitOutput;
@@ -412,10 +411,10 @@ impl SamplingPlanner {
         self.input_pressure.current_input_tokens()
     }
 
-    pub(crate) fn prepare_compact(
-        &self,
+    pub(crate) fn compact(
+        &mut self,
         barrier: SpineCompactBarrierV1,
-    ) -> Result<PreparedCompactBarrier, PlannerError> {
+    ) -> Result<SpineProjection, PlannerError> {
         if self.active_attempt.is_some() {
             return Err(PlannerError::SamplingAlreadyActive);
         }
@@ -468,26 +467,7 @@ impl SamplingPlanner {
             &mut candidate.next_projection_ordinal,
             candidate.spawn_enabled,
         )?);
-        Ok(PreparedCompactBarrier {
-            barrier,
-            base_source_digest: self.source.digest().clone(),
-            candidate,
-        })
-    }
-
-    pub(crate) fn install_compact(
-        &mut self,
-        prepared: PreparedCompactBarrier,
-    ) -> Result<SpineProjection, PlannerError> {
-        if prepared.barrier.thread != self.thread || prepared.barrier.previous_epoch != self.epoch {
-            return Err(PlannerError::IdentityScopeMismatch);
-        }
-        if prepared.candidate.previous_commit_id != self.previous_commit_id
-            || prepared.base_source_digest != *self.source.digest()
-        {
-            return Err(PlannerError::PreparedCompactStale);
-        }
-        *self = prepared.candidate;
+        *self = candidate;
         Ok(self.compiler.projection().clone())
     }
 

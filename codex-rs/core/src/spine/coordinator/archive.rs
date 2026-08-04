@@ -11,7 +11,7 @@ const SPINE_ROLLOUT_VERSION: u32 = 1;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ReplayMode {
-    Legacy,
+    Native,
     Canonical {
         thread: ThreadNamespace,
         records: Vec<SamplingArchiveRecord>,
@@ -112,7 +112,7 @@ pub(crate) fn replay_mode(
     }
     Ok(match canonical_thread {
         Some(thread) => ReplayMode::Canonical { thread, records },
-        None => ReplayMode::Legacy,
+        None => ReplayMode::Native,
     })
 }
 

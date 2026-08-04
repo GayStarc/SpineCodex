@@ -199,7 +199,7 @@ impl SessionState {
             return false;
         }
         if let Some(spine) = &mut self.spine_runtime {
-            spine.replace_last_turn_images(placeholder, self.history.history_version());
+            spine.replace_last_turn_images(placeholder);
         }
         true
     }
@@ -223,15 +223,6 @@ impl SessionState {
             .validate_control(tool)
     }
 
-    pub(crate) fn validate_spine_trim_request(
-        &self,
-        request: &spine_core::TrimRequest,
-    ) -> Result<(), String> {
-        self.spine_runtime
-            .as_ref()
-            .ok_or_else(|| "Spine trim runtime is unavailable".to_string())?
-            .validate_trim_request(request)
-    }
     pub(crate) fn set_token_info(&mut self, info: Option<TokenUsageInfo>) {
         self.history.set_token_info(info);
     }

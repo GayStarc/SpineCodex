@@ -43,7 +43,6 @@ pub enum PlannerError {
     SamplingCommitPendingInstall,
     PreparedSamplingMismatch,
     PreparedSamplingStale,
-    PreparedCompactStale,
     DuplicateExecutionKey(String),
     UnknownExecutionKey(String),
     ExecutionAlreadyStaged(String),
@@ -133,9 +132,6 @@ impl fmt::Display for PlannerError {
             }
             Self::PreparedSamplingStale => {
                 formatter.write_str("prepared sampling commit is based on stale runtime state")
-            }
-            Self::PreparedCompactStale => {
-                formatter.write_str("prepared compact is based on stale runtime state")
             }
             Self::DuplicateExecutionKey(key) => {
                 write!(formatter, "execution `{key}` is already registered")

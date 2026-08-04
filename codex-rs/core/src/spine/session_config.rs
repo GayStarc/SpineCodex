@@ -3,12 +3,6 @@ use codex_features::Feature as CodexFeature;
 
 impl SessionConfiguration {
     #[cfg(test)]
-    pub(crate) fn enable_spine_jit_for_test(&mut self) {
-        let config = std::sync::Arc::make_mut(&mut self.original_config_do_not_use);
-        let _ = config.features.enable(CodexFeature::SpineJit);
-    }
-
-    #[cfg(test)]
     pub(crate) fn disable_spine_jit_for_test(&mut self) {
         let config = std::sync::Arc::make_mut(&mut self.original_config_do_not_use);
         let _ = config.features.disable(CodexFeature::SpineJit);
@@ -18,18 +12,6 @@ impl SessionConfiguration {
     pub(crate) fn enable_spine_trim_for_test(&mut self) {
         let config = std::sync::Arc::make_mut(&mut self.original_config_do_not_use);
         let _ = config.features.enable(CodexFeature::SpineTrim);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn disable_spine_trim_for_test(&mut self) {
-        let config = std::sync::Arc::make_mut(&mut self.original_config_do_not_use);
-        let _ = config.features.disable(CodexFeature::SpineTrim);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn enable_spine_spawn_for_test(&mut self) {
-        let config = std::sync::Arc::make_mut(&mut self.original_config_do_not_use);
-        let _ = config.features.enable(CodexFeature::SpineSpawn);
     }
 
     pub(crate) fn spine_jit_enabled(&self) -> bool {

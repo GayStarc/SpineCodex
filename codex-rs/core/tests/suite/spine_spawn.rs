@@ -4,7 +4,6 @@ use codex_core::test_support::submit_interrupt_then_mailbox_for_test;
 use codex_features::Feature;
 use codex_protocol::AgentPath;
 use codex_protocol::models::ResponseItem;
-use codex_protocol::openai_models::ToolMode;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::InterAgentCommunication;
@@ -18,7 +17,6 @@ use core_test_support::responses::ResponseMock;
 use core_test_support::responses::ResponsesRequest;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
-use core_test_support::responses::ev_custom_tool_call;
 use core_test_support::responses::ev_function_call_with_namespace;
 use core_test_support::responses::ev_reasoning_item;
 use core_test_support::responses::ev_response_created;
@@ -31,10 +29,8 @@ use core_test_support::responses::start_mock_server;
 use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::TestCodexBuilder;
 use core_test_support::test_codex::spine_test_codex;
-use core_test_support::wait_for_event;
 use serde_json::Value;
 use serde_json::json;
-use spine_core::SPINE_SPAWN_RESULT_SCHEMA;
 use std::time::Duration;
 use tokio::time::Instant;
 use tokio::time::sleep;
@@ -54,7 +50,6 @@ const CORRECTION_MESSAGE: &str = concat!(
     "tool-free assistant final response containing terminal memory. That response\n",
     "ends this branch execution."
 );
-const LEGACY_CARRIER_MARKER: &str = "spine.code_mode.output.v1";
 
 fn body_contains(request: &wiremock::Request, text: &str) -> bool {
     decoded_body(request)
@@ -208,23 +203,6 @@ fn multi_agent_v2_spine_builder() -> TestCodexBuilder {
             .enable(Feature::MultiAgentV2)
             .expect("enable MultiAgentV2");
     })
-}
-
-fn nested_spawn_builder() -> TestCodexBuilder {
-    metadata_v2_spine_builder()
-        .with_model_info_override("gpt-5.6-sol", |model_info| {
-            model_info.use_responses_lite = true;
-            model_info.tool_mode = Some(ToolMode::CodeModeOnly);
-            model_info
-                .experimental_supported_tools
-                .push("test_sync_tool".to_string());
-        })
-        .with_config(|config| {
-            config
-                .features
-                .enable(Feature::CodeMode)
-                .expect("enable CodeMode");
-        })
 }
 
 async fn wait_for_request(
@@ -735,318 +713,6 @@ async fn failed_child_salvage_preserves_memory_and_cache_key() -> Result<()> {
     assert_eq!(
         salvage_input.last().and_then(|item| item["role"].as_str()),
         Some("developer")
-    );
-
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn responses_lite_exec_batches_ordinary_tools_with_nested_spine_spawn() -> Result<()> {
-    let server = start_mock_server().await;
-    let parent_prompt = "batch ordinary tools with nested Spine spawn";
-    let code = r#"// @exec: {"yield_time_ms": 30000}
-const syncArgs = () => ({
-  sleep_after_ms: 50,
-  barrier: {
-    id: "spine-code-mode-parallel-spawn",
-    participants: 2,
-    timeout_ms: 10_000,
-  },
-});
-const [left, right, spawned] = await Promise.all([
-  tools.test_sync_tool(syncArgs()),
-  tools.test_sync_tool(syncArgs()),
-  tools.spine__spawn({
-    tasks: [
-      {summary: "first", prompt: "nested-first-child-marker"},
-      {summary: "second", prompt: "nested-second-child-marker"},
-    ],
-  }),
-]);
-text(JSON.stringify({left, right, spawned}));
-"#;
-    let parent_exec = mount_sse_once_match(
-        &server,
-        move |request: &wiremock::Request| {
-            body_contains(request, parent_prompt)
-                && !body_contains(request, BRANCH_PROMPT_MARKER)
-                && !body_contains(request, "exec-nested-spawn")
-        },
-        sse(vec![
-            ev_response_created("nested-spawn-parent-response"),
-            ev_custom_tool_call("exec-nested-spawn", "exec", code),
-            ev_completed("nested-spawn-parent-response"),
-        ]),
-    )
-    .await;
-    let first_child = mount_sse_once_match(
-        &server,
-        |request: &wiremock::Request| {
-            child_task_marker(request, "nested-first-child-marker")
-                && !body_contains(request, "exec-nested-spawn")
-        },
-        sse(vec![
-            ev_response_created("nested-spawn-first-response"),
-            ev_assistant_message("nested-spawn-first-message", "nested first memory"),
-            ev_completed("nested-spawn-first-response"),
-        ]),
-    )
-    .await;
-    let second_child = mount_sse_once_match(
-        &server,
-        |request: &wiremock::Request| {
-            child_task_marker(request, "nested-second-child-marker")
-                && !body_contains(request, "exec-nested-spawn")
-        },
-        sse(vec![
-            ev_response_created("nested-spawn-second-response"),
-            ev_assistant_message("nested-spawn-second-message", "nested second memory"),
-            ev_completed("nested-spawn-second-response"),
-        ]),
-    )
-    .await;
-    let parent_followup = mount_sse_once_match(
-        &server,
-        |request: &wiremock::Request| {
-            body_contains(request, "nested first memory")
-                && body_contains(request, "nested second memory")
-                && !body_contains(request, BRANCH_PROMPT_MARKER)
-        },
-        sse(vec![
-            ev_response_created("nested-spawn-followup-response"),
-            ev_assistant_message("nested-spawn-followup-message", "nested parent done"),
-            ev_completed("nested-spawn-followup-response"),
-        ]),
-    )
-    .await;
-
-    let mut builder = nested_spawn_builder();
-    let test = builder.build(&server).await?;
-
-    test.submit_turn(parent_prompt).await?;
-    test.codex.flush_rollout().await?;
-
-    assert_eq!(parent_exec.requests().len(), 1);
-    let first_child_requests = first_child
-        .requests()
-        .into_iter()
-        .filter(|request| {
-            body_has_child_task_marker(&request.body_json(), "nested-first-child-marker")
-        })
-        .collect::<Vec<_>>();
-    let first_child_request_ids = first_child_requests
-        .iter()
-        .map(|request| {
-            let body = request.body_json();
-            (
-                body["client_metadata"]["thread_id"].clone(),
-                body["client_metadata"]["turn_id"].clone(),
-            )
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(
-        first_child_requests.len(),
-        1,
-        "unexpected first child requests: {first_child_request_ids:?}"
-    );
-    let second_child_requests = second_child
-        .requests()
-        .into_iter()
-        .filter(|request| {
-            body_has_child_task_marker(&request.body_json(), "nested-second-child-marker")
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(second_child_requests.len(), 1);
-    assert_eq!(parent_followup.requests().len(), 1);
-
-    for child_request in first_child_requests.iter().chain(&second_child_requests) {
-        assert!(child_request.body_contains_text(parent_prompt));
-        assert!(
-            !child_request.body_contains_text("spine-code-mode-parallel-spawn"),
-            "child history must stop before the outer exec request: {}",
-            child_request.body_json()
-        );
-    }
-
-    let followup = parent_followup.single_request();
-    let visible_output = followup
-        .custom_tool_call_output("exec-nested-spawn")
-        .get("output")
-        .and_then(Value::as_array)
-        .context("exec output should preserve content items")?
-        .iter()
-        .filter_map(|item| item.get("text").and_then(Value::as_str))
-        .collect::<String>();
-    assert!(
-        visible_output.contains(r#""left":"ok""#),
-        "{visible_output}"
-    );
-    assert!(
-        visible_output.contains(r#""right":"ok""#),
-        "{visible_output}"
-    );
-    assert!(
-        visible_output.contains(SPINE_SPAWN_RESULT_SCHEMA)
-            && visible_output.contains("nested first memory")
-            && visible_output.contains("nested second memory"),
-        "{visible_output}"
-    );
-    let followup_body = followup.body_json().to_string();
-    assert!(!followup_body.contains(LEGACY_CARRIER_MARKER));
-    assert!(followup_body.contains(SPINE_SPAWN_RESULT_SCHEMA));
-    assert!(followup_body.contains("nested first memory"));
-    assert!(followup_body.contains("nested second memory"));
-
-    let rollout_path = test.codex.rollout_path().context("rollout path")?;
-    let rollout = std::fs::read_to_string(&rollout_path)?;
-    let outer_output = rollout
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .map(serde_json::from_str::<RolloutLine>)
-        .collect::<Result<Vec<_>, _>>()?
-        .into_iter()
-        .find_map(|line| match line.item {
-            RolloutItem::ResponseItem(ResponseItem::CustomToolCallOutput {
-                call_id,
-                name,
-                output,
-                ..
-            }) if call_id == "exec-nested-spawn" => Some((name, output.body.to_text())),
-            _ => None,
-        })
-        .context("raw outer exec output should be persisted")?;
-    assert_eq!(outer_output.0, None);
-    assert!(
-        outer_output
-            .1
-            .as_deref()
-            .is_some_and(|body| body.contains("nested first memory"))
-    );
-    assert!(!rollout.contains(LEGACY_CARRIER_MARKER));
-    assert!(rollout.contains("spine.sampling.commit"));
-
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn interrupting_nested_spawn_tears_down_children() -> Result<()> {
-    let server = start_mock_server().await;
-    let parent_prompt = "interrupt nested Spine spawn";
-    let code = r#"// @exec: {"yield_time_ms": 100}
-await tools.spine__spawn({
-  tasks: [
-    {summary: "first", prompt: "nested-cancel-first-marker"},
-    {summary: "second", prompt: "nested-cancel-second-marker"},
-  ],
-});
-"#;
-    mount_sse_once_match(
-        &server,
-        move |request: &wiremock::Request| {
-            body_contains(request, parent_prompt) && !body_contains(request, BRANCH_PROMPT_MARKER)
-        },
-        sse(vec![
-            ev_response_created("nested-cancel-parent-response"),
-            ev_custom_tool_call("exec-nested-cancel", "exec", code),
-            ev_completed("nested-cancel-parent-response"),
-        ]),
-    )
-    .await;
-    let first_child = mount_response_once_match(
-        &server,
-        |request: &wiremock::Request| child_task_marker(request, "nested-cancel-first-marker"),
-        sse_response(sse(vec![
-            ev_response_created("nested-cancel-first-response"),
-            ev_assistant_message("nested-cancel-first-message", "too late"),
-            ev_completed("nested-cancel-first-response"),
-        ]))
-        .set_delay(Duration::from_secs(30)),
-    )
-    .await;
-    let second_child = mount_response_once_match(
-        &server,
-        |request: &wiremock::Request| child_task_marker(request, "nested-cancel-second-marker"),
-        sse_response(sse(vec![
-            ev_response_created("nested-cancel-second-response"),
-            ev_assistant_message("nested-cancel-second-message", "too late"),
-            ev_completed("nested-cancel-second-response"),
-        ]))
-        .set_delay(Duration::from_secs(30)),
-    )
-    .await;
-    let mut builder = nested_spawn_builder();
-    let test = builder.build(&server).await?;
-
-    test.codex
-        .submit(Op::UserInput {
-            items: vec![UserInput::Text {
-                text: parent_prompt.to_string(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            responsesapi_client_metadata: None,
-            additional_context: Default::default(),
-            thread_settings: Default::default(),
-        })
-        .await?;
-    wait_for_event(&test.codex, |event| {
-        matches!(event, EventMsg::TurnStarted(_))
-    })
-    .await;
-    wait_for_request(&first_child, "nested cancel first child", |request| {
-        body_has_child_task_marker(&request.body_json(), "nested-cancel-first-marker")
-    })
-    .await?;
-    wait_for_request(&second_child, "nested cancel second child", |request| {
-        body_has_child_task_marker(&request.body_json(), "nested-cancel-second-marker")
-    })
-    .await?;
-    assert_eq!(
-        test.thread_manager.list_thread_ids().await.len(),
-        3,
-        "both nested spawn children must remain active after the exec yield deadline"
-    );
-    test.codex.submit(Op::Interrupt).await?;
-
-    wait_for_event(&test.codex, |event| {
-        matches!(event, EventMsg::TurnAborted(_))
-    })
-    .await;
-    let ids = test.thread_manager.list_thread_ids().await;
-    assert_eq!(
-        ids.len(),
-        1,
-        "parent emitted TurnAborted before nested spawn teardown completed: {ids:?}"
-    );
-    assert_eq!(
-        test.codex.agent_status().await,
-        AgentStatus::Interrupted,
-        "TurnAborted must leave the parent Interrupted"
-    );
-
-    test.codex.flush_rollout().await?;
-    let rollout_path = test.codex.rollout_path().context("rollout path")?;
-    let rollout = std::fs::read_to_string(&rollout_path)?;
-    let persisted_carrier = rollout
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .map(serde_json::from_str::<RolloutLine>)
-        .collect::<Result<Vec<_>, _>>()?
-        .into_iter()
-        .any(|line| {
-            matches!(
-                line.item,
-                RolloutItem::ResponseItem(ResponseItem::CustomToolCallOutput {
-                    call_id,
-                    name,
-                    ..
-                }) if call_id == "exec-nested-cancel"
-                    && name.as_deref() == Some(LEGACY_CARRIER_MARKER)
-            )
-        });
-    assert!(
-        !persisted_carrier,
-        "interrupted yielded exec must not persist a Spine carrier"
     );
 
     Ok(())

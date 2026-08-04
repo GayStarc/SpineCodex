@@ -129,10 +129,7 @@ async fn run_salvage_request(
         id: None,
         role: "developer".to_string(),
         content: vec![ContentItem::InputText {
-            text: format!(
-                "{SALVAGE_INSTRUCTION_PREFIX}{}{SALVAGE_INSTRUCTION_SUFFIX}",
-                error
-            ),
+            text: format!("{SALVAGE_INSTRUCTION_PREFIX}{error}{SALVAGE_INSTRUCTION_SUFFIX}"),
         }],
         phase: None,
         internal_chat_message_metadata_passthrough: None,

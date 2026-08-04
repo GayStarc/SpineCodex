@@ -304,7 +304,7 @@ async fn spine_current_feature_matrix_tool_exposure() {
                     .map(|name| {
                         (
                             ToolName::namespaced("spine", *name).to_string(),
-                            ToolExposure::DirectAndCodeMode,
+                            ToolExposure::DirectModelOnly,
                         )
                     })
                     .collect(),
@@ -349,7 +349,7 @@ async fn spine_spawn_is_independent_from_multi_agent_v2() {
     );
     assert_eq!(
         enabled_without_v2.exposure(&ToolName::namespaced("spine", "spawn").to_string()),
-        ToolExposure::DirectAndCodeMode
+        ToolExposure::DirectModelOnly
     );
     enabled_without_v2.assert_visible_lacks(&[MULTI_AGENT_V2_NAMESPACE]);
     assert!(
@@ -1390,10 +1390,10 @@ async fn code_mode_only_exposes_code_executor_and_hides_nested_tools() {
 
 #[tokio::test]
 async fn direct_and_code_mode_exposure_stays_top_level_and_nested_in_every_mode() {
-    for (mode, expects_code_mode, expects_top_level) in [
-        (ToolMode::Direct, false, true),
-        (ToolMode::CodeMode, true, true),
-        (ToolMode::CodeModeOnly, true, false),
+    for (mode, expects_code_mode) in [
+        (ToolMode::Direct, false),
+        (ToolMode::CodeMode, true),
+        (ToolMode::CodeModeOnly, true),
     ] {
         let plan = probe_with(
             move |turn| {
@@ -1410,22 +1410,26 @@ async fn direct_and_code_mode_exposure_stays_top_level_and_nested_in_every_mode(
         )
         .await;
 
-        let expected_top_level_names = if expects_top_level {
-            vec!["lookup".to_string()]
-        } else {
-            Default::default()
-        };
         assert_eq!(
             plan.namespace_function_names("dual"),
-            expected_top_level_names.as_slice(),
-            "dual tool top-level exposure must match {mode:?}"
+            &["lookup".to_string()],
+            "dual tool must stay top-level in {mode:?}"
         );
         assert_eq!(
             plan.exposure(&ToolName::namespaced("dual", "lookup").to_string()),
             ToolExposure::DirectAndCodeMode
         );
 
+        let ToolSpec::Namespace(namespace) = plan.visible_spec("dual") else {
+            panic!("expected dual namespace in {mode:?}");
+        };
+        let ResponsesApiNamespaceTool::Function(lookup) = &namespace.tools[0];
         if expects_code_mode {
+            assert!(
+                lookup.description.contains("dual__lookup(args:"),
+                "dual top-level schema must describe nested use in {mode:?}; description:\n{}",
+                lookup.description
+            );
             let ToolSpec::Freeform(exec) = plan.visible_spec(codex_code_mode::PUBLIC_TOOL_NAME)
             else {
                 panic!("expected code mode exec tool in {mode:?}");
@@ -1435,22 +1439,8 @@ async fn direct_and_code_mode_exposure_stays_top_level_and_nested_in_every_mode(
                     exec.description.contains("dual__lookup(args:"),
                     "code-mode-only exec must include the nested dual definition"
                 );
-            } else {
-                let ToolSpec::Namespace(namespace) = plan.visible_spec("dual") else {
-                    panic!("expected dual namespace in {mode:?}");
-                };
-                let ResponsesApiNamespaceTool::Function(lookup) = &namespace.tools[0];
-                assert!(
-                    lookup.description.contains("dual__lookup(args:"),
-                    "dual top-level schema must describe nested use in {mode:?}; description:\n{}",
-                    lookup.description
-                );
             }
         } else {
-            let ToolSpec::Namespace(namespace) = plan.visible_spec("dual") else {
-                panic!("expected dual namespace in {mode:?}");
-            };
-            let ResponsesApiNamespaceTool::Function(lookup) = &namespace.tools[0];
             assert!(!lookup.description.contains("dual__lookup(args:"));
             plan.assert_visible_lacks(&[
                 codex_code_mode::PUBLIC_TOOL_NAME,
@@ -1863,6 +1853,7 @@ async fn code_mode_only_can_expose_namespaced_multi_agent_v2_as_normal_tools() {
         vec![
             "exec",
             "wait",
+            "spine",
             "request_user_input",
             "agents",
             // Hosted Responses tool.

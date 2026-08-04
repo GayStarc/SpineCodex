@@ -127,27 +127,8 @@ impl CodeModeService {
         self.dispatch_broker.mark_cell_ready_for_dispatch(cell_id);
     }
 
-    pub(crate) fn register_cell(&self, cell_id: &CellId, outer_call_id: &str) {
-        self.dispatch_broker.register_cell(cell_id, outer_call_id);
-    }
-
-    pub(crate) fn outer_call_id(&self, cell_id: &CellId) -> Option<String> {
-        self.dispatch_broker.outer_call_id(cell_id)
-    }
-
-    pub(crate) fn spine_invocation_ordinal(
-        &self,
-        cell_id: &CellId,
-        runtime_tool_call_id: &str,
-    ) -> Option<u64> {
-        self.dispatch_broker
-            .spine_invocation_ordinal(cell_id, runtime_tool_call_id)
-    }
-
     pub(crate) async fn finish_cell_dispatch(&self, cell_id: &CellId) {
-        self.dispatch_broker
-            .close_cell_and_wait_for_spine(cell_id)
-            .await;
+        self.dispatch_broker.close_cell_and_wait(cell_id).await;
     }
 
     pub(crate) async fn abort_cell_dispatch(&self, cell_id: &CellId) {

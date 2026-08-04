@@ -15,7 +15,6 @@ use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::RolloutLine;
 use codex_protocol::protocol::TokenUsage;
-use serde::Deserialize;
 use serde::Serialize;
 use serde::de::DeserializeSeed;
 use serde::de::IgnoredAny;
@@ -29,72 +28,6 @@ use spine_core::TrimRequest;
 use thiserror::Error;
 
 use crate::tools::code_mode::is_exec_tool_name;
-
-const CODE_MODE_SPINE_CARRIER_MARKER: &str = "spine.code_mode.output.v1";
-
-#[derive(Clone, Copy, Debug, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum NestedSpineToolName {
-    Open,
-    Close,
-    Next,
-    Trim,
-    Spawn,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct LegacyNestedOutput {
-    success: bool,
-    body: String,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct LegacyNestedCall {
-    runtime_call_id: String,
-    invocation_ordinal: u64,
-    name: NestedSpineToolName,
-    arguments: String,
-    output: LegacyNestedOutput,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct LegacyCodeModeCarrier {
-    schema: String,
-    visible_body: FunctionCallOutputBody,
-    outer_success: Option<bool>,
-    cell_id: String,
-    nested_spine_calls: Vec<LegacyNestedCall>,
-}
-
-fn decode_marked_body(
-    output_name: Option<&str>,
-    body: &FunctionCallOutputBody,
-) -> Result<Option<LegacyCodeModeCarrier>, String> {
-    if output_name != Some(CODE_MODE_SPINE_CARRIER_MARKER) {
-        return Ok(None);
-    }
-    let FunctionCallOutputBody::Text(body) = body else {
-        return Err("marked Code Mode Spine carrier must have a text body".to_string());
-    };
-    let carrier: LegacyCodeModeCarrier = serde_json::from_str(body)
-        .map_err(|error| format!("malformed Code Mode Spine carrier: {error}"))?;
-    if carrier.schema != CODE_MODE_SPINE_CARRIER_MARKER || carrier.cell_id.is_empty() {
-        return Err("invalid Code Mode Spine carrier metadata".to_string());
-    }
-    let mut previous_ordinal = None;
-    for call in &carrier.nested_spine_calls {
-        if call.runtime_call_id.is_empty()
-            || previous_ordinal.is_some_and(|previous| call.invocation_ordinal <= previous)
-        {
-            return Err("invalid Code Mode Spine carrier call ordering".to_string());
-        }
-        previous_ordinal = Some(call.invocation_ordinal);
-    }
-    Ok(Some(carrier))
-}
 
 /// A non-replayable, content-erased observation of one native rollout record.
 ///
@@ -362,7 +295,6 @@ impl DebugToolKind {
 #[serde(rename_all = "snake_case")]
 pub(crate) enum DebugOutputName {
     Absent,
-    CodeModeCarrier,
     Other,
 }
 
@@ -514,9 +446,6 @@ pub(crate) enum DebugToolOutput {
     Spawn {
         receipt: DebugSpawnReceiptShape,
     },
-    CodeMode {
-        carrier: DebugCodeModeCarrier,
-    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -581,82 +510,6 @@ pub(crate) enum DebugSchemaShape {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
-#[serde(tag = "state", rename_all = "snake_case")]
-pub(crate) enum DebugCodeModeCarrier {
-    Valid {
-        visible_body: DebugOutputBodyShape,
-        outer_success: DebugBoolShape,
-        cell_id: u64,
-        nested_calls: Vec<DebugNestedSpineCall>,
-    },
-    Invalid {
-        body: DebugOutputBodyShape,
-        inspection: DebugInvalidCodeModeShape,
-    },
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize)]
-pub(crate) struct DebugNestedSpineCall {
-    runtime_call_id: u64,
-    invocation_ordinal: u64,
-    tool: DebugToolKind,
-    arguments: DebugToolArguments,
-    success: bool,
-    output: Box<DebugToolOutput>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize)]
-pub(crate) struct DebugInvalidCodeModeShape {
-    object: DebugObjectState,
-    schema: DebugSchemaShape,
-    visible_body: DebugJsonValueShape,
-    outer_success: DebugBoolShape,
-    cell_id: DebugMappedString,
-    nested_calls: DebugCollection<DebugInvalidNestedCallShape>,
-    unknown_fields: bool,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize)]
-pub(crate) struct DebugInvalidNestedCallShape {
-    object: DebugObjectState,
-    runtime_call_id: DebugMappedString,
-    invocation_ordinal: DebugUnsignedShape,
-    tool: DebugToolNameShape,
-    arguments: DebugStringShape,
-    output_object: DebugObjectState,
-    output_success: DebugBoolShape,
-    output_body: DebugStringShape,
-    unknown_fields: bool,
-    output_unknown_fields: bool,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum DebugToolNameShape {
-    Missing,
-    Null,
-    WrongType,
-    Empty,
-    Whitespace,
-    SpineOpen,
-    SpineClose,
-    SpineNext,
-    SpineTrim,
-    SpineSpawn,
-    Other,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum DebugBoolShape {
-    Missing,
-    Null,
-    True,
-    False,
-    WrongType,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize)]
 pub(crate) struct DebugEvent {
     kind: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -690,8 +543,6 @@ enum IdNamespace {
     Thread,
     Session,
     Agent,
-    Cell,
-    RuntimeCall,
     Execution,
     Trim,
 }
@@ -850,6 +701,7 @@ pub enum RolloutDebugRedactorError {
 
 /// Stateful only for package-local identifier equality and request/output pairing.
 /// Given the same record order, its output is deterministic.
+#[derive(Default)]
 pub struct RolloutDebugRedactor {
     ids: BTreeMap<IdNamespace, BTreeMap<String, u64>>,
     calls: BTreeMap<u64, DebugCallState>,
@@ -859,21 +711,6 @@ pub struct RolloutDebugRedactor {
     package_json_nodes: usize,
     limits: RedactorLimits,
     failure: Option<RolloutDebugRedactorError>,
-}
-
-impl Default for RolloutDebugRedactor {
-    fn default() -> Self {
-        Self {
-            ids: BTreeMap::new(),
-            calls: BTreeMap::new(),
-            tracked_id_bytes: 0,
-            tracked_id_entries: 0,
-            record_json_nodes: 0,
-            package_json_nodes: 0,
-            limits: RedactorLimits::default(),
-            failure: None,
-        }
-    }
 }
 
 impl RolloutDebugRedactor {
@@ -1103,12 +940,12 @@ impl RolloutDebugRedactor {
             RolloutItem::InterAgentCommunication(item) => {
                 DebugRolloutRecord::InterAgentCommunication {
                     id: self.optional_local_id(IdNamespace::Item, item.id.as_deref()),
-                    author: self.local_id(IdNamespace::Agent, &item.author.to_string()),
-                    recipient: self.local_id(IdNamespace::Agent, &item.recipient.to_string()),
+                    author: self.local_id(IdNamespace::Agent, item.author.as_ref()),
+                    recipient: self.local_id(IdNamespace::Agent, item.recipient.as_ref()),
                     other_recipients: item
                         .other_recipients
                         .iter()
-                        .map(|recipient| self.local_id(IdNamespace::Agent, &recipient.to_string()))
+                        .map(|recipient| self.local_id(IdNamespace::Agent, recipient.as_ref()))
                         .collect(),
                     trigger_turn: item.trigger_turn,
                     encrypted: item.encrypted_content.is_some(),
@@ -1229,7 +1066,10 @@ impl RolloutDebugRedactor {
                     command_part_count: action.command.len(),
                     timeout_present: action.timeout_ms.is_some(),
                     working_directory_present: action.working_directory.is_some(),
-                    environment_entry_count: action.env.as_ref().map(|env| env.len()),
+                    environment_entry_count: action
+                        .env
+                        .as_ref()
+                        .map(std::collections::HashMap::len),
                     user_present: action.user.is_some(),
                     turn_id: self.turn_id(internal_chat_message_metadata_passthrough.as_ref()),
                 }
@@ -1277,7 +1117,7 @@ impl RolloutDebugRedactor {
                 let local_call_id = self.local_id(IdNamespace::Call, &call_id);
                 let state = self.calls.remove(&local_call_id);
                 let debug_output =
-                    self.redact_tool_output(state, None, &output.body, raw_output_value(raw));
+                    self.redact_tool_output(state, &output.body, raw_output_value(raw));
                 DebugResponseItem::FunctionCallOutput {
                     id: self.optional_local_id(IdNamespace::Item, id.as_deref()),
                     call_id: local_call_id,
@@ -1318,15 +1158,10 @@ impl RolloutDebugRedactor {
                 let state = self.calls.remove(&local_call_id);
                 let output_name = match name.as_deref() {
                     None => DebugOutputName::Absent,
-                    Some(CODE_MODE_SPINE_CARRIER_MARKER) => DebugOutputName::CodeModeCarrier,
                     Some(_) => DebugOutputName::Other,
                 };
-                let debug_output = self.redact_tool_output(
-                    state,
-                    name.as_deref(),
-                    &output.body,
-                    raw_output_value(raw),
-                );
+                let debug_output =
+                    self.redact_tool_output(state, &output.body, raw_output_value(raw));
                 DebugResponseItem::CustomToolCallOutput {
                     id: self.optional_local_id(IdNamespace::Item, id.as_deref()),
                     call_id: local_call_id,
@@ -1529,15 +1364,9 @@ impl RolloutDebugRedactor {
     fn redact_tool_output(
         &mut self,
         state: Option<DebugCallState>,
-        output_name: Option<&str>,
         body: &FunctionCallOutputBody,
         raw_output: Option<&Value>,
     ) -> DebugToolOutput {
-        if output_name == Some(CODE_MODE_SPINE_CARRIER_MARKER) {
-            return DebugToolOutput::CodeMode {
-                carrier: self.redact_code_mode_carrier(output_name, body),
-            };
-        }
         match state.map(|state| state.tool) {
             Some(
                 tool @ (DebugToolKind::SpineOpen
@@ -1567,205 +1396,6 @@ impl RolloutDebugRedactor {
             | None => DebugToolOutput::Redacted {
                 body: debug_output_body(body),
             },
-        }
-    }
-
-    fn redact_code_mode_carrier(
-        &mut self,
-        output_name: Option<&str>,
-        body: &FunctionCallOutputBody,
-    ) -> DebugCodeModeCarrier {
-        if let FunctionCallOutputBody::Text(text) = body
-            && !self.preflight_json(text.as_bytes())
-            && self.failure.is_some()
-        {
-            return DebugCodeModeCarrier::Invalid {
-                body: debug_output_body(body),
-                inspection: DebugInvalidCodeModeShape {
-                    object: DebugObjectState::MalformedJson,
-                    schema: DebugSchemaShape::Missing,
-                    visible_body: DebugJsonValueShape::Null,
-                    outer_success: DebugBoolShape::Missing,
-                    cell_id: missing_mapped_string(),
-                    nested_calls: missing_collection(),
-                    unknown_fields: false,
-                },
-            };
-        }
-        match decode_marked_body(output_name, body) {
-            Ok(Some(carrier)) => {
-                let nested_calls = carrier
-                    .nested_spine_calls
-                    .into_iter()
-                    .map(|call| {
-                        if self.failure.is_some() {
-                            let tool = nested_tool_kind(call.name);
-                            return DebugNestedSpineCall {
-                                runtime_call_id: 0,
-                                invocation_ordinal: call.invocation_ordinal,
-                                tool,
-                                arguments: DebugToolArguments::Redacted {
-                                    shape: DebugJsonValueShape::MalformedJson,
-                                },
-                                success: call.output.success,
-                                output: Box::new(DebugToolOutput::Redacted {
-                                    body: DebugOutputBodyShape::Text {
-                                        bytes: call.output.body.len(),
-                                    },
-                                }),
-                            };
-                        }
-                        let tool = nested_tool_kind(call.name);
-                        let arguments = self.redact_tool_arguments(tool, &call.arguments);
-                        let spawn_request = (tool == DebugToolKind::SpineSpawn
-                            && self.failure.is_none())
-                        .then(|| super::spawn::parse_tasks(&call.arguments).ok())
-                        .flatten()
-                        .map(|tasks| SpawnRequestSignature {
-                            task_count: tasks.len(),
-                        });
-                        let state = DebugCallState {
-                            tool,
-                            spawn_request,
-                        };
-                        let output_body = FunctionCallOutputBody::Text(call.output.body.clone());
-                        let raw_output = Value::String(call.output.body);
-                        DebugNestedSpineCall {
-                            runtime_call_id: self
-                                .local_id(IdNamespace::RuntimeCall, &call.runtime_call_id),
-                            invocation_ordinal: call.invocation_ordinal,
-                            tool,
-                            arguments,
-                            success: call.output.success,
-                            output: Box::new(self.redact_tool_output(
-                                Some(state),
-                                None,
-                                &output_body,
-                                Some(&raw_output),
-                            )),
-                        }
-                    })
-                    .collect();
-                DebugCodeModeCarrier::Valid {
-                    visible_body: debug_output_body(&carrier.visible_body),
-                    outer_success: option_bool_shape(carrier.outer_success),
-                    cell_id: self.local_id(IdNamespace::Cell, &carrier.cell_id),
-                    nested_calls,
-                }
-            }
-            Ok(None) | Err(_) => DebugCodeModeCarrier::Invalid {
-                body: debug_output_body(body),
-                inspection: self.inspect_invalid_code_mode(body),
-            },
-        }
-    }
-
-    fn inspect_invalid_code_mode(
-        &mut self,
-        body: &FunctionCallOutputBody,
-    ) -> DebugInvalidCodeModeShape {
-        let FunctionCallOutputBody::Text(text) = body else {
-            return DebugInvalidCodeModeShape {
-                object: DebugObjectState::NonObject,
-                schema: DebugSchemaShape::Missing,
-                visible_body: DebugJsonValueShape::Array(0),
-                outer_success: DebugBoolShape::Missing,
-                cell_id: missing_mapped_string(),
-                nested_calls: missing_collection(),
-                unknown_fields: false,
-            };
-        };
-        let parsed = serde_json::from_str::<Value>(text);
-        let object = match &parsed {
-            Ok(Value::Object(_)) => DebugObjectState::Object,
-            Ok(_) => DebugObjectState::NonObject,
-            Err(_) => DebugObjectState::MalformedJson,
-        };
-        let fields = parsed.as_ref().ok().and_then(Value::as_object);
-        DebugInvalidCodeModeShape {
-            object,
-            schema: schema_shape(field(fields, "schema"), CODE_MODE_SPINE_CARRIER_MARKER),
-            visible_body: field(fields, "visible_body")
-                .map(json_value_shape)
-                .unwrap_or(DebugJsonValueShape::Null),
-            outer_success: bool_shape(field(fields, "outer_success")),
-            cell_id: self.mapped_string(IdNamespace::Cell, field(fields, "cell_id")),
-            nested_calls: self.inspect_invalid_nested_calls(field(fields, "nested_spine_calls")),
-            unknown_fields: has_unknown_fields(
-                fields,
-                &[
-                    "schema",
-                    "visible_body",
-                    "outer_success",
-                    "cell_id",
-                    "nested_spine_calls",
-                ],
-            ),
-        }
-    }
-
-    fn inspect_invalid_nested_calls(
-        &mut self,
-        value: Option<&Value>,
-    ) -> DebugCollection<DebugInvalidNestedCallShape> {
-        let Some(value) = value else {
-            return missing_collection();
-        };
-        let Value::Array(items) = value else {
-            return DebugCollection {
-                shape: if value.is_null() {
-                    DebugCollectionShape::Null
-                } else {
-                    DebugCollectionShape::WrongType
-                },
-                items: Vec::new(),
-            };
-        };
-        DebugCollection {
-            shape: DebugCollectionShape::Array,
-            items: items
-                .iter()
-                .map(|item| {
-                    let fields = item.as_object();
-                    let output = field(fields, "output");
-                    let output_fields = output.and_then(Value::as_object);
-                    DebugInvalidNestedCallShape {
-                        object: if fields.is_some() {
-                            DebugObjectState::Object
-                        } else {
-                            DebugObjectState::NonObject
-                        },
-                        runtime_call_id: self.mapped_string(
-                            IdNamespace::RuntimeCall,
-                            field(fields, "runtime_call_id"),
-                        ),
-                        invocation_ordinal: unsigned_shape(field(fields, "invocation_ordinal")),
-                        tool: tool_name_shape(field(fields, "name")),
-                        arguments: string_shape(field(fields, "arguments")),
-                        output_object: if output_fields.is_some() {
-                            DebugObjectState::Object
-                        } else {
-                            DebugObjectState::NonObject
-                        },
-                        output_success: bool_shape(field(output_fields, "success")),
-                        output_body: string_shape(field(output_fields, "body")),
-                        unknown_fields: has_unknown_fields(
-                            fields,
-                            &[
-                                "runtime_call_id",
-                                "invocation_ordinal",
-                                "name",
-                                "arguments",
-                                "output",
-                            ],
-                        ),
-                        output_unknown_fields: has_unknown_fields(
-                            output_fields,
-                            &["success", "body"],
-                        ),
-                    }
-                })
-                .collect(),
         }
     }
 
@@ -2083,16 +1713,6 @@ fn classify_tool(namespace: Option<&str>, name: &str) -> DebugToolKind {
     }
 }
 
-fn nested_tool_kind(name: NestedSpineToolName) -> DebugToolKind {
-    match name {
-        NestedSpineToolName::Open => DebugToolKind::SpineOpen,
-        NestedSpineToolName::Close => DebugToolKind::SpineClose,
-        NestedSpineToolName::Next => DebugToolKind::SpineNext,
-        NestedSpineToolName::Trim => DebugToolKind::SpineTrim,
-        NestedSpineToolName::Spawn => DebugToolKind::SpineSpawn,
-    }
-}
-
 fn debug_message_role(role: &str) -> DebugMessageRole {
     match role {
         "user" => DebugMessageRole::User,
@@ -2308,24 +1928,6 @@ fn unsigned_shape(value: Option<&Value>) -> DebugUnsignedShape {
     }
 }
 
-fn bool_shape(value: Option<&Value>) -> DebugBoolShape {
-    match value {
-        None => DebugBoolShape::Missing,
-        Some(Value::Null) => DebugBoolShape::Null,
-        Some(Value::Bool(true)) => DebugBoolShape::True,
-        Some(Value::Bool(false)) => DebugBoolShape::False,
-        Some(_) => DebugBoolShape::WrongType,
-    }
-}
-
-fn option_bool_shape(value: Option<bool>) -> DebugBoolShape {
-    match value {
-        Some(true) => DebugBoolShape::True,
-        Some(false) => DebugBoolShape::False,
-        None => DebugBoolShape::Null,
-    }
-}
-
 fn schema_shape(value: Option<&Value>, expected: &str) -> DebugSchemaShape {
     match value {
         None => DebugSchemaShape::Missing,
@@ -2352,33 +1954,10 @@ fn spawn_outcome_shape(value: Option<&Value>) -> DebugSpawnOutcomeShape {
     }
 }
 
-fn tool_name_shape(value: Option<&Value>) -> DebugToolNameShape {
-    match value {
-        None => DebugToolNameShape::Missing,
-        Some(Value::Null) => DebugToolNameShape::Null,
-        Some(Value::String(value)) if value.is_empty() => DebugToolNameShape::Empty,
-        Some(Value::String(value)) if value.trim().is_empty() => DebugToolNameShape::Whitespace,
-        Some(Value::String(value)) if value == "open" => DebugToolNameShape::SpineOpen,
-        Some(Value::String(value)) if value == "close" => DebugToolNameShape::SpineClose,
-        Some(Value::String(value)) if value == "next" => DebugToolNameShape::SpineNext,
-        Some(Value::String(value)) if value == "trim" => DebugToolNameShape::SpineTrim,
-        Some(Value::String(value)) if value == "spawn" => DebugToolNameShape::SpineSpawn,
-        Some(Value::String(_)) => DebugToolNameShape::Other,
-        Some(_) => DebugToolNameShape::WrongType,
-    }
-}
-
 fn missing_collection<T>() -> DebugCollection<T> {
     DebugCollection {
         shape: DebugCollectionShape::Missing,
         items: Vec::new(),
-    }
-}
-
-fn missing_mapped_string() -> DebugMappedString {
-    DebugMappedString {
-        shape: DebugStringShape::Missing,
-        local_id: None,
     }
 }
 

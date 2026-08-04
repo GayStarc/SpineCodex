@@ -107,7 +107,7 @@ fn canonical_rollout_items() -> Vec<RolloutItem> {
         .prepare_canonical_sampling(attempt)
         .expect("prepare");
     let mut rollout = vec![started];
-    rollout.extend(commit.rollout_items());
+    rollout.push(commit.rollout_item());
     rollout
 }
 
@@ -149,7 +149,7 @@ fn canonical_replay_mode_uses_the_rollback_selected_prefix() {
     let effective = super::effective_rollout(&rollout);
     assert_eq!(
         replay_mode(&effective).expect("rolled-back sampling start is absent"),
-        ReplayMode::Legacy
+        ReplayMode::Native
     );
 }
 
@@ -167,7 +167,10 @@ fn spine_sampling_coordinator_seals_zero_fact_attempt() {
     let commit = coordinator
         .prepare_canonical_sampling(attempt)
         .expect("prepare");
-    assert_eq!(commit.rollout_items().len(), 1);
+    assert!(matches!(
+        commit.rollout_item(),
+        RolloutItem::SpineTransition(_)
+    ));
     let installed = coordinator
         .install_canonical_sampling(commit)
         .expect("install");
@@ -313,18 +316,16 @@ fn spine_sampling_commit_is_self_contained() {
     let prepared = coordinator
         .prepare_canonical_sampling(attempt)
         .expect("prepare canonical commit");
-    let records = prepared
-        .rollout_items()
-        .into_iter()
-        .map(|item| match item {
-            RolloutItem::SpineTransition(_) => decode_spine_rollout_item(&item)
-                .expect("decode")
-                .expect("Spine transition"),
-            other => panic!("unexpected canonical rollout item: {other:?}"),
-        })
-        .collect::<Vec<_>>();
-    let [spine_core::SamplingArchiveRecord::SamplingCommit(record)] = records.as_slice() else {
+    let item = prepared.rollout_item();
+    let RolloutItem::SpineTransition(_) = &item else {
         panic!("sampling must emit one canonical commit");
+    };
+    let spine_core::SamplingArchiveRecord::SamplingCommit(record) =
+        decode_spine_rollout_item(&item)
+            .expect("decode")
+            .expect("Spine transition")
+    else {
+        panic!("sampling must emit a commit record");
     };
     let [execution] = record.executions.as_slice() else {
         panic!("open commit must archive exactly one execution");
@@ -351,9 +352,8 @@ fn spine_sampling_commit_is_self_contained() {
     let second = coordinator
         .prepare_canonical_sampling(second)
         .expect("prepare second canonical commit");
-    let records = second.rollout_items();
-    assert_eq!(records.len(), 1);
-    let item @ RolloutItem::SpineTransition(_) = &records[0] else {
+    let item = second.rollout_item();
+    let item @ RolloutItem::SpineTransition(_) = &item else {
         panic!("canonical record must use a Spine transition");
     };
     assert!(matches!(
@@ -395,7 +395,7 @@ fn spine_compatibility_release_replays_and_continues_canonical_rollout() {
         .expect("prepare canonical commit");
     let mut rollout = vec![RolloutItem::ResponseItem(user), started];
     rollout.extend(open_source().into_iter().map(RolloutItem::ResponseItem));
-    rollout.extend(prepared.rollout_items());
+    rollout.push(prepared.rollout_item());
     let installed = live.install_canonical_sampling(prepared).expect("install");
 
     let effective = rollout.iter().enumerate().collect::<Vec<_>>();
@@ -421,9 +421,8 @@ fn spine_compatibility_release_replays_and_continues_canonical_rollout() {
     let continued = resumed
         .prepare_canonical_sampling(continued)
         .expect("prepare continued commit");
-    let records = continued.rollout_items();
-    assert_eq!(records.len(), 1);
-    let item @ RolloutItem::SpineTransition(_) = &records[0] else {
+    let item = continued.rollout_item();
+    let item @ RolloutItem::SpineTransition(_) = &item else {
         panic!("continued canonical record must use a Spine transition");
     };
     assert!(matches!(
@@ -470,7 +469,7 @@ fn canonical_replay_continues_after_orphan_sampling_started() {
         .expect("prepare continued commit");
     rollout.push(continued_started);
     rollout.push(RolloutItem::ResponseItem(message("assistant", "answer")));
-    rollout.extend(prepared.rollout_items());
+    rollout.push(prepared.rollout_item());
     let installed = resumed
         .install_canonical_sampling(prepared)
         .expect("install");
@@ -556,7 +555,7 @@ fn canonical_replay_accepts_persisted_reasoning_with_omitted_empty_content() {
         RolloutItem::ResponseItem(persisted_reasoning),
     ];
     rollout.extend(open_source().into_iter().map(RolloutItem::ResponseItem));
-    rollout.extend(prepared.rollout_items());
+    rollout.push(prepared.rollout_item());
     let installed = live.install_canonical_sampling(prepared).expect("install");
 
     let effective = rollout.iter().enumerate().collect::<Vec<_>>();
@@ -599,7 +598,7 @@ fn canonical_replay_accepts_host_tool_output_presentation_difference() {
     let prepared = live
         .prepare_canonical_sampling(attempt)
         .expect("prepare canonical commit");
-    let transitions = prepared.rollout_items();
+    let transition = prepared.rollout_item();
     let expected = live
         .install_canonical_sampling(prepared)
         .expect("install canonical commit");
@@ -616,7 +615,7 @@ fn canonical_replay_accepts_host_tool_output_presentation_difference() {
         RolloutItem::ResponseItem(raw_output.clone()),
         started,
     ];
-    rollout.extend(transitions);
+    rollout.push(transition);
     let effective = rollout.iter().enumerate().collect::<Vec<_>>();
     let ReplayMode::Canonical { thread, records } =
         replay_mode(&effective).expect("canonical replay mode")
@@ -673,7 +672,7 @@ fn canonical_fork_preserves_prefix_ids_and_uses_child_suffix_namespace() {
         .expect("prepare parent commit");
     let mut rollout = vec![RolloutItem::ResponseItem(user), started];
     rollout.extend(open_source().into_iter().map(RolloutItem::ResponseItem));
-    rollout.extend(prepared.rollout_items());
+    rollout.push(prepared.rollout_item());
     let installed = parent
         .install_canonical_sampling(prepared)
         .expect("install");
@@ -703,7 +702,8 @@ fn canonical_fork_preserves_prefix_ids_and_uses_child_suffix_namespace() {
     let prepared = child
         .prepare_canonical_sampling(attempt)
         .expect("prepare child commit");
-    let item @ RolloutItem::SpineTransition(_) = &prepared.rollout_items()[0] else {
+    let item = prepared.rollout_item();
+    let item @ RolloutItem::SpineTransition(_) = &item else {
         panic!("child commit must use a Spine transition");
     };
     let record = match decode_spine_rollout_item(item)
@@ -904,55 +904,6 @@ fn spine_compact_live_advances_the_epoch_atomically() {
             .iter()
             .any(|node| { node.status == spine_core::NodeStatus::Compacted })
     );
-}
-
-#[test]
-fn spine_direct_code_mode_equivalence_uses_the_same_typed_fact_projection() {
-    let source = open_source();
-    let run = |origin, execution: &str| {
-        let mut coordinator = coordinator();
-        coordinator
-            .observe_response_items(&[message("user", "question")])
-            .expect("observe prompt source");
-        let attempt = begin_sampling_for_test(&mut coordinator).expect("begin");
-        coordinator
-            .register_execution(execution)
-            .expect("register execution");
-        coordinator
-            .stage_execution(
-                execution,
-                origin,
-                SpineOperationFact::Open {
-                    summary: "scope".to_string(),
-                },
-            )
-            .expect("stage fact");
-        coordinator
-            .observe_response_items(&source)
-            .expect("observe transition source");
-        coordinator
-            .finish_execution(execution, true)
-            .expect("finish execution");
-        install_sampling_for_test(&mut coordinator, attempt)
-            .expect("install")
-            .projection
-    };
-
-    let direct_projection = run(
-        ExecutionOrigin::Direct {
-            call_id: "open-call".to_string(),
-        },
-        "execution-direct",
-    );
-    let code_mode_projection = run(
-        ExecutionOrigin::CodeMode {
-            outer_call_id: "open-call".to_string(),
-            invocation_ordinal: 0,
-        },
-        "execution-code-mode",
-    );
-
-    assert_eq!(direct_projection, code_mode_projection);
 }
 
 #[test]

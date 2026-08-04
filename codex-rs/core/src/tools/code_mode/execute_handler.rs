@@ -16,18 +16,13 @@ use super::is_exec_tool_name;
 pub struct CodeModeExecuteHandler {
     spec: ToolSpec,
     nested_tool_specs: Vec<ToolSpec>,
-    waits_for_spine_cancellation: bool,
 }
 
 impl CodeModeExecuteHandler {
     pub(crate) fn new(spec: ToolSpec, nested_tool_specs: Vec<ToolSpec>) -> Self {
-        let waits_for_spine_cancellation = nested_tool_specs
-            .iter()
-            .any(|tool| tool.name() == spine_core::SPINE_NAMESPACE);
         Self {
             spec,
             nested_tool_specs,
-            waits_for_spine_cancellation,
         }
     }
 
@@ -59,10 +54,6 @@ impl CodeModeExecuteHandler {
             .await
             .map_err(FunctionCallError::RespondToModel)?;
         let cell_id = started_cell.cell_id.clone();
-        exec.session
-            .services
-            .code_mode_service
-            .register_cell(&cell_id, &call_id);
         let runtime_cell_id = cell_id.to_string();
         let code_cell_trace = exec
             .session
@@ -200,31 +191,5 @@ impl CodeModeExecuteHandler {
 impl CoreToolRuntime for CodeModeExecuteHandler {
     fn matches_kind(&self, payload: &ToolPayload) -> bool {
         matches!(payload, ToolPayload::Custom { .. })
-    }
-
-    fn waits_for_runtime_cancellation(&self) -> bool {
-        self.waits_for_spine_cancellation
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::collections::BTreeMap;
-
-    #[test]
-    fn runtime_cancellation_waiting_is_scoped_to_spine_tools() {
-        let exec_spec =
-            super::super::execute_spec::create_code_mode_tool(&[], &BTreeMap::new(), true, false);
-        let base = CodeModeExecuteHandler::new(exec_spec.clone(), Vec::new());
-        assert!(!base.waits_for_runtime_cancellation());
-
-        let with_spine = CodeModeExecuteHandler::new(
-            exec_spec,
-            vec![crate::tools::handlers::spine_spec::create_spine_tool(
-                crate::tools::handlers::spine_spec::SPINE_OPEN,
-            )],
-        );
-        assert!(with_spine.waits_for_runtime_cancellation());
     }
 }

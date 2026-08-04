@@ -71,32 +71,7 @@ impl TrimReducer {
             apply_trim_request(&mut self.projection, &self.active, &request);
         }
         expire_trim_candidates(&mut self.projection, &mut self.active);
-        for call in group
-            .calls
-            .iter()
-            .filter(|call| !call.name.starts_with("spine."))
-        {
-            let (Some(boundary), Some(body)) = (call.output_boundary, call.output.as_deref())
-            else {
-                continue;
-            };
-            if body.len() <= self.threshold_bytes {
-                continue;
-            }
-            let trim_id = format!("trim_{}", boundary.0);
-            self.projection.edits.insert(
-                boundary,
-                (
-                    call.call_id.clone(),
-                    TrimEdit::Tagged {
-                        trim_id,
-                        body: body.to_string(),
-                        eligible: true,
-                    },
-                ),
-            );
-            self.active.push(boundary);
-        }
+        self.observe_trim_candidates(group);
     }
 
     pub(crate) fn apply_sampling_group(
@@ -706,7 +681,6 @@ impl SpineReducer {
 fn origin_call_id(origin: &ExecutionOrigin) -> &str {
     match origin {
         ExecutionOrigin::Direct { call_id } => call_id,
-        ExecutionOrigin::CodeMode { outer_call_id, .. } => outer_call_id,
     }
 }
 

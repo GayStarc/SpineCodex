@@ -29,13 +29,7 @@ pub struct ExecutedSpineFact {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ExecutionOrigin {
-    Direct {
-        call_id: String,
-    },
-    CodeMode {
-        outer_call_id: String,
-        invocation_ordinal: u64,
-    },
+    Direct { call_id: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -155,11 +149,6 @@ fn validate_origin(origin: &ExecutionOrigin) -> Result<(), ExecutedFactError> {
         ExecutionOrigin::Direct { call_id } => {
             validate_field("origin.call_id", call_id, MAX_EXECUTION_ORIGIN_BYTES)
         }
-        ExecutionOrigin::CodeMode { outer_call_id, .. } => validate_field(
-            "origin.outer_call_id",
-            outer_call_id,
-            MAX_EXECUTION_ORIGIN_BYTES,
-        ),
     }
 }
 

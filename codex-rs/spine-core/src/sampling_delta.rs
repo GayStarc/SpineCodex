@@ -208,7 +208,6 @@ pub(crate) fn reduce_compact_delta(
 fn group_contains_origin(group: &ToolCallGroup, origin: &ExecutionOrigin) -> bool {
     let call_id = match origin {
         ExecutionOrigin::Direct { call_id } => call_id,
-        ExecutionOrigin::CodeMode { outer_call_id, .. } => outer_call_id,
     };
     group.calls.iter().any(|call| call.call_id == *call_id)
 }

@@ -167,8 +167,8 @@ impl Session {
         &self,
         commit: CanonicalSamplingCommit,
     ) -> anyhow::Result<()> {
-        let rollout_items = commit.rollout_items();
-        self.persist_spine_rollout_items(&rollout_items)
+        let rollout_item = commit.rollout_item();
+        self.persist_spine_rollout_items(std::slice::from_ref(&rollout_item))
             .await
             .map_err(|error| self.latch_spine_error(error))?;
 
@@ -202,7 +202,7 @@ impl Session {
             return Ok(());
         };
         live_thread
-            .append_items(items)
+            .append_items_durable(items)
             .await
             .map_err(anyhow::Error::new)
     }

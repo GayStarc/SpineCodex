@@ -51,7 +51,6 @@ pub(crate) mod coordinator;
 #[cfg(test)]
 #[path = "coordinator_tests.rs"]
 mod coordinator_tests;
-pub(crate) mod legacy_rollout;
 pub(crate) mod memory_projection;
 pub(crate) mod observer;
 #[cfg(test)]
@@ -576,9 +575,7 @@ fn normalized_tool_request(item: &ResponseItem) -> Option<ToolUse> {
     })
 }
 
-fn normalized_tool_response(
-    item: &ResponseItem,
-) -> Option<NormalizedToolResponse<'_>> {
+fn normalized_tool_response(item: &ResponseItem) -> Option<NormalizedToolResponse<'_>> {
     match item {
         ResponseItem::FunctionCallOutput {
             call_id, output, ..

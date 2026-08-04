@@ -1,7 +1,6 @@
 use crate::function_tool::FunctionCallError;
 use crate::spine::tool_response::SpineToolResponse;
 use crate::tools::context::FunctionToolOutput;
-use crate::tools::context::ToolCallSource;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
 use crate::tools::context::boxed_tool_output;
@@ -100,7 +99,7 @@ impl ToolExecutor<ToolInvocation> for SpineHandler {
     }
 
     fn exposure(&self) -> ToolExposure {
-        ToolExposure::DirectAndCodeMode
+        ToolExposure::DirectModelOnly
     }
 
     fn supports_parallel_tool_calls(&self) -> bool {
@@ -124,57 +123,10 @@ impl SpineHandler {
             call_id,
             cancellation_token,
             payload,
-            source,
             ..
         } = invocation;
-        let (origin, spawn_scope, code_mode_trim) = match source {
-            ToolCallSource::Direct => (
-                spine_core::ExecutionOrigin::Direct {
-                    call_id: call_id.clone(),
-                },
-                crate::spine::spawn::SpawnExecutionScope::ResponseGroup(step_context),
-                false,
-            ),
-            ToolCallSource::CodeMode {
-                cell_id,
-                runtime_tool_call_id,
-            } => {
-                if session.lock_spine_coordinator().is_none() {
-                    return Err(FunctionCallError::RespondToModel(
-                        "Code Mode Spine calls are unavailable after restoring a legacy Spine rollout"
-                            .to_string(),
-                    ));
-                }
-                let cell_id = codex_code_mode::CellId::new(cell_id);
-                let outer_call_id = session
-                    .services
-                    .code_mode_service
-                    .outer_call_id(&cell_id)
-                    .ok_or_else(|| {
-                        FunctionCallError::RespondToModel(format!(
-                            "Code Mode cell `{cell_id}` is missing its outer call identity"
-                        ))
-                    })?;
-                let invocation_ordinal = session
-                    .services
-                    .code_mode_service
-                    .spine_invocation_ordinal(&cell_id, &runtime_tool_call_id)
-                    .ok_or_else(|| {
-                        FunctionCallError::RespondToModel(format!(
-                            "Code Mode Spine call `{runtime_tool_call_id}` is missing its invocation ordinal"
-                        ))
-                    })?;
-                (
-                    spine_core::ExecutionOrigin::CodeMode {
-                        outer_call_id: outer_call_id.clone(),
-                        invocation_ordinal,
-                    },
-                    crate::spine::spawn::SpawnExecutionScope::Isolated {
-                        fork_parent_call_id: outer_call_id,
-                    },
-                    true,
-                )
-            }
+        let origin = spine_core::ExecutionOrigin::Direct {
+            call_id: call_id.clone(),
         };
         if turn.collaboration_mode.mode == ModeKind::Plan {
             return Err(FunctionCallError::RespondToModel(
@@ -210,7 +162,7 @@ impl SpineHandler {
                 let receipt = crate::spine::spawn::execute(
                     session.clone(),
                     turn,
-                    spawn_scope,
+                    step_context,
                     call_id.clone(),
                     cancellation_token,
                     tasks.clone(),
@@ -243,11 +195,7 @@ impl SpineHandler {
             SpineHandlerKind::Trim => {
                 let request =
                     TrimRequest::parse(&arguments).map_err(FunctionCallError::RespondToModel)?;
-                let validation = if code_mode_trim {
-                    session.validate_spine_trim_request(&request).await
-                } else {
-                    session.validate_spine_trim(&call_id, &request).await
-                };
+                let validation = session.validate_spine_trim(&call_id, &request).await;
                 match validation {
                     Ok(()) => {
                         if let Some(operation) = session.validated_spine_trim_fact(&request) {
@@ -364,11 +312,11 @@ mod tests {
     }
 
     #[test]
-    fn spine_tools_support_code_mode() {
+    fn spine_tools_are_direct_model_only() {
         assert!(
             handlers(ModeKind::Default)
                 .iter()
-                .all(|handler| handler.exposure() == ToolExposure::DirectAndCodeMode)
+                .all(|handler| handler.exposure() == ToolExposure::DirectModelOnly)
         );
     }
 

@@ -2205,6 +2205,94 @@ async fn spinetree_memory_projection_publishes_closed_memory_after_recording() -
 }
 
 #[tokio::test]
+async fn spinetree_memory_projection_failure_does_not_roll_back_canonical_install()
+-> anyhow::Result<()> {
+    let workspace = tempfile::tempdir()?;
+    std::fs::create_dir_all(workspace.path().join(".codex"))?;
+    std::fs::write(
+        workspace.path().join(".codex/spinetree"),
+        b"block projection directory creation",
+    )?;
+    let workspace_path = workspace.path().to_path_buf();
+    let (session, rx) = make_session_with_config_and_rx(move |config| {
+        config.cwd = workspace_path
+            .try_into()
+            .expect("workspace path should be absolute");
+        let _ = config.features.enable(Feature::SpineJit);
+        let _ = config.features.enable(Feature::SpinetreeMemoryProjection);
+    })
+    .await?;
+    let turn_context = session.new_default_turn().await;
+    let user = user_message("projection failure must not roll back context");
+    session
+        .record_conversation_items(turn_context.as_ref(), std::slice::from_ref(&user))
+        .await;
+    while rx.try_recv().is_ok() {}
+
+    let prompt = session.clone_history().await.for_prompt(&[]);
+    let attempt = session
+        .begin_spine_sampling(&prompt)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("canonical sampling is unavailable"))?;
+    let execution = session
+        .begin_spine_execution(
+            &codex_tools::ToolName::namespaced("spine", "open"),
+            "open-call",
+        )
+        .ok_or_else(|| anyhow::anyhow!("canonical open execution is unavailable"))?;
+    session.stage_spine_fact(
+        "open-call",
+        spine_core::ExecutionOrigin::Direct {
+            call_id: "open-call".to_string(),
+        },
+        spine_core::SpineOperationFact::Open {
+            summary: "projection failure child".to_string(),
+        },
+    );
+    session
+        .record_conversation_items(
+            turn_context.as_ref(),
+            &[
+                ResponseItem::FunctionCall {
+                    id: None,
+                    name: "open".to_string(),
+                    namespace: Some("spine".to_string()),
+                    arguments: r#"{"summary":"projection failure child"}"#.to_string(),
+                    call_id: "open-call".to_string(),
+                    internal_chat_message_metadata_passthrough: None,
+                },
+                ResponseItem::FunctionCallOutput {
+                    id: None,
+                    call_id: "open-call".to_string(),
+                    output: FunctionCallOutputPayload {
+                        body: FunctionCallOutputBody::Text("Spine open accepted.".to_string()),
+                        success: Some(true),
+                    },
+                    internal_chat_message_metadata_passthrough: None,
+                },
+            ],
+        )
+        .await;
+    while rx.try_recv().is_ok() {}
+    execution.finish(true);
+    session
+        .finish_spine_sampling(attempt, spine_core::SamplingTerminal::Completed)
+        .await?;
+
+    let tree = timeout(Duration::from_secs(1), rx.recv()).await??;
+    assert_eq!(tree.id, turn_context.sub_id);
+    assert!(matches!(tree.msg, EventMsg::SpineTreeUpdate(_)));
+    let history = serde_json::to_string(session.clone_history().await.raw_items())?;
+    assert!(
+        history.contains("<spine_node"),
+        "installed history: {history}"
+    );
+    assert!(history.contains("projection failure child"));
+    assert!(workspace.path().join(".codex/spinetree").is_file());
+    Ok(())
+}
+
+#[tokio::test]
 async fn spinetree_memory_projection_rebuilds_user_messages_after_rollout_reconstruction()
 -> anyhow::Result<()> {
     let workspace = tempfile::tempdir()?;
@@ -2307,7 +2395,7 @@ fn canonical_zero_fact_rollout(thread: &str) -> anyhow::Result<Vec<RolloutItem>>
         started,
         RolloutItem::ResponseItem(assistant),
     ];
-    rollout.extend(prepared.rollout_items());
+    rollout.push(prepared.rollout_item());
     Ok(rollout)
 }
 
@@ -2318,9 +2406,9 @@ fn canonical_started_item(thread: &str) -> anyhow::Result<RolloutItem> {
         .ok_or_else(|| anyhow::anyhow!("canonical rollout must contain a sampling-started record"))
 }
 
-fn legacy_open_rollout(summary: &str) -> Vec<RolloutItem> {
+fn native_open_source_rollout(summary: &str) -> Vec<RolloutItem> {
     vec![
-        RolloutItem::ResponseItem(user_message("legacy prefix")),
+        RolloutItem::ResponseItem(user_message("native prefix")),
         RolloutItem::ResponseItem(ResponseItem::FunctionCall {
             id: None,
             name: "open".to_string(),
@@ -2376,7 +2464,7 @@ async fn canonical_reconstruction_metadata_errors_fault_session_without_legacy_f
         })
         .await?;
         let turn_context = session.new_default_turn().await;
-        let mut rollout = legacy_open_rollout("must not be inferred");
+        let mut rollout = native_open_source_rollout("must not be inferred");
         rollout.push(item);
 
         session
@@ -2395,45 +2483,13 @@ async fn canonical_reconstruction_metadata_errors_fault_session_without_legacy_f
         let history = serde_json::to_string(session.clone_history().await.raw_items())?;
         assert!(
             !history.contains("<spine_node>"),
-            "invalid canonical metadata must not enter the legacy transition translator: {history}"
+            "invalid canonical metadata must not infer transitions from native source: {history}"
         );
         assert!(
             session.begin_spine_canonical_sampling().await.is_err(),
             "durability fault must reject later sampling"
         );
     }
-    Ok(())
-}
-
-#[tokio::test]
-async fn canonical_started_record_removed_by_rollback_restores_surviving_legacy_prefix()
--> anyhow::Result<()> {
-    let session = make_session_with_config(|config| {
-        let _ = config.features.enable(Feature::SpineJit);
-    })
-    .await?;
-    let turn_context = session.new_default_turn().await;
-    let mut rollout = legacy_open_rollout("surviving legacy scope");
-    rollout.push(RolloutItem::ResponseItem(user_message(
-        "rolled back canonical turn",
-    )));
-    rollout.push(canonical_started_item(&session.thread_id().to_string())?);
-    rollout.push(RolloutItem::EventMsg(EventMsg::ThreadRolledBack(
-        ThreadRolledBackEvent { num_turns: 1 },
-    )));
-
-    session
-        .apply_rollout_reconstruction(turn_context.as_ref(), &rollout)
-        .await;
-
-    assert!(
-        session.lock_spine_coordinator().is_none(),
-        "surviving legacy transitions must select the legacy runtime"
-    );
-    let history = serde_json::to_string(session.clone_history().await.raw_items())?;
-    assert!(history.contains("surviving legacy scope"));
-    assert!(history.contains("<spine_node"));
-    assert!(!history.contains("rolled back canonical turn"));
     Ok(())
 }
 
@@ -2685,164 +2741,6 @@ async fn spine_session_prepared_commit_rejects_racing_source_before_persistence(
         .ok_or_else(|| anyhow::anyhow!("canonical sampling is unavailable after install"))?;
     drop(next_attempt);
     Ok(())
-}
-
-#[tokio::test]
-async fn spine_observer_failure_preserves_context_and_tree_delivery_order() -> anyhow::Result<()> {
-    let workspace = tempfile::tempdir()?;
-    let workspace_path = workspace.path().to_path_buf();
-    std::fs::create_dir_all(workspace.path().join(".codex"))?;
-    std::fs::write(
-        workspace.path().join(".codex/spinetree"),
-        b"block projection directory creation",
-    )?;
-    let (session, turn_context, rx) = make_session_and_context_with_auth_and_config_and_rx(
-        CodexAuth::from_api_key("Test API Key"),
-        Vec::new(),
-        move |config| {
-            config.cwd = workspace_path
-                .try_into()
-                .expect("workspace path should be absolute");
-            let _ = config.features.enable(Feature::SpineJit);
-            let _ = config.features.enable(Feature::SpinetreeMemoryProjection);
-        },
-    )
-    .await;
-    let message = user_message("observer failure must not roll back history");
-    session
-        .record_conversation_items(turn_context.as_ref(), std::slice::from_ref(&message))
-        .await;
-
-    let tree_update = rx.recv().await.expect("Spine tree update event");
-    let raw_item = rx.recv().await.expect("raw response item event");
-    assert!(matches!(tree_update.msg, EventMsg::SpineTreeUpdate(_)));
-    assert!(matches!(raw_item.msg, EventMsg::RawResponseItem(_)));
-    assert_eq!(tree_update.id, turn_context.sub_id);
-    assert_eq!(raw_item.id, turn_context.sub_id);
-    let mut projected_message = user_message("[U1]\nobserver failure must not roll back history");
-    projected_message.set_turn_id_if_missing(&turn_context.sub_id);
-    assert_eq!(
-        session.state.lock().await.history.raw_items(),
-        std::slice::from_ref(&projected_message)
-    );
-    let projected = session.clone_history().await;
-    assert_eq!(projected.raw_items(), &[projected_message]);
-    Ok(())
-}
-
-#[tokio::test]
-async fn spine_observer_delivery_follows_each_session_transition() {
-    let (session, turn_context, rx) = make_session_and_context_with_auth_and_config_and_rx(
-        CodexAuth::from_api_key("Test API Key"),
-        Vec::new(),
-        |config| {
-            let _ = config.features.enable(Feature::SpineJit);
-        },
-    )
-    .await;
-
-    let message = user_message("conversation transition");
-    session
-        .record_conversation_items(turn_context.as_ref(), std::slice::from_ref(&message))
-        .await;
-    assert!(matches!(
-        rx.recv().await.expect("conversation tree event").msg,
-        EventMsg::SpineTreeUpdate(_)
-    ));
-    assert!(matches!(
-        rx.recv().await.expect("raw response item event").msg,
-        EventMsg::RawResponseItem(_)
-    ));
-
-    {
-        let mut state = session.state.lock().await;
-        state.set_token_info(Some(TokenUsageInfo {
-            total_token_usage: TokenUsage {
-                input_tokens: 42,
-                total_tokens: 42,
-                ..TokenUsage::default()
-            },
-            last_token_usage: TokenUsage {
-                input_tokens: 42,
-                total_tokens: 42,
-                ..TokenUsage::default()
-            },
-            model_context_window: Some(1_000),
-        }));
-    }
-    session.send_token_count_event(turn_context.as_ref()).await;
-    assert!(matches!(
-        rx.recv().await.expect("token count event").msg,
-        EventMsg::TokenCount(_)
-    ));
-    assert!(matches!(
-        rx.recv().await.expect("token tree event").msg,
-        EventMsg::SpineTreeUpdate(_)
-    ));
-
-    let communication = InterAgentCommunication::new(
-        AgentPath::root().join("worker").expect("worker path"),
-        AgentPath::root(),
-        Vec::new(),
-        "child done".to_string(),
-        /*trigger_turn*/ false,
-    );
-    session
-        .record_inter_agent_communication(turn_context.as_ref(), communication)
-        .await;
-    assert!(matches!(
-        rx.recv().await.expect("inter-agent tree event").msg,
-        EventMsg::SpineTreeUpdate(_)
-    ));
-    assert!(matches!(
-        rx.recv().await.expect("inter-agent item event").msg,
-        EventMsg::RawResponseItem(_)
-    ));
-
-    let compacted_history = vec![assistant_message("compacted context")];
-    let (window_number, window_ids) = session.advance_auto_compact_window().await;
-    session
-        .replace_compacted_history(
-            turn_context.as_ref(),
-            compacted_history.clone(),
-            /*reference_context_item*/ None,
-            /*world_state_baseline*/ None,
-            CompactedItem {
-                message: "compacted context".to_string(),
-                replacement_history: Some(compacted_history.clone()),
-                window_number: Some(window_number),
-                first_window_id: Some(window_ids.first_window_id.to_string()),
-                previous_window_id: window_ids.previous_window_id.map(|id| id.to_string()),
-                window_id: Some(window_ids.window_id.to_string()),
-            },
-        )
-        .await;
-    assert_eq!(
-        session.state.lock().await.history.raw_items(),
-        compacted_history
-    );
-    assert!(matches!(
-        rx.recv().await.expect("compact tree event").msg,
-        EventMsg::SpineTreeUpdate(_)
-    ));
-
-    let resumed_message = user_message("reconstructed context");
-    session
-        .apply_rollout_reconstruction(
-            turn_context.as_ref(),
-            &[RolloutItem::ResponseItem(resumed_message.clone())],
-        )
-        .await;
-    let resumed_message = user_message("[U1]\nreconstructed context");
-    assert_eq!(
-        session.state.lock().await.history.raw_items(),
-        std::slice::from_ref(&resumed_message)
-    );
-    assert!(matches!(
-        rx.recv().await.expect("reconstruction tree event").msg,
-        EventMsg::SpineTreeUpdate(_)
-    ));
-    assert!(rx.try_recv().is_err(), "no extra observer events expected");
 }
 
 #[tokio::test]

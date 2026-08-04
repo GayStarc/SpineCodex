@@ -391,8 +391,7 @@ impl SamplingRuntime {
                 return Err(PlannerError::SamplingCommitPendingInstall);
             }
         }
-        let prepared = self.planner.prepare_compact(barrier)?;
-        self.planner.install_compact(prepared)
+        self.planner.compact(barrier)
     }
 
     pub fn projection(&self) -> &SpineProjection {
