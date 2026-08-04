@@ -6,12 +6,11 @@
 
 ## Why SpineCodex
 
-SpineCodex is an independently maintained distribution built on the OpenAI Codex CLI. It automatically inherits your existing Codex configuration and works out of the box.
-
-**Cost-efficient for long-horizon SWE:** **1.89× as many resolved tasks at 27%
-lower total cost** on SWE-Milestone. **Stronger on frontier challenges:**
-**+10.80pp average score** on ProgramBench and **+9.2pp mean score** on
-FrontierSWE.
+SpineCodex is an independently maintained distribution built on the OpenAI
+Codex CLI. It inherits your existing Codex configuration and works out of the
+box. Across benchmarks, it delivers **1.89× as many resolved tasks at 27% lower
+total cost** on SWE-Milestone, **+10.80pp average score** on ProgramBench, and
+**+9.2pp mean score** on FrontierSWE.
 
 | Linear context                                     | SpineCodex                                                                                                                                                                                                                     |
 | -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
