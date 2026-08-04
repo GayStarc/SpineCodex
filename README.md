@@ -2,7 +2,14 @@
 
 <p align="center"><em>Life begins with division and differentiation. An agent owns its own morphogenesis.</em></p>
 
+<p align="center">
+  <a href="https://www.npmjs.com/package/@spinejit/spine-codex"><img src="https://img.shields.io/npm/v/%40spinejit%2Fspine-codex?label=npm" alt="npm version" /></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="Apache-2.0 license" /></a>
+</p>
+
 <p align="center">Based on <a href="https://github.com/openai/codex">OpenAI Codex</a>. Maintained by <a href="https://ghabix.github.io">Jiahong Xiang</a> and <a href="https://camsyn.github.io">Kunqiu Chen</a>.</p>
+
+<p align="center">English · <a href="./README.zh-CN.md">简体中文</a></p>
 
 ## Why SpineCodex
 
