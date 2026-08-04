@@ -43,6 +43,7 @@ use wiremock::ResponseTemplate;
 const SPAWN_NAMESPACE: &str = "spine";
 const SPAWN_TOOL: &str = "spawn";
 const SPAWN_CALL_ID: &str = "spawn-lifecycle-call";
+const SEED_PARENT_PROMPT: &str = "seed reasoning context before spawn";
 const FIRST_PARENT_PROMPT: &str = "run the lifecycle spawn batch";
 const SECOND_PARENT_PROMPT: &str = "run the replacement spawn batch";
 const BRANCH_PROMPT_MARKER: &str = "You are a spawned execution branch.";
@@ -318,6 +319,22 @@ async fn build_reverse_completion_fixture(
     ResponseMock,
 )> {
     let server = start_mock_server().await;
+    let _seed_response = mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, SEED_PARENT_PROMPT),
+        sse(vec![
+            ev_response_created("seed-response"),
+            ev_reasoning_item("seed-reasoning-without-content", &["omitted"], &[]),
+            ev_reasoning_item(
+                "seed-reasoning-with-content",
+                &["present"],
+                &["raw reasoning content"],
+            ),
+            ev_assistant_message("seed-message", "seed complete"),
+            ev_completed("seed-response"),
+        ]),
+    )
+    .await;
     let parent_spawn = mount_sse_once_match(
         &server,
         is_parent_spawn_request,
@@ -470,6 +487,7 @@ async fn spawn_starts_batch_concurrently_and_orders_reverse_completion_impl() ->
         );
         Result::<()>::Ok(())
     };
+    test.submit_turn(SEED_PARENT_PROMPT).await?;
     tokio::try_join!(test.submit_turn(FIRST_PARENT_PROMPT), observe_overlap)?;
 
     let parent_request =
@@ -530,6 +548,25 @@ async fn spawn_starts_batch_concurrently_and_orders_reverse_completion_impl() ->
         exact_lcp,
         parent_input.len(),
         "child must preserve the complete parent request input as an exact prefix"
+    );
+    assert_eq!(
+        child_input.len(),
+        parent_input.len() + 1,
+        "child must append exactly one task envelope to the inherited parent input"
+    );
+    assert!(
+        parent_input.iter().any(|item| {
+            item.get("type").and_then(Value::as_str) == Some("reasoning")
+                && item.get("content").is_none()
+        }),
+        "parent request should contain a reasoning item with omitted content"
+    );
+    assert!(
+        parent_input.iter().any(|item| {
+            item.get("type").and_then(Value::as_str) == Some("reasoning")
+                && item.get("content").is_some()
+        }),
+        "parent request should contain a reasoning item with serialized content"
     );
     let parent_cache_key = parent_first_body["prompt_cache_key"]
         .as_str()

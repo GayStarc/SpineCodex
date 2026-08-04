@@ -280,11 +280,19 @@ pub(crate) fn response_item_to_char_and_source(
     pending_calls: &mut HashMap<String, ToolUse>,
     spawn_enabled: bool,
 ) -> (SpineChar, ResponseItem) {
+    let mut source_item = item.clone();
+    if let ResponseItem::Reasoning { content, .. } = &mut source_item
+        && content.is_none()
+    {
+        // Request serialization omits an empty reasoning content list. Preserve that wire shape
+        // after rollout replay, where an omitted field deserializes as `None`.
+        *content = Some(Vec::new());
+    }
     if is_turn_aborted_item(item) {
         pending_calls.clear();
         return (
             SpineChar::TurnAborted(message_from_response_item(boundary.0 as usize, item)),
-            item.clone(),
+            source_item,
         );
     }
     if let Some(request) = normalized_tool_request(item) {
@@ -296,12 +304,12 @@ pub(crate) fn response_item_to_char_and_source(
                 name: request.name,
                 arguments: request.arguments,
             }),
-            item.clone(),
+            source_item,
         );
     }
     if let Some(response) = normalized_tool_response(item) {
         let Some(call) = pending_calls.remove(response.call_id) else {
-            return (SpineChar::Opaque { boundary }, item.clone());
+            return (SpineChar::Opaque { boundary }, source_item);
         };
         return (
             SpineChar::ToolResponse(ToolResponseChar {
@@ -310,7 +318,7 @@ pub(crate) fn response_item_to_char_and_source(
                 outcome: classify_tool_outcome(&call, response.output, spawn_enabled),
                 output: response.output.body.to_text().unwrap_or_default(),
             }),
-            item.clone(),
+            source_item,
         );
     }
     let character = match item {
@@ -319,7 +327,7 @@ pub(crate) fn response_item_to_char_and_source(
         }
         _ => SpineChar::Opaque { boundary },
     };
-    (character, item.clone())
+    (character, source_item)
 }
 
 fn response_item_matches_char(
