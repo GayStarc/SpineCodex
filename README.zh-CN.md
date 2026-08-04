@@ -40,8 +40,8 @@ spine-codex
 运行 `/experimental` 启用 Spine Spawn 或 Memory Projection，保存设置后开始新的对话。
 
 <p align="center">
-  <a href="./.github/assets/spinecodex-loop.webp">
-    <img src="./.github/assets/spinecodex-loop.webp" width="1200" alt="SpineCodex 上下文树通过递归生成智能体不断生长" />
+  <a href="./.github/assets/spinecodex-loop-zh-cn.webp">
+    <img src="./.github/assets/spinecodex-loop-zh-cn.webp" width="1200" alt="SpineCodex 上下文树通过递归生成智能体不断生长" />
   </a>
   <br />
   <sub>点击查看完整动画。</sub>
