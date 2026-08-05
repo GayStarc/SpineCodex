@@ -363,6 +363,11 @@ async fn responses_lite_spine_memory_slots_preserve_context_order() -> Result<()
     assert!(
         input
             .iter()
+            .all(|item| { item.get("call_id").and_then(Value::as_str) != Some("memory-close") })
+    );
+    assert!(
+        input
+            .iter()
             .all(|item| !item.to_string().contains("<spine_status ")),
         "Responses Lite request must not contain a Spine status tail"
     );

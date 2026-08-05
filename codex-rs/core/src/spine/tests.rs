@@ -271,42 +271,34 @@ fn adapter_projects_open_and_close_from_native_function_carriers() {
 
     let projection = derive_from_rollout(&rollout);
     assert_eq!(projection.spine.cursor.to_string(), "1");
-    assert_eq!(projection.context.len(), 5);
+    assert_eq!(projection.context.len(), 3);
     assert_eq!(text(&projection.context[0]), "[U1]\nrequest");
     assert_eq!(text(&projection.context[1]), "[U2]\ndetail");
     assert_eq!(
         text(&projection.context[2]),
         "<spine_memory node_id=\"1.1\">\ndone\n</spine_memory>"
     );
-    assert!(matches!(
-        projection.context[3],
-        ResponseItem::FunctionCall { .. }
-    ));
-    assert!(matches!(
-        projection.context[4],
-        ResponseItem::FunctionCallOutput { .. }
-    ));
 }
 
 #[test]
 fn adapter_flattens_nested_memory_slots_in_source_order() {
     let rollout = vec![
         call("open-parent", "spine.open", r#"{"summary":"parent"}"#),
-        output("open-parent", Some(true), "ok"),
+        spine_success_output("open-parent", tool_response::SpineToolResponse::Open),
         message("user", "before"),
         call("open-child", "spine.open", r#"{"summary":"child"}"#),
-        output("open-child", Some(true), "ok"),
+        spine_success_output("open-child", tool_response::SpineToolResponse::Open),
         message("user", "inside"),
         call("close-child", "spine.close", r#"{"memory":"child done"}"#),
-        output("close-child", Some(true), "ok"),
+        spine_success_output("close-child", tool_response::SpineToolResponse::Close),
         message("user", "after"),
         call("close-parent", "spine.close", r#"{"memory":"parent done"}"#),
-        output("close-parent", Some(true), "ok"),
+        spine_success_output("close-parent", tool_response::SpineToolResponse::Close),
     ];
 
     let projection = derive_from_rollout(&rollout);
     assert_eq!(projection.spine.cursor.to_string(), "1");
-    assert_eq!(projection.context.len(), 7);
+    assert_eq!(projection.context.len(), 5);
     assert_eq!(text(&projection.context[0]), "[U1]\nbefore");
     assert_eq!(text(&projection.context[1]), "[U2]\ninside");
     assert_eq!(
@@ -318,14 +310,6 @@ fn adapter_flattens_nested_memory_slots_in_source_order() {
         text(&projection.context[4]),
         "<spine_memory node_id=\"1.1\">\nparent done\n</spine_memory>"
     );
-    assert!(matches!(
-        projection.context[5],
-        ResponseItem::FunctionCall { .. }
-    ));
-    assert!(matches!(
-        projection.context[6],
-        ResponseItem::FunctionCallOutput { .. }
-    ));
 }
 
 #[test]
@@ -564,10 +548,10 @@ fn closed_memory_projection_entries_follow_rollout_projection() {
     let rollout = vec![
         message("user", "request"),
         call("open", "spine.open", r#"{"summary":"task"}"#),
-        output("open", Some(true), "ok"),
+        spine_success_output("open", tool_response::SpineToolResponse::Open),
         message("user", "detail"),
         call("close", "spine.close", r#"{"memory":"done"}"#),
-        output("close", Some(true), "ok"),
+        spine_success_output("close", tool_response::SpineToolResponse::Close),
     ];
 
     let projection = derive_from_rollout(&rollout).spine;
@@ -1301,10 +1285,10 @@ fn closed_memory_user_slot_preserves_the_complete_native_message() {
     SpineUserAnchor::new(1).apply(&mut expected);
     let rollout = vec![
         call("open", "spine.open", r#"{"summary":"image task"}"#),
-        output("open", Some(true), "ok"),
+        spine_success_output("open", tool_response::SpineToolResponse::Open),
         RolloutItem::ResponseItem(item),
         call("close", "spine.close", r#"{"memory":"image inspected"}"#),
-        output("close", Some(true), "ok"),
+        spine_success_output("close", tool_response::SpineToolResponse::Close),
     ];
 
     let projection = derive_from_rollout(&rollout);

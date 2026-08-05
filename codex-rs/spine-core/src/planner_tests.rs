@@ -470,6 +470,43 @@ fn sampling_planner_memory_slots_preserve_close_and_atomic_next() {
                 if *source_id == child_user && labels == &[ContextLabel::UserAnchor(2)]
         )
     }));
+
+    let close = planner
+        .begin_sampling(attempt_id("attempt-close-memory"))
+        .expect("begin close");
+    let close_source = planner
+        .observe_source(tool_group(7, 8, "close-memory", "spine.close"))
+        .expect("close source");
+    complete_fact(
+        &close,
+        "execution-close-memory",
+        1,
+        SpineFactKind::Close,
+        "close-memory",
+        SpineOperationFact::Close {
+            memory: "finished second task".to_string(),
+        },
+    );
+    let output = finish_sampling(&mut planner, &close, 8, "commit-close-memory");
+    let [execution] = output.record.executions.as_slice() else {
+        panic!("close commit must contain one execution");
+    };
+    assert_eq!(execution.source_span.start, close_source[0]);
+    assert_eq!(execution.source_span.end, close_source[1]);
+    assert!(output.plan.cells.iter().all(|cell| {
+        !matches!(
+            cell,
+            crate::ContextPlanCell::Source { source_id, .. }
+                if close_source.contains(source_id)
+        )
+    }));
+    assert!(matches!(
+        output.plan.cells.last(),
+        Some(crate::ContextPlanCell::Projection {
+            item: crate::ContextItem::MemorySlot(crate::MemorySlot::Summary { body, .. }),
+            ..
+        }) if body == "finished second task"
+    ));
 }
 
 #[test]

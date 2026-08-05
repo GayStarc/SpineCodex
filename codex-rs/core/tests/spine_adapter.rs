@@ -594,6 +594,168 @@ async fn spine_transition_baseline() -> Result<()> {
 }
 
 #[tokio::test]
+async fn close_replaces_nested_sibling_with_memory_without_leaking_its_carrier() -> Result<()> {
+    let server = start_mock_server().await;
+    let response_mock = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_response_created("close-replacement-open"),
+                ev_function_call_with_namespace(
+                    "close-replacement-open-call",
+                    "spine",
+                    "open",
+                    r#"{"summary":"first child"}"#,
+                ),
+                ev_completed("close-replacement-open"),
+            ]),
+            sse(vec![
+                ev_response_created("close-replacement-next"),
+                ev_function_call_with_namespace(
+                    "close-replacement-next-call",
+                    "spine",
+                    "next",
+                    r#"{"memory":"first child memory","summary":"second child"}"#,
+                ),
+                ev_completed("close-replacement-next"),
+            ]),
+            sse(vec![
+                ev_response_created("close-replacement-close"),
+                ev_function_call_with_namespace(
+                    "close-replacement-close-call",
+                    "spine",
+                    "close",
+                    r#"{"memory":"second child memory"}"#,
+                ),
+                ev_completed("close-replacement-close"),
+            ]),
+            sse(vec![
+                ev_response_created("close-replacement-parent"),
+                ev_completed("close-replacement-parent"),
+            ]),
+            sse(vec![
+                ev_response_created("close-replacement-later"),
+                ev_completed("close-replacement-later"),
+            ]),
+        ],
+    )
+    .await;
+    let test = spine_test_codex().build(&server).await?;
+
+    test.submit_turn("close replacement parent evidence")
+        .await?;
+    test.submit_turn("later parent sampling").await?;
+
+    let requests = response_mock.requests();
+    assert_eq!(requests.len(), 5);
+    let close_producing_input = requests[2].input();
+    assert!(close_producing_input.iter().any(|item| {
+        item.get("call_id").and_then(Value::as_str) == Some("close-replacement-next-call")
+    }));
+
+    let immediate_parent_input = requests[3].input();
+    let first_memory = immediate_parent_input
+        .iter()
+        .position(|item| item.to_string().contains("first child memory"))
+        .context("missing first closed sibling memory")?;
+    let second_memory = immediate_parent_input
+        .iter()
+        .position(|item| item.to_string().contains("second child memory"))
+        .context("missing second closed sibling memory")?;
+    assert_eq!(second_memory, first_memory + 1);
+    assert_eq!(second_memory + 1, immediate_parent_input.len());
+    assert_eq!(
+        immediate_parent_input[first_memory]
+            .pointer("/content/0/text")
+            .and_then(Value::as_str),
+        Some("<spine_memory node_id=\"1.1\">\nfirst child memory\n</spine_memory>")
+    );
+    assert_eq!(
+        immediate_parent_input[second_memory]
+            .pointer("/content/0/text")
+            .and_then(Value::as_str),
+        Some("<spine_memory node_id=\"1.2\">\nsecond child memory\n</spine_memory>")
+    );
+    for input in [immediate_parent_input, requests[4].input()] {
+        assert!(input.iter().all(|item| {
+            item.get("call_id").and_then(Value::as_str) != Some("close-replacement-close-call")
+        }));
+    }
+
+    let rollout = fs::read_to_string(test.codex.rollout_path().context("rollout path")?)?;
+    let rollout_lines = rollout
+        .lines()
+        .map(serde_json::from_str::<RolloutLine>)
+        .collect::<Result<Vec<_>, _>>()?;
+    assert!(rollout_lines.iter().any(|line| {
+        matches!(
+            &line.item,
+            RolloutItem::ResponseItem(codex_protocol::models::ResponseItem::FunctionCall {
+                call_id,
+                ..
+            }) if call_id == "close-replacement-close-call"
+        )
+    }));
+    assert!(rollout_lines.iter().any(|line| {
+        matches!(
+            &line.item,
+            RolloutItem::ResponseItem(
+                codex_protocol::models::ResponseItem::FunctionCallOutput { call_id, .. }
+            ) if call_id == "close-replacement-close-call"
+        )
+    }));
+
+    let records = load_sampling_records(&test)?;
+    let close_commit_index = records
+        .iter()
+        .position(|record| {
+            matches!(
+                record,
+                SamplingArchiveRecord::SamplingCommit(commit)
+                    if commit.executions.iter().any(|execution| {
+                        matches!(
+                            (&execution.origin, &execution.operation),
+                            (
+                                spine_core::ExecutionOrigin::Direct { call_id },
+                                SpineOperationFact::Close { memory }
+                            ) if call_id == "close-replacement-close-call"
+                                && memory == "second child memory"
+                        )
+                    })
+            )
+        })
+        .context("missing durable close commit")?;
+    let SamplingArchiveRecord::SamplingCommit(close_commit) = &records[close_commit_index] else {
+        unreachable!("close commit index must identify a commit");
+    };
+    let close_execution = close_commit
+        .executions
+        .iter()
+        .find(|execution| {
+            matches!(
+                &execution.origin,
+                spine_core::ExecutionOrigin::Direct { call_id }
+                    if call_id == "close-replacement-close-call"
+            )
+        })
+        .context("close commit must retain its execution")?;
+    assert!(
+        close_execution.source_span.start.ordinal() < close_execution.source_span.end.ordinal()
+    );
+    let SamplingArchiveRecord::SamplingStarted(next_started) = &records[close_commit_index + 1]
+    else {
+        anyhow::bail!("close commit must be followed by the parent sampling start");
+    };
+    assert_eq!(next_started.pre_boundary, close_commit.post_boundary);
+    assert_eq!(
+        next_started.previous_commit_id.as_ref(),
+        Some(&close_commit.commit_id)
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn spine_next_replaces_closed_child_local_context_and_opens_sibling() -> Result<()> {
     let server = start_mock_server().await;
     let response_mock = mount_sse_sequence(
