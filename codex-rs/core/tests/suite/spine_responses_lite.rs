@@ -363,7 +363,7 @@ async fn responses_lite_spine_memory_slots_preserve_context_order() -> Result<()
     assert!(
         input
             .iter()
-            .all(|item| { item.get("call_id").and_then(Value::as_str) != Some("memory-close") })
+            .any(|item| { item.get("call_id").and_then(Value::as_str) == Some("memory-close") })
     );
     assert!(
         input

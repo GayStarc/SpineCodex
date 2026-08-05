@@ -442,6 +442,9 @@ impl SpineReducer {
         self.nodes[closed_index].end = Some(group.start);
         let parent_index = self.node_index(&parent_id);
         self.nodes[parent_index].status = NodeStatus::Live;
+        self.nodes[parent_index]
+            .entries
+            .push(NodeEntry::Leaf(ContextItem::ToolCall(group)));
         self.cursor = parent_id;
     }
 

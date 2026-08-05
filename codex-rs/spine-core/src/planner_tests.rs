@@ -493,20 +493,26 @@ fn sampling_planner_memory_slots_preserve_close_and_atomic_next() {
     };
     assert_eq!(execution.source_span.start, close_source[0]);
     assert_eq!(execution.source_span.end, close_source[1]);
-    assert!(output.plan.cells.iter().all(|cell| {
-        !matches!(
+    assert!(output.plan.cells.iter().any(|cell| {
+        matches!(
             cell,
-            crate::ContextPlanCell::Source { source_id, .. }
-                if close_source.contains(source_id)
+            crate::ContextPlanCell::Projection {
+                item: crate::ContextItem::MemorySlot(crate::MemorySlot::Summary { body, .. }),
+                ..
+            } if body == "finished second task"
         )
     }));
-    assert!(matches!(
-        output.plan.cells.last(),
-        Some(crate::ContextPlanCell::Projection {
-            item: crate::ContextItem::MemorySlot(crate::MemorySlot::Summary { body, .. }),
-            ..
-        }) if body == "finished second task"
-    ));
+    for source_id in close_source {
+        assert!(output.plan.cells.iter().any(|cell| {
+            matches!(
+                cell,
+                crate::ContextPlanCell::Source {
+                    source_id: planned,
+                    ..
+                } if *planned == source_id
+            )
+        }));
+    }
 }
 
 #[test]

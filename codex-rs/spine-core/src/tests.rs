@@ -818,11 +818,11 @@ fn parent_memory_preserves_child_memory_in_source_order() {
 }
 
 #[test]
-fn close_replaces_the_closed_child_with_memory_only() {
+fn close_projects_memory_then_current_sampling_in_parent() {
     let projection = apply(&[open(1, "child"), close(3, "done")]);
     assert!(matches!(
         projection.visible_context.as_slice(),
-        [ContextItem::MemorySlot(_)]
+        [ContextItem::MemorySlot(_), ContextItem::ToolCall(_)]
     ));
 }
 

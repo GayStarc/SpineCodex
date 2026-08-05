@@ -594,7 +594,7 @@ async fn spine_transition_baseline() -> Result<()> {
 }
 
 #[tokio::test]
-async fn close_replaces_nested_sibling_with_memory_without_leaking_its_carrier() -> Result<()> {
+async fn close_replaces_nested_sibling_and_keeps_current_sampling_in_parent() -> Result<()> {
     let server = start_mock_server().await;
     let response_mock = mount_sse_sequence(
         &server,
@@ -663,7 +663,7 @@ async fn close_replaces_nested_sibling_with_memory_without_leaking_its_carrier()
         .position(|item| item.to_string().contains("second child memory"))
         .context("missing second closed sibling memory")?;
     assert_eq!(second_memory, first_memory + 1);
-    assert_eq!(second_memory + 1, immediate_parent_input.len());
+    assert_eq!(second_memory + 3, immediate_parent_input.len());
     assert_eq!(
         immediate_parent_input[first_memory]
             .pointer("/content/0/text")
@@ -677,9 +677,22 @@ async fn close_replaces_nested_sibling_with_memory_without_leaking_its_carrier()
         Some("<spine_memory node_id=\"1.2\">\nsecond child memory\n</spine_memory>")
     );
     for input in [immediate_parent_input, requests[4].input()] {
-        assert!(input.iter().all(|item| {
-            item.get("call_id").and_then(Value::as_str) != Some("close-replacement-close-call")
-        }));
+        let close_request = input
+            .iter()
+            .position(|item| {
+                item.get("call_id").and_then(Value::as_str) == Some("close-replacement-close-call")
+                    && item.get("type").and_then(Value::as_str) == Some("function_call")
+            })
+            .context("parent context must retain the Close request")?;
+        let close_output = input
+            .iter()
+            .position(|item| {
+                item.get("call_id").and_then(Value::as_str) == Some("close-replacement-close-call")
+                    && item.get("type").and_then(Value::as_str) == Some("function_call_output")
+            })
+            .context("parent context must retain the Close output")?;
+        assert_eq!(close_request, second_memory + 1);
+        assert_eq!(close_output, close_request + 1);
     }
 
     let rollout = fs::read_to_string(test.codex.rollout_path().context("rollout path")?)?;
