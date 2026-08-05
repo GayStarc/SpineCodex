@@ -9,7 +9,9 @@ use crate::agent_communication::AgentCommunicationKind;
 use crate::tools::handlers::multi_agents_spec::SpawnAgentToolOptions;
 use crate::tools::handlers::multi_agents_spec::create_spawn_agent_tool_v2;
 use crate::tools::handlers::multi_agents_v2::message_tool::message_content;
+use codex_features::Feature;
 use codex_protocol::AgentPath;
+use codex_protocol::protocol::MultiAgentVersion;
 use codex_tools::ToolSpec;
 
 #[derive(Default)]
@@ -49,7 +51,11 @@ async fn handle_spawn_agent(
     } = invocation;
     let arguments = function_arguments(payload)?;
     let args: SpawnAgentArgs = parse_arguments(&arguments)?;
-    let fork_mode = args.fork_mode()?;
+    let fork_mode = effective_fork_mode(
+        args.fork_mode()?,
+        turn.config.features.enabled(Feature::SpineJit),
+        turn.multi_agent_version,
+    );
     let role_name = args
         .agent_type
         .as_deref()
@@ -64,7 +70,10 @@ async fn handle_spawn_agent(
     if let Some(service_tier) = args.service_tier.as_ref() {
         config.service_tier = Some(service_tier.clone());
     }
-    if matches!(fork_mode, Some(SpawnAgentForkMode::FullHistory)) {
+    if matches!(
+        fork_mode,
+        Some(SpawnAgentForkMode::FullHistory | SpawnAgentForkMode::FullHistoryTrimToolCallSuffix)
+    ) {
         reject_full_fork_spawn_overrides(
             role_name,
             args.model.as_deref(),
@@ -169,6 +178,21 @@ async fn handle_spawn_agent(
     }
 }
 
+fn effective_fork_mode(
+    requested: Option<SpawnAgentForkMode>,
+    spine_jit_enabled: bool,
+    multi_agent_version: MultiAgentVersion,
+) -> Option<SpawnAgentForkMode> {
+    match requested {
+        Some(SpawnAgentForkMode::FullHistory)
+            if spine_jit_enabled && multi_agent_version == MultiAgentVersion::V2 =>
+        {
+            Some(SpawnAgentForkMode::FullHistoryTrimToolCallSuffix)
+        }
+        other => other,
+    }
+}
+
 impl CoreToolRuntime for Handler {
     fn matches_kind(&self, payload: &ToolPayload) -> bool {
         matches!(payload, ToolPayload::Function { .. })
@@ -252,5 +276,51 @@ impl ToolOutput for SpawnAgentResult {
 
     fn code_mode_result(&self, _payload: &ToolPayload) -> JsonValue {
         tool_output_code_mode_result(self, "spawn_agent")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn spine_jit_maps_v2_full_history_to_unfiltered_tool_batch_boundary() {
+        assert_eq!(
+            effective_fork_mode(
+                Some(SpawnAgentForkMode::FullHistory),
+                true,
+                MultiAgentVersion::V2,
+            ),
+            Some(SpawnAgentForkMode::FullHistoryTrimToolCallSuffix)
+        );
+    }
+
+    #[test]
+    fn feature_off_and_bounded_forks_preserve_native_modes() {
+        assert_eq!(
+            effective_fork_mode(
+                Some(SpawnAgentForkMode::FullHistory),
+                false,
+                MultiAgentVersion::V2,
+            ),
+            Some(SpawnAgentForkMode::FullHistory)
+        );
+        assert_eq!(
+            effective_fork_mode(
+                Some(SpawnAgentForkMode::LastNTurns(3)),
+                true,
+                MultiAgentVersion::V2,
+            ),
+            Some(SpawnAgentForkMode::LastNTurns(3))
+        );
+        assert_eq!(effective_fork_mode(None, true, MultiAgentVersion::V2), None);
+        assert_eq!(
+            effective_fork_mode(
+                Some(SpawnAgentForkMode::FullHistory),
+                true,
+                MultiAgentVersion::V1,
+            ),
+            Some(SpawnAgentForkMode::FullHistory)
+        );
     }
 }

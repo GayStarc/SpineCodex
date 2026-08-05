@@ -37,7 +37,8 @@ const SPAWN_DESCRIPTION: &str = concat!(
     "The original continuation is suspended during the fission; no supervisory model remains active. ",
     "Join waits for every branch, records their terminal results as closed task nodes under the current Spine scope atomically in input order, and then resumes the original continuation. ",
     "Call spine.spawn at most once in one model response; place every concurrent branch in that call's tasks array. ",
-    "Use spawn when the current work can be differentiated into two or more independently owned branches and concurrent execution would materially improve speed or result quality. ",
+    "Use spine.spawn only when the current work has at least two substantial, self-contained, independently completable branches and concurrent execution would materially improve speed or result quality. Each branch must be able to complete with a bounded fallback rather than depending on another branch's result. ",
+    "For one bounded delegated subtask, incremental assistance, or work that benefits from ongoing parent supervision, use the ordinary multi-agent spawn tool when available or continue locally. ",
     "Do not spawn paraphrased branches over the same tightly coupled question unless they are deliberately assigned as independent replication or falsification. ",
     "Branch workspace and external effects are non-transactional, so production-file writes require disjoint ownership or one explicitly named integration owner."
 );

@@ -638,9 +638,16 @@ impl Session {
                 }
             };
         let mcp_thread_init = thread_extension_init.clone();
-        let prompt_cache_key_override = thread_extension_init
-            .get::<SpawnPromptCacheAffinity>()
-            .map(|_| session_id.to_string())
+        let spine_session_cache_affinity = uses_spine_session_cache_affinity(
+            config.features.enabled(Feature::SpineJit),
+            thread_extension_init
+                .get::<SpawnPromptCacheAffinity>()
+                .is_some(),
+            initial_multi_agent_version,
+            &session_configuration.session_source,
+        );
+        let prompt_cache_key_override = spine_session_cache_affinity
+            .then(|| session_id.to_string())
             .or_else(|| {
                 crate::guardian::prompt_cache_key_override_for_review_session(
                     &session_configuration.session_source,
@@ -1363,5 +1370,91 @@ impl Session {
                 Err(err)
             }
         }
+    }
+}
+
+fn uses_spine_session_cache_affinity(
+    spine_jit_enabled: bool,
+    explicit_spawn_affinity: bool,
+    multi_agent_version: Option<MultiAgentVersion>,
+    session_source: &SessionSource,
+) -> bool {
+    spine_jit_enabled
+        && (explicit_spawn_affinity
+            || (multi_agent_version == Some(MultiAgentVersion::V2)
+                && matches!(
+                    session_source,
+                    SessionSource::Cli
+                        | SessionSource::VSCode
+                        | SessionSource::Exec
+                        | SessionSource::Mcp
+                        | SessionSource::Custom(_)
+                        | SessionSource::Unknown
+                        | SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
+                )))
+}
+
+#[cfg(test)]
+mod cache_affinity_tests {
+    use super::*;
+
+    fn thread_spawn_source() -> SessionSource {
+        SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id: ThreadId::new(),
+            depth: 1,
+            agent_path: None,
+            agent_nickname: None,
+            agent_role: None,
+        })
+    }
+
+    #[test]
+    fn spine_jit_v2_thread_spawns_use_session_cache_affinity() {
+        assert!(uses_spine_session_cache_affinity(
+            true,
+            false,
+            Some(MultiAgentVersion::V2),
+            &thread_spawn_source()
+        ));
+    }
+
+    #[test]
+    fn spine_jit_v2_root_sessions_use_session_cache_affinity() {
+        assert!(uses_spine_session_cache_affinity(
+            true,
+            false,
+            Some(MultiAgentVersion::V2),
+            &SessionSource::Cli
+        ));
+    }
+
+    #[test]
+    fn feature_off_preserves_native_thread_cache_keys() {
+        assert!(!uses_spine_session_cache_affinity(
+            false,
+            true,
+            Some(MultiAgentVersion::V2),
+            &thread_spawn_source()
+        ));
+    }
+
+    #[test]
+    fn explicit_spine_spawn_affinity_remains_supported() {
+        assert!(uses_spine_session_cache_affinity(
+            true,
+            true,
+            None,
+            &SessionSource::Cli
+        ));
+    }
+
+    #[test]
+    fn spine_jit_v1_thread_spawns_keep_native_cache_keys() {
+        assert!(!uses_spine_session_cache_affinity(
+            true,
+            false,
+            Some(MultiAgentVersion::V1),
+            &thread_spawn_source()
+        ));
     }
 }

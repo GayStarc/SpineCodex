@@ -263,12 +263,16 @@ async fn spine_spawn_is_independent_from_multi_agent_v2() {
         enabled_without_v2.exposure(&ToolName::namespaced("spine", "spawn").to_string()),
         ToolExposure::DirectAndCodeMode
     );
-    enabled_without_v2.assert_visible_lacks(&[MULTI_AGENT_V2_NAMESPACE]);
+    enabled_without_v2.assert_visible_contains(&[MULTI_AGENT_V2_NAMESPACE]);
     assert!(
-        enabled_without_v2
+        !enabled_without_v2
             .namespace_function_names(MULTI_AGENT_V2_NAMESPACE)
-            .is_empty(),
-        "SpineSpawn must not expose the MultiAgentV2 namespace"
+            .is_empty()
+    );
+    assert_eq!(
+        enabled_without_v2.namespace_function_names(MULTI_AGENT_V2_NAMESPACE),
+        baseline_without_spawn.namespace_function_names(MULTI_AGENT_V2_NAMESPACE),
+        "SpineSpawn must not change the resolved MultiAgentV2 surface"
     );
     let mut enabled_spine_functions = enabled_without_v2
         .namespace_function_names("spine")
@@ -410,7 +414,7 @@ async fn spine_spawn_description_tracks_configured_child_capacity() {
 }
 
 #[tokio::test]
-async fn multi_agent_surface_requires_matching_feature_for_resolved_runtime() {
+async fn multi_agent_surface_uses_resolved_runtime_independently_of_feature_source() {
     for runtime in [
         MultiAgentVersion::Disabled,
         MultiAgentVersion::V1,
@@ -426,7 +430,7 @@ async fn multi_agent_surface_requires_matching_feature_for_resolved_runtime() {
                 .await;
 
                 let expect_v1 = runtime == MultiAgentVersion::V1 && collab_enabled;
-                let expect_v2 = runtime == MultiAgentVersion::V2 && multi_agent_v2_enabled;
+                let expect_v2 = runtime == MultiAgentVersion::V2;
                 assert_eq!(
                     plan.visible_names
                         .iter()

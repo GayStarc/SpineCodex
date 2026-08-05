@@ -114,6 +114,29 @@ fn is_multi_agent_v2_usage_hint_message(item: &ResponseItem, usage_hint_texts: &
         .any(|usage_hint_text| usage_hint_text == text)
 }
 
+fn rollout_contains_multi_agent_v2_usage_hint(
+    items: &[RolloutItem],
+    usage_hint_text: &str,
+) -> bool {
+    let usage_hint_texts = [usage_hint_text.to_string()];
+    items.iter().any(|item| match item {
+        RolloutItem::ResponseItem(response_item) => {
+            is_multi_agent_v2_usage_hint_message(response_item, &usage_hint_texts)
+        }
+        RolloutItem::Compacted(compacted) => {
+            compacted
+                .replacement_history
+                .as_ref()
+                .is_some_and(|replacement_history| {
+                    replacement_history.iter().any(|response_item| {
+                        is_multi_agent_v2_usage_hint_message(response_item, &usage_hint_texts)
+                    })
+                })
+        }
+        _ => false,
+    })
+}
+
 fn is_tool_call_request_response_item(item: &ResponseItem) -> bool {
     matches!(
         item,
@@ -846,6 +869,22 @@ impl AgentControl {
             {
                 forked_rollout_items.push(RolloutItem::ResponseItem(subagent_usage_hint_message));
             }
+        } else if multi_agent_version == MultiAgentVersion::V2
+            && let Some(subagent_usage_hint_text) =
+                config.multi_agent_v2.subagent_usage_hint_text.clone()
+            && !rollout_contains_multi_agent_v2_usage_hint(
+                &forked_rollout_items,
+                &subagent_usage_hint_text,
+            )
+            && let Some(subagent_usage_hint_message) =
+                crate::context_manager::updates::build_developer_update_item(vec![
+                    subagent_usage_hint_text,
+                ])
+        {
+            // The unfiltered Spine fork deliberately preserves the parent's developer
+            // prefix. Add the child identity as a new suffix instead of rewriting that
+            // prefix, so the inherited request remains cacheable and structurally intact.
+            forked_rollout_items.push(RolloutItem::ResponseItem(subagent_usage_hint_message));
         }
         let mut thread_extension_init = ExtensionDataInit::new();
         thread_extension_init.insert(selected_capability_roots);

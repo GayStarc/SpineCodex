@@ -189,6 +189,7 @@ fn spine_builder() -> TestCodexBuilder {
 
 fn metadata_v2_spine_builder() -> TestCodexBuilder {
     spine_builder()
+        .with_model("gpt-5.6-sol")
         .with_model_info_override("gpt-5.6-sol", |model_info| {
             model_info.multi_agent_version = Some(MultiAgentVersion::V2);
         })
@@ -400,7 +401,7 @@ async fn build_reverse_completion_fixture(
                 .iter()
                 .find(|model| model.slug == "gpt-5.6-sol")
         })
-        .expect("GPT-5.6-Sol metadata should be present in the test model catalog");
+        .expect("selected model metadata should be present in the test model catalog");
     assert_eq!(
         selected_model.multi_agent_version,
         Some(MultiAgentVersion::V2)
@@ -421,7 +422,7 @@ async fn build_reverse_completion_fixture(
 }
 
 #[test]
-fn spine_spawn_runs_with_metadata_v2_and_multi_agent_feature_off() -> Result<()> {
+fn spine_spawn_respects_metadata_v2_when_multi_agent_feature_is_off() -> Result<()> {
     const TEST_STACK_SIZE_BYTES: usize = 16 * 1024 * 1024;
 
     let handle = std::thread::Builder::new()
@@ -513,10 +514,12 @@ async fn spawn_starts_batch_concurrently_and_orders_reverse_completion_impl() ->
     let child_first_body = child_first_request.body_json();
     assert!(!has_namespace(&parent_first_request, "collaboration"));
     assert!(!has_namespace(&child_first_request, "collaboration"));
+    assert!(parent_first_request.body_contains_text("metadata-v2-root-usage-hint"));
+    assert!(!parent_first_request.body_contains_text("metadata-v2-subagent-usage-hint"));
+    assert!(child_first_request.body_contains_text("metadata-v2-root-usage-hint"));
+    assert!(child_first_request.body_contains_text("metadata-v2-subagent-usage-hint"));
     for request in [&parent_first_request, &child_first_request] {
-        assert!(!request.body_contains_text("metadata-v2-root-usage-hint"));
-        assert!(!request.body_contains_text("metadata-v2-subagent-usage-hint"));
-        assert!(!request.body_contains_text(MULTI_AGENT_MODE_OPEN_TAG));
+        assert!(request.body_contains_text(MULTI_AGENT_MODE_OPEN_TAG));
     }
     assert!(
         child_first_request.body_contains_text(FIRST_PARENT_PROMPT),
@@ -1196,7 +1199,7 @@ async fn descendant_root_message_is_corrected_while_branch_internal_message_is_d
         ]),
     )
     .await;
-    mount_sse_once_match(
+    let descendant_parent_spawn = mount_sse_once_match(
         &server,
         |request: &wiremock::Request| {
             child_task_marker(request, "descendant-parent-marker")
@@ -1245,7 +1248,7 @@ async fn descendant_root_message_is_corrected_while_branch_internal_message_is_d
         ]),
     )
     .await;
-    mount_sse_once_match(
+    let descendant_first_request = mount_sse_once_match(
         &server,
         |request: &wiremock::Request| {
             body_contains(request, "descendant-worker-marker")
@@ -1332,6 +1335,44 @@ async fn descendant_root_message_is_corrected_while_branch_internal_message_is_d
             "Spawn must remove every direct branch and descendant before returning"
         );
     }
+    let ordinary_spawn_parent_request = unique_matching_request(
+        &descendant_parent_spawn,
+        "ordinary V2 spawn parent",
+        |request| body_has_child_task_marker(&request.body_json(), "descendant-parent-marker"),
+    );
+    let ordinary_spawn_child_request = unique_matching_request(
+        &descendant_first_request,
+        "ordinary V2 spawn child",
+        |request| {
+            request.body_contains_text("descendant-worker-marker")
+                && !request.input().iter().any(|item| {
+                    item.get("call_id").and_then(Value::as_str) == Some(B0_SPAWN_D0_CALL_ID)
+                })
+        },
+    );
+    let ordinary_spawn_parent_body = ordinary_spawn_parent_request.body_json();
+    let ordinary_spawn_child_body = ordinary_spawn_child_request.body_json();
+    let ordinary_spawn_parent_input = ordinary_spawn_parent_body["input"]
+        .as_array()
+        .expect("ordinary V2 spawn parent input must be an array");
+    let ordinary_spawn_child_input = ordinary_spawn_child_body["input"]
+        .as_array()
+        .expect("ordinary V2 spawn child input must be an array");
+    let exact_lcp = ordinary_spawn_parent_input
+        .iter()
+        .zip(ordinary_spawn_child_input)
+        .take_while(|(parent, child)| parent == child)
+        .count();
+    assert_eq!(
+        exact_lcp,
+        ordinary_spawn_parent_input.len(),
+        "SpineJIT V2 fork_turns=all must preserve the complete parent request input as an exact prefix"
+    );
+    assert_eq!(
+        ordinary_spawn_parent_body["prompt_cache_key"],
+        ordinary_spawn_child_body["prompt_cache_key"],
+        "SpineJIT V2 parent and child must share session prompt-cache affinity"
+    );
     let parent_request = parent_projection_request(
         &parent_followup,
         "descendant branch memory",

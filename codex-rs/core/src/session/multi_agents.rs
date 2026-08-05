@@ -1,6 +1,5 @@
 use crate::config::MultiAgentV2Config;
 use crate::session::turn_context::TurnContext;
-use codex_features::Feature;
 use codex_protocol::config_types::MultiAgentMode;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::MultiAgentVersion;
@@ -11,7 +10,7 @@ pub(super) fn usage_hint_text<'a>(
     turn_context: &'a TurnContext,
     session_source: &SessionSource,
 ) -> Option<&'a str> {
-    if !multi_agent_v2_surface_enabled(turn_context) {
+    if turn_context.multi_agent_version != MultiAgentVersion::V2 {
         return None;
     }
 
@@ -38,7 +37,7 @@ fn configured_usage_hint_text_for_source<'a>(
 }
 
 pub(crate) fn effective_multi_agent_mode(turn_context: &TurnContext) -> Option<MultiAgentMode> {
-    if !multi_agent_v2_surface_enabled(turn_context) {
+    if turn_context.multi_agent_version != MultiAgentVersion::V2 {
         return None;
     }
 
@@ -66,13 +65,4 @@ pub(crate) fn effective_multi_agent_mode(turn_context: &TurnContext) -> Option<M
         | SessionSource::Unknown => Some(multi_agent_mode),
         SessionSource::Internal(_) | SessionSource::SubAgent(_) => None,
     }
-}
-
-fn multi_agent_v2_surface_enabled(turn_context: &TurnContext) -> bool {
-    turn_context.multi_agent_version == MultiAgentVersion::V2
-        && turn_context
-            .config
-            .features
-            .get()
-            .enabled(Feature::MultiAgentV2)
 }
