@@ -271,13 +271,6 @@ pub(crate) async fn run_turn(
             }
 
             // Construct the input that we will send to the model.
-            let legacy_hook_input: Vec<ResponseItem> = async {
-                sess.clone_native_history()
-                    .await
-                    .for_prompt(&turn_context.model_info.input_modalities)
-            }
-            .instrument(trace_span!("run_turn.prepare_legacy_hook_input"))
-            .await;
             let responses_metadata = turn_context.turn_metadata_state.to_responses_metadata(
                 sess.installation_id.clone(),
                 window_id,
@@ -293,15 +286,13 @@ pub(crate) async fn run_turn(
                 cancellation_token.child_token(),
             )
             .await?;
-            Ok((
-                sampling_request_output,
-                sampling_request_input,
-                legacy_hook_input,
-            ))
+            // Spine MODIFIED: Reuse the successful model request input for post-turn hooks.
+            // Reason: The SDK mutates the one host history in place, so a separate pre-sampling native-history clone is both redundant and stale after retries.
+            Ok((sampling_request_output, sampling_request_input))
         }
         .await;
         match sampling_request_result {
-            Ok((sampling_request_output, _sampling_request_input, legacy_hook_input)) => {
+            Ok((sampling_request_output, sampling_request_input)) => {
                 let SamplingRequestResult {
                     needs_follow_up: model_needs_follow_up,
                     last_agent_message: sampling_request_last_agent_message,
@@ -412,7 +403,7 @@ pub(crate) async fn run_turn(
                     if run_legacy_after_agent_hook(
                         &sess,
                         &turn_context,
-                        &legacy_hook_input,
+                        &sampling_request_input,
                         last_agent_message.clone(),
                     )
                     .await
@@ -1157,7 +1148,6 @@ async fn run_sampling_request(
     let max_retries = turn_context.provider.info().stream_max_retries();
     let mut retries = 0;
     let mut initial_input = Some(input);
-    let mut original_input = None;
     loop {
         let prompt_input = if let Some(input) = initial_input.take() {
             input
@@ -1188,7 +1178,9 @@ async fn run_sampling_request(
         .await
         {
             Ok(output) => {
-                return Ok((output, original_input.unwrap_or(prompt.input)));
+                // Spine MODIFIED: Return the exact input accepted by the successful attempt.
+                // Reason: JIT projection may change history between retries, so post-turn consumers must not observe the failed attempt's stale prompt.
+                return Ok((output, prompt.input));
             }
             Err(CodexErr::ContextWindowExceeded) => {
                 sess.set_total_tokens_full(&turn_context).await;
@@ -1203,10 +1195,6 @@ async fn run_sampling_request(
             }
             Err(err) => err,
         };
-
-        if original_input.is_none() {
-            original_input = Some(prompt.input.clone());
-        }
 
         if !err.is_retryable() {
             let salvaged_memory = spawn_salvage::salvage_spawn_failure(

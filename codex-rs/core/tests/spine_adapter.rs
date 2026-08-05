@@ -1013,15 +1013,53 @@ async fn spine_adapter_reprojects_trimmed_tool_output_for_next_request() -> Resu
 
 #[cfg(not(target_os = "windows"))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn spine_adapter_legacy_notify_uses_sampling_user_input() -> Result<()> {
-    let server = start_mock_server().await;
-    let response_mock = mount_sse_once(
-        &server,
-        sse(vec![
-            ev_response_created("spine-notify"),
-            ev_completed("spine-notify"),
-        ]),
-    )
+async fn spine_adapter_legacy_notify_uses_successful_retry_input() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let opened = sse(vec![
+        ev_response_created("spine-notify-open"),
+        ev_function_call_with_namespace(
+            "spine-notify-open-call",
+            "spine",
+            "open",
+            r#"{"summary":"notify retry child"}"#,
+        ),
+        ev_completed("spine-notify-open"),
+    ]);
+    let opened_done = sse(vec![
+        ev_assistant_message("spine-notify-open-done", "child ready"),
+        ev_completed("spine-notify-open-done"),
+    ]);
+    let close_incomplete = sse(vec![
+        ev_response_created("spine-notify-close-incomplete"),
+        ev_function_call_with_namespace(
+            "spine-notify-close-call",
+            "spine",
+            "close",
+            r#"{"memory":"closed child memory"}"#,
+        ),
+    ]);
+    let retry_done = sse(vec![
+        ev_assistant_message("spine-notify-retry-done", "done"),
+        ev_completed("spine-notify-retry-done"),
+    ]);
+    let (server, _) = start_streaming_sse_server(vec![
+        vec![StreamingSseChunk {
+            gate: None,
+            body: opened,
+        }],
+        vec![StreamingSseChunk {
+            gate: None,
+            body: opened_done,
+        }],
+        vec![StreamingSseChunk {
+            gate: None,
+            body: close_incomplete,
+        }],
+        vec![StreamingSseChunk {
+            gate: None,
+            body: retry_done,
+        }],
+    ])
     .await;
     let notify_dir = TempDir::new()?;
     let notify_script = notify_dir.path().join("notify.sh");
@@ -1037,24 +1075,61 @@ printf '%s\n' "${@: -1}" >> "${payload_path}""#,
     let notify_script_str = notify_script.to_str().context("notify path")?.to_string();
     let mut builder = spine_test_codex().with_config(move |config| {
         config.notify = Some(vec![notify_script_str]);
+        config.model_provider.request_max_retries = Some(0);
+        config.model_provider.stream_max_retries = Some(1);
     });
-    let test = builder.build(&server).await?;
+    let test = builder.build_with_streaming_server(&server).await?;
 
-    test.submit_turn("native notify probe").await?;
+    test.submit_turn("open a child for notify retry").await?;
+    test.submit_turn("child evidence removed by close").await?;
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        while !notify_file.exists() {
+        while fs::read_to_string(&notify_file)
+            .map(|contents| contents.lines().count() < 2)
+            .unwrap_or(true)
+        {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
     })
     .await
     .context("timed out waiting for legacy notify payload")?;
-    let payload: Value = serde_json::from_str(&fs::read_to_string(notify_file)?)?;
-    let request_input = response_mock.single_request().input();
-    let projected_user_input =
-        message_text(&request_input, "user").context("missing projected user input")?;
-    assert_anchored_user_text(projected_user_input, "native notify probe")?;
-    assert_eq!(payload["input-messages"], json!([projected_user_input]));
+    let notify_payloads = fs::read_to_string(&notify_file)?
+        .lines()
+        .map(serde_json::from_str::<Value>)
+        .collect::<Result<Vec<_>, _>>()?;
+    let requests = server.requests().await;
+    assert_eq!(requests.len(), 4);
+    let failed_input: Value = serde_json::from_slice(&requests[2])?;
+    let retry_input: Value = serde_json::from_slice(&requests[3])?;
+    assert!(
+        !failed_input["input"]
+            .to_string()
+            .contains("closed child memory"),
+        "failed attempt must use the pre-transition projection"
+    );
+    assert!(
+        retry_input["input"]
+            .to_string()
+            .contains("closed child memory"),
+        "successful retry must use the projection installed by the failed attempt"
+    );
+    let retry_user_messages = retry_input["input"]
+        .as_array()
+        .context("retry input should be an array")?
+        .iter()
+        .filter_map(|item| serde_json::from_value(item.clone()).ok())
+        .filter_map(|item| match codex_core::parse_turn_item(&item) {
+            Some(codex_protocol::items::TurnItem::UserMessage(message)) => Some(message.message()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        notify_payloads
+            .last()
+            .context("missing final legacy notify payload")?["input-messages"],
+        json!(retry_user_messages)
+    );
 
+    server.shutdown().await;
     Ok(())
 }
 

@@ -3603,13 +3603,6 @@ impl Session {
         state.clone_history()
     }
 
-    /// Return host-native history for runtime side channels. Model sampling uses the
-    /// Spine projection, while legacy hooks consume unprojected host evidence.
-    pub(crate) async fn clone_native_history(&self) -> ContextManager {
-        let state = self.state.lock().await;
-        state.history.clone()
-    }
-
     pub(crate) async fn replace_spine_context_items(&self, items: Vec<ResponseItem>) {
         let mut state = self.state.lock().await;
         crate::spine::replace_context_if_changed(&mut state.history, items);
