@@ -9,8 +9,7 @@ outcome.
 
 Recursive policy:
 
-Begin every top-level task with `open(summary)` while the current root epoch is
-live. Root epochs are synthetic containers and cannot be closed. The `summary`
+Root epochs are synthetic containers and cannot be closed. The `summary`
 argument to every `open` or `next` call must concisely identify the node's
 concrete scope and intended outcome.
 
