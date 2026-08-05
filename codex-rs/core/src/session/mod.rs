@@ -1265,15 +1265,6 @@ impl Session {
         state.auto_compact_window_snapshot()
     }
 
-    pub(crate) async fn prepare_sampling_request_input(
-        &self,
-        _turn_context: &TurnContext,
-    ) -> Vec<ResponseItem> {
-        let state = self.state.lock().await;
-        let history = state.clone_history();
-        history.for_prompt(&_turn_context.model_info.input_modalities)
-    }
-
     pub(crate) async fn estimated_tokens_after_last_model_generated_item(&self) -> i64 {
         let state = self.state.lock().await;
         state.estimated_tokens_after_last_model_generated_item()

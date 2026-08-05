@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -271,24 +270,30 @@ pub(crate) async fn run_turn(
             }
 
             // Construct the input that we will send to the model.
+            let sampling_request_input: Vec<ResponseItem> = async {
+                sess.clone_history()
+                    .await
+                    .for_prompt(&turn_context.model_info.input_modalities)
+            }
+            .instrument(trace_span!("run_turn.prepare_sampling_request_input"))
+            .await;
+
             let responses_metadata = turn_context.turn_metadata_state.to_responses_metadata(
                 sess.installation_id.clone(),
                 window_id,
                 CodexResponsesRequestKind::Turn,
             );
-            let (sampling_request_output, sampling_request_input) = run_sampling_request(
+            run_sampling_request(
                 Arc::clone(&sess),
                 Arc::clone(&step_context),
                 Arc::clone(&turn_extension_data),
                 Arc::clone(&turn_diff_tracker),
                 &mut client_session,
                 &responses_metadata,
+                sampling_request_input,
                 cancellation_token.child_token(),
             )
-            .await?;
-            // Spine MODIFIED: Reuse the successful model request input for post-turn hooks.
-            // Reason: The SDK mutates the one host history in place, so a separate pre-sampling native-history clone is both redundant and stale after retries.
-            Ok((sampling_request_output, sampling_request_input))
+            .await
         }
         .await;
         match sampling_request_result {
@@ -1088,11 +1093,6 @@ pub(crate) fn build_prompt(
     turn_context: &TurnContext,
     base_instructions: BaseInstructions,
 ) -> Prompt {
-    let input = if turn_context.item_ids_enabled() {
-        Session::assign_missing_response_item_ids(Cow::Owned(input)).into_owned()
-    } else {
-        input
-    };
     Prompt {
         input,
         tools: router.model_visible_specs(),
@@ -1122,14 +1122,11 @@ async fn run_sampling_request(
     turn_diff_tracker: SharedTurnDiffTracker,
     client_session: &mut ModelClientSession,
     responses_metadata: &CodexResponsesMetadata,
+    input: Vec<ResponseItem>,
     cancellation_token: CancellationToken,
 ) -> CodexResult<(SamplingRequestResult, Vec<ResponseItem>)> {
     let turn_context = Arc::clone(&step_context.turn);
     let router = built_tools(sess.as_ref(), step_context.as_ref(), &cancellation_token).await?;
-    let input = sess
-        .prepare_sampling_request_input(turn_context.as_ref())
-        .instrument(trace_span!("run_turn.prepare_sampling_request_input"))
-        .await;
 
     let base_instructions = sess.get_base_instructions().await;
 
@@ -1148,14 +1145,20 @@ async fn run_sampling_request(
     let max_retries = turn_context.provider.info().stream_max_retries();
     let mut retries = 0;
     let mut initial_input = Some(input);
+    let mut original_input = None;
     loop {
-        let prompt_input = if let Some(input) = initial_input.take() {
+        let mut prompt_input = if let Some(input) = initial_input.take() {
             input
         } else {
             sess.clone_history()
                 .await
                 .for_prompt(&turn_context.model_info.input_modalities)
         };
+        if turn_context.item_ids_enabled() {
+            prompt_input =
+                Session::assign_missing_response_item_ids(std::borrow::Cow::Owned(prompt_input))
+                    .into_owned();
+        }
         let prompt = build_prompt(
             prompt_input,
             router.as_ref(),
@@ -1178,9 +1181,7 @@ async fn run_sampling_request(
         .await
         {
             Ok(output) => {
-                // Spine MODIFIED: Return the exact input accepted by the successful attempt.
-                // Reason: JIT projection may change history between retries, so post-turn consumers must not observe the failed attempt's stale prompt.
-                return Ok((output, prompt.input));
+                return Ok((output, original_input.unwrap_or(prompt.input)));
             }
             Err(CodexErr::ContextWindowExceeded) => {
                 sess.set_total_tokens_full(&turn_context).await;
@@ -1236,6 +1237,9 @@ async fn run_sampling_request(
             sess.record_spawn_failure(final_error.to_string(), salvaged_memory)
                 .await;
             return Err(final_error);
+        }
+        if original_input.is_none() {
+            original_input = Some(prompt.input);
         }
         turn_context.turn_timing_state.record_sampling_retry();
     }

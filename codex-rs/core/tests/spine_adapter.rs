@@ -1026,7 +1026,7 @@ async fn spine_adapter_reprojects_trimmed_tool_output_for_next_request() -> Resu
 
 #[cfg(not(target_os = "windows"))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn spine_adapter_legacy_notify_uses_successful_retry_input() -> Result<()> {
+async fn spine_adapter_legacy_notify_uses_first_sampling_input_after_retry() -> Result<()> {
     skip_if_no_network!(Ok(()));
     let opened = sse(vec![
         ev_response_created("spine-notify-open"),
@@ -1125,9 +1125,9 @@ printf '%s\n' "${@: -1}" >> "${payload_path}""#,
             .contains("closed child memory"),
         "successful retry must use the projection installed by the failed attempt"
     );
-    let retry_user_messages = retry_input["input"]
+    let first_input_user_messages = failed_input["input"]
         .as_array()
-        .context("retry input should be an array")?
+        .context("first attempt input should be an array")?
         .iter()
         .filter_map(|item| serde_json::from_value(item.clone()).ok())
         .filter_map(|item| match codex_core::parse_turn_item(&item) {
@@ -1139,7 +1139,7 @@ printf '%s\n' "${@: -1}" >> "${payload_path}""#,
         notify_payloads
             .last()
             .context("missing final legacy notify payload")?["input-messages"],
-        json!(retry_user_messages)
+        json!(first_input_user_messages)
     );
 
     server.shutdown().await;
