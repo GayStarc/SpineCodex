@@ -292,6 +292,14 @@ impl App {
                     return Ok(AppRunControl::Continue);
                 }
                 if self
+                    .active_turn_id_for_thread(parent_thread_id)
+                    .await
+                    .as_deref()
+                    != Some(notification.turn_id.as_str())
+                {
+                    return Ok(AppRunControl::Continue);
+                }
+                if self
                     .spine_projection_rollback_fences
                     .contains_key(&parent_thread_id)
                 {

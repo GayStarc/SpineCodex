@@ -1909,9 +1909,34 @@ async fn incomplete_parent_turn_clears_only_its_unsettled_spawn_overlays() -> Re
     };
     app.enqueue_thread_notification(
         parent_thread_id,
+        turn_started_notification(parent_thread_id, "turn-interrupted"),
+    )
+    .await?;
+    app.enqueue_thread_notification(
+        parent_thread_id,
         ServerNotification::SpineSpawnProgressUpdated(interrupted_progress.clone()),
     )
     .await?;
+
+    let progress_event = app_event_rx.try_recv().expect("buffered spawn progress");
+    assert!(matches!(
+        progress_event,
+        AppEvent::UpsertSpineSpawnProgressCell { .. }
+    ));
+    let mut tui = crate::tui::test_support::make_test_tui().expect("test tui");
+    let mut app_server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
+        .await
+        .expect("embedded app server");
+    app.handle_event(&mut tui, &mut app_server, progress_event)
+        .await
+        .expect("live spawn progress should apply");
+    assert!(
+        app.spine_tree_views
+            .get(&parent_thread_id)
+            .is_some_and(|state| state.has_spawn_call("spawn-interrupted")),
+        "the positive control must install the live spawn overlay"
+    );
+
     app.enqueue_thread_notification(
         parent_thread_id,
         turn_completed_notification(
@@ -1921,12 +1946,6 @@ async fn incomplete_parent_turn_clears_only_its_unsettled_spawn_overlays() -> Re
         ),
     )
     .await?;
-
-    let progress_event = app_event_rx.try_recv().expect("buffered spawn progress");
-    assert!(matches!(
-        progress_event,
-        AppEvent::UpsertSpineSpawnProgressCell { .. }
-    ));
     let clear_event = app_event_rx
         .try_recv()
         .expect("ordered incomplete-overlay cleanup");
@@ -1938,15 +1957,9 @@ async fn incomplete_parent_turn_clears_only_its_unsettled_spawn_overlays() -> Re
         } if *observed == parent_thread_id && turn_id == "turn-interrupted"
     );
 
-    let mut tui = crate::tui::test_support::make_test_tui().expect("test tui");
-    let mut app_server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
+    app.handle_event(&mut tui, &mut app_server, clear_event)
         .await
-        .expect("embedded app server");
-    for event in [progress_event, clear_event] {
-        app.handle_event(&mut tui, &mut app_server, event)
-            .await
-            .expect("ordered projection event should apply");
-    }
+        .expect("interrupted projection cleanup should apply");
     let state = app
         .spine_tree_views
         .get(&parent_thread_id)
@@ -1982,6 +1995,137 @@ async fn incomplete_parent_turn_clears_only_its_unsettled_spawn_overlays() -> Re
     assert!(!state.has_spawn_call("spawn-live"));
     app_server.shutdown().await.expect("app server shutdown");
 
+    Ok(())
+}
+
+#[tokio::test]
+async fn late_spawn_progress_does_not_revive_interrupted_turn_overlay() -> Result<()> {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let parent_thread_id = ThreadId::new();
+    let child_thread_id = ThreadId::new();
+    app.primary_thread_id = Some(parent_thread_id);
+    app.chat_widget
+        .handle_thread_session_quiet(test_thread_session(
+            parent_thread_id,
+            test_path_buf("/tmp/project"),
+        ));
+    while app_event_rx.try_recv().is_ok() {}
+
+    app.enqueue_thread_notification(
+        parent_thread_id,
+        turn_started_notification(parent_thread_id, "turn-old"),
+    )
+    .await?;
+    assert_eq!(
+        app.active_turn_id_for_thread(parent_thread_id)
+            .await
+            .as_deref(),
+        Some("turn-old")
+    );
+
+    let mut progress = SpineSpawnProgressUpdatedNotification {
+        thread_id: parent_thread_id.to_string(),
+        turn_id: "turn-old".to_string(),
+        call_id: "spawn-old".to_string(),
+        tasks: vec![SpineSpawnTaskProgress {
+            ordinal: 0,
+            summary: "old child".to_string(),
+            thread_id: child_thread_id.to_string(),
+            agent_path: None,
+            status: CollabAgentStatus::Running,
+        }],
+    };
+    app.enqueue_thread_notification(
+        parent_thread_id,
+        ServerNotification::SpineSpawnProgressUpdated(progress.clone()),
+    )
+    .await?;
+    let initial_progress_event = app_event_rx
+        .try_recv()
+        .expect("initial live spawn progress");
+
+    let mut tui = crate::tui::test_support::make_test_tui().expect("test tui");
+    let mut app_server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
+        .await
+        .expect("embedded app server");
+    app.handle_event(&mut tui, &mut app_server, initial_progress_event)
+        .await
+        .expect("initial live spawn progress should apply");
+    assert!(
+        app.spine_tree_views
+            .get(&parent_thread_id)
+            .is_some_and(|state| state.has_spawn_call("spawn-old")),
+        "matching active-turn progress must install the overlay"
+    );
+
+    app.enqueue_thread_notification(
+        parent_thread_id,
+        turn_completed_notification(parent_thread_id, "turn-old", TurnStatus::Interrupted),
+    )
+    .await?;
+    assert_eq!(app.active_turn_id_for_thread(parent_thread_id).await, None);
+    let clear_event = app_event_rx
+        .try_recv()
+        .expect("interrupted turn overlay cleanup");
+    app.handle_event(&mut tui, &mut app_server, clear_event)
+        .await
+        .expect("interrupted turn overlay cleanup should apply");
+    assert!(
+        !app.spine_tree_views
+            .get(&parent_thread_id)
+            .is_some_and(|state| state.has_spawn_call("spawn-old"))
+    );
+    assert!(app.agent_navigation.get(&child_thread_id).is_none());
+
+    progress.tasks[0].status = CollabAgentStatus::Shutdown;
+    app.enqueue_thread_notification(
+        parent_thread_id,
+        ServerNotification::SpineSpawnProgressUpdated(progress.clone()),
+    )
+    .await?;
+    let late_progress_event = app_event_rx
+        .try_recv()
+        .expect("late terminal spawn progress");
+    app.handle_event(&mut tui, &mut app_server, late_progress_event)
+        .await
+        .expect("late progress should be ignored");
+    assert!(
+        !app.spine_tree_views
+            .get(&parent_thread_id)
+            .is_some_and(|state| state.has_spawn_call("spawn-old"))
+    );
+    assert!(app.agent_navigation.get(&child_thread_id).is_none());
+
+    app.enqueue_thread_notification(
+        parent_thread_id,
+        turn_started_notification(parent_thread_id, "turn-new"),
+    )
+    .await?;
+    app.enqueue_thread_notification(
+        parent_thread_id,
+        ServerNotification::SpineSpawnProgressUpdated(progress),
+    )
+    .await?;
+    let stale_progress_during_new_turn = app_event_rx
+        .try_recv()
+        .expect("stale progress during the new turn");
+    app.handle_event(&mut tui, &mut app_server, stale_progress_during_new_turn)
+        .await
+        .expect("stale progress during a new turn should be ignored");
+    assert_eq!(
+        app.active_turn_id_for_thread(parent_thread_id)
+            .await
+            .as_deref(),
+        Some("turn-new")
+    );
+    assert!(
+        !app.spine_tree_views
+            .get(&parent_thread_id)
+            .is_some_and(|state| state.has_spawn_call("spawn-old"))
+    );
+    assert!(app.agent_navigation.get(&child_thread_id).is_none());
+
+    app_server.shutdown().await.expect("app server shutdown");
     Ok(())
 }
 
