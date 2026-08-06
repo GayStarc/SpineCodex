@@ -4,109 +4,578 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="light" />
-    <title>SpineCodex — Agent Morphogenesis</title>
+    <meta name="theme-color" content="#f4f7f3" />
+    <meta name="robots" content="index, follow" />
+
+    <title>SpineCodex | Enhanced Codex CLI for Long-Running Tasks</title>
     <meta
       name="description"
-      content="The SpineCodex agent morphogenesis launch film."
+      content="SpineCodex is an enhanced, independently maintained Codex CLI for complex, long-running software engineering tasks."
     />
+    <link rel="canonical" href="https://ghabix.github.io/SpineCodex/" />
+    <link rel="icon" href="./spinecodex-tree.svg" type="image/svg+xml" />
+
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="SpineCodex" />
+    <meta
+      property="og:title"
+      content="SpineCodex | Enhanced Codex CLI for Long-Running Tasks"
+    />
+    <meta
+      property="og:description"
+      content="An enhanced, independently maintained Codex CLI for complex, long-running software engineering tasks."
+    />
+    <meta property="og:url" content="https://ghabix.github.io/SpineCodex/" />
+    <meta
+      property="og:image"
+      content="https://ghabix.github.io/SpineCodex/spinecodex-film-poster.jpg"
+    />
+    <meta
+      property="og:image:alt"
+      content="SpineCodex Agent Morphogenesis launch film end card"
+    />
+    <meta name="twitter:card" content="summary_large_image" />
+
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "SoftwareApplication",
+        "name": "SpineCodex",
+        "applicationCategory": "DeveloperApplication",
+        "description": "An enhanced, independently maintained Codex CLI for complex, long-running software engineering tasks.",
+        "url": "https://ghabix.github.io/SpineCodex/",
+        "codeRepository": "https://github.com/GhabiX/SpineCodex",
+        "downloadUrl": "https://www.npmjs.com/package/@spinejit/spine-codex",
+        "license": "https://www.apache.org/licenses/LICENSE-2.0",
+        "isBasedOn": "https://github.com/openai/codex",
+        "sameAs": [
+          "https://github.com/GhabiX/SpineCodex",
+          "https://www.npmjs.com/package/@spinejit/spine-codex"
+        ]
+      }
+    </script>
+    <script>
+      document.documentElement.classList.add("js");
+    </script>
+
     <style>
       :root {
+        color: #10211b;
+        background: #f4f7f3;
         font-family:
           Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
           "Segoe UI", sans-serif;
-        color: #13251f;
-        background: #f6f7f3;
+        font-synthesis: none;
       }
 
       * {
         box-sizing: border-box;
       }
 
+      html {
+        min-width: 320px;
+      }
+
       body {
         min-height: 100vh;
         margin: 0;
-        display: grid;
-        place-items: center;
-        padding: clamp(16px, 3vw, 40px);
+        background: #f4f7f3;
       }
 
-      main {
-        width: min(1280px, 100%);
+      button,
+      a {
+        -webkit-tap-highlight-color: transparent;
       }
 
-      .player {
-        overflow: hidden;
-        border: 1px solid rgba(16, 68, 51, 0.14);
-        border-radius: 18px;
-        background: #fff;
-        box-shadow: 0 24px 80px rgba(12, 52, 39, 0.12);
+      button {
+        font: inherit;
       }
 
-      video {
-        display: block;
-        width: 100%;
-        aspect-ratio: 16 / 9;
-        background: #f6f7f3;
+      [hidden] {
+        display: none !important;
       }
 
-      .meta {
+      .site-header {
+        width: min(1180px, calc(100% - 40px));
+        min-height: 72px;
+        margin: 0 auto;
         display: flex;
         align-items: center;
         justify-content: space-between;
-        gap: 20px;
-        padding: 16px 20px 18px;
+        gap: 24px;
+      }
+
+      .brand {
+        min-width: 0;
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        color: #10211b;
+        text-decoration: none;
+      }
+
+      .brand img {
+        width: 28px;
+        height: 32px;
+        flex: 0 0 auto;
       }
 
       h1 {
         margin: 0;
-        font-size: clamp(18px, 2vw, 24px);
-        letter-spacing: -0.02em;
+        font-size: 21px;
+        line-height: 1;
+        font-weight: 730;
+        letter-spacing: 0;
       }
 
-      a {
-        color: #08775c;
-        font-weight: 650;
-        text-decoration: none;
+      .github-link {
+        width: 44px;
+        height: 44px;
+        display: grid;
+        place-items: center;
+        flex: 0 0 auto;
+        color: #10211b;
+        border-radius: 50%;
+        transition:
+          color 160ms ease,
+          background-color 160ms ease,
+          transform 160ms ease;
       }
 
-      a:hover {
-        text-decoration: underline;
+      .github-link:hover {
+        color: #087f61;
+        background: #e7eee9;
+        transform: translateY(-1px);
       }
 
-      @media (max-width: 640px) {
-        .meta {
-          align-items: flex-start;
-          flex-direction: column;
+      .github-link svg {
+        width: 23px;
+        height: 23px;
+      }
+
+      main {
+        width: min(1180px, calc(100% - 40px));
+        margin: 8px auto 0;
+        padding-bottom: 56px;
+      }
+
+      .film-frame {
+        position: relative;
+        width: 100%;
+        max-width: 1020px;
+        margin: 0 auto;
+        overflow: hidden;
+        aspect-ratio: 16 / 9;
+        border: 1px solid #d8dfda;
+        border-radius: 6px;
+        background: #ffffff;
+        box-shadow: 0 20px 55px rgba(16, 33, 27, 0.1);
+      }
+
+      video {
+        width: 100%;
+        height: 100%;
+        display: block;
+        object-fit: cover;
+        background: #f4f7f3;
+      }
+
+      .poster-play {
+        display: none;
+      }
+
+      .js .poster-play {
+        position: absolute;
+        inset: 50% auto auto 50%;
+        width: 58px;
+        height: 58px;
+        display: grid;
+        place-items: center;
+        padding: 0;
+        color: #ffffff;
+        border: 1px solid rgba(255, 255, 255, 0.7);
+        border-radius: 50%;
+        background: rgba(16, 33, 27, 0.86);
+        box-shadow: 0 12px 30px rgba(16, 33, 27, 0.22);
+        cursor: pointer;
+        transform: translate(-50%, -50%);
+        transition:
+          background-color 160ms ease,
+          transform 160ms ease;
+      }
+
+      .js .poster-play:hover {
+        background: #087f61;
+        transform: translate(-50%, -50%) scale(1.04);
+      }
+
+      .poster-play svg {
+        width: 24px;
+        height: 24px;
+        margin-left: 3px;
+      }
+
+      .install {
+        width: 100%;
+        max-width: 1020px;
+        display: grid;
+        grid-template-columns: minmax(220px, 0.75fr) minmax(0, 1.25fr);
+        gap: 64px;
+        margin: 34px auto 0;
+        padding-top: 28px;
+        border-top: 1px solid #d8dfda;
+      }
+
+      .section-label {
+        margin: 0 0 9px;
+        color: #087f61;
+        font-size: 13px;
+        line-height: 1.3;
+        font-weight: 750;
+        letter-spacing: 0;
+        text-transform: uppercase;
+      }
+
+      .positioning {
+        max-width: 410px;
+        margin: 0;
+        color: #24372f;
+        font-size: 20px;
+        line-height: 1.45;
+        letter-spacing: 0;
+      }
+
+      .command-panel {
+        min-width: 0;
+      }
+
+      .command-bar {
+        min-height: 60px;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 44px;
+        align-items: center;
+        gap: 12px;
+        padding: 7px 8px 7px 18px;
+        border: 1px solid #cdd7d0;
+        border-radius: 6px;
+        background: #ffffff;
+      }
+
+      .command-bar code,
+      .run-command code {
+        font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+        letter-spacing: 0;
+      }
+
+      .command-bar code {
+        min-width: 0;
+        color: #10211b;
+        font-size: 15px;
+        line-height: 1.5;
+        overflow-wrap: anywhere;
+      }
+
+      .prompt {
+        margin-right: 9px;
+        color: #087f61;
+        font-weight: 800;
+      }
+
+      .copy-button {
+        width: 44px;
+        height: 44px;
+        display: grid;
+        place-items: center;
+        padding: 0;
+        color: #52645c;
+        border: 0;
+        border-radius: 4px;
+        background: transparent;
+        cursor: pointer;
+        transition:
+          color 160ms ease,
+          background-color 160ms ease;
+      }
+
+      .copy-button:hover {
+        color: #087f61;
+        background: #edf3ef;
+      }
+
+      .copy-button svg {
+        width: 19px;
+        height: 19px;
+      }
+
+      .copy-button .check-icon {
+        display: none;
+      }
+
+      .copy-button[data-state="copied"] {
+        color: #087f61;
+        background: #e7f1eb;
+      }
+
+      .copy-button[data-state="copied"] .copy-icon {
+        display: none;
+      }
+
+      .copy-button[data-state="copied"] .check-icon {
+        display: block;
+      }
+
+      .run-command {
+        margin: 12px 0 0;
+        color: #66756f;
+        font-size: 14px;
+        line-height: 1.5;
+      }
+
+      .run-command code {
+        color: #24372f;
+        font-size: 13px;
+      }
+
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+      }
+
+      :focus-visible {
+        outline: 3px solid rgba(8, 127, 97, 0.38);
+        outline-offset: 3px;
+      }
+
+      @media (min-width: 761px) and (min-height: 860px) {
+        .film-frame {
+          max-width: 1180px;
+        }
+      }
+
+      @media (max-width: 760px) {
+        .site-header,
+        main {
+          width: min(100% - 28px, 1180px);
+        }
+
+        .site-header {
+          min-height: 64px;
+        }
+
+        main {
+          margin-top: 4px;
+          padding-bottom: 40px;
+        }
+
+        .install {
+          grid-template-columns: 1fr;
+          gap: 24px;
+          margin-top: 26px;
+          padding-top: 23px;
+        }
+
+        .positioning {
+          font-size: 18px;
+        }
+
+        .command-bar {
+          padding-left: 13px;
+        }
+
+        .command-bar code {
+          font-size: 13px;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+          scroll-behavior: auto !important;
+          transition-duration: 0.01ms !important;
         }
       }
     </style>
   </head>
   <body>
-    <main>
-      <section class="player" aria-label="SpineCodex launch film">
-        <video
-          id="film"
-          controls
-          autoplay
-          playsinline
-          preload="metadata"
-          poster="./spinecodex-film-poster.jpg"
+    <header class="site-header">
+      <a class="brand" href="./" aria-label="SpineCodex home">
+        <img src="./spinecodex-tree.svg" alt="" />
+        <h1>SpineCodex</h1>
+      </a>
+
+      <nav aria-label="Project links">
+        <a
+          class="github-link"
+          href="https://github.com/GhabiX/SpineCodex"
+          aria-label="Open SpineCodex on GitHub"
+          title="GitHub"
         >
-          <source src="./spinecodex-film-aria.mp4" type="video/mp4" />
-          Your browser does not support HTML video.
-        </video>
-        <div class="meta">
-          <h1>SpineCodex — Agent Morphogenesis</h1>
-          <a href="https://github.com/GhabiX/SpineCodex">View on GitHub</a>
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path
+              fill="currentColor"
+              d="M12 .7a11.3 11.3 0 0 0-3.57 22c.57.1.78-.25.78-.55v-2.17c-3.18.7-3.85-1.35-3.85-1.35-.52-1.32-1.27-1.67-1.27-1.67-1.04-.71.08-.7.08-.7 1.15.08 1.76 1.18 1.76 1.18 1.02 1.75 2.68 1.25 3.33.96.1-.74.4-1.25.73-1.54-2.54-.29-5.21-1.27-5.21-5.59 0-1.24.44-2.25 1.18-3.04-.12-.29-.51-1.45.11-3 0 0 .96-.31 3.11 1.16A10.8 10.8 0 0 1 12 6.01c.96 0 1.92.13 2.82.38 2.15-1.47 3.11-1.16 3.11-1.16.62 1.55.23 2.71.11 3 .73.79 1.18 1.8 1.18 3.04 0 4.33-2.68 5.29-5.23 5.57.41.36.78 1.06.78 2.14v3.17c0 .31.21.66.79.55A11.3 11.3 0 0 0 12 .7Z"
+            />
+          </svg>
+        </a>
+      </nav>
+    </header>
+
+    <main>
+      <section aria-labelledby="film-title">
+        <h2 id="film-title" class="sr-only">
+          SpineCodex Agent Morphogenesis launch film
+        </h2>
+        <div class="film-frame">
+          <video
+            id="film"
+            controls
+            playsinline
+            preload="metadata"
+            poster="./spinecodex-film-poster.jpg"
+            aria-describedby="film-description"
+          >
+            <source src="./spinecodex-film-aria.mp4" type="video/mp4" />
+            Your browser does not support HTML video.
+          </video>
+          <button
+            id="play-film"
+            class="poster-play"
+            type="button"
+            aria-label="Play the SpineCodex launch film"
+            title="Play film"
+          >
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="m7 4 13 8-13 8V4Z" />
+            </svg>
+          </button>
+        </div>
+        <p id="film-description" class="sr-only">
+          A four-minute launch film about SpineCodex and agent morphogenesis.
+        </p>
+      </section>
+
+      <section class="install" aria-labelledby="install-title">
+        <div>
+          <h2 id="install-title" class="section-label">Install</h2>
+          <p class="positioning">
+            An enhanced, independently maintained Codex CLI for complex,
+            long-running software engineering tasks.
+          </p>
+        </div>
+
+        <div class="command-panel">
+          <div class="command-bar">
+            <code><span class="prompt" aria-hidden="true">$</span><span id="install-command">npm install -g @spinejit/spine-codex@latest</span></code>
+            <button
+              id="copy-install"
+              class="copy-button"
+              type="button"
+              aria-label="Copy install command"
+              title="Copy install command"
+              hidden
+            >
+              <svg
+                class="copy-icon"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <rect width="14" height="14" x="8" y="8" rx="2" />
+                <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" />
+              </svg>
+              <svg
+                class="check-icon"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="m5 12 4 4L19 6" />
+              </svg>
+            </button>
+          </div>
+          <p class="run-command">Then run <code>spine-codex</code>.</p>
+          <span id="copy-status" class="sr-only" aria-live="polite"></span>
         </div>
       </section>
     </main>
+
     <script>
       const film = document.querySelector("#film");
+      const playButton = document.querySelector("#play-film");
+      const copyButton = document.querySelector("#copy-install");
+      const installCommand = document.querySelector("#install-command");
+      const copyStatus = document.querySelector("#copy-status");
+      let copyResetTimer;
 
-      film.play().catch(() => {
-        film.muted = true;
-        film.play().catch(() => undefined);
+      film.controls = false;
+      copyButton.hidden = false;
+
+      playButton.addEventListener("click", async () => {
+        if (film.ended) {
+          film.currentTime = 0;
+        }
+
+        try {
+          film.controls = true;
+          await film.play();
+        } catch {
+          film.controls = false;
+          playButton.hidden = false;
+        }
+      });
+
+      film.addEventListener("play", () => {
+        film.controls = true;
+        playButton.hidden = true;
+      });
+
+      film.addEventListener("ended", () => {
+        film.controls = false;
+        playButton.hidden = false;
+      });
+
+      copyButton.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(installCommand.textContent);
+          copyButton.dataset.state = "copied";
+          copyButton.setAttribute("aria-label", "Install command copied");
+          copyButton.setAttribute("title", "Copied");
+          copyStatus.textContent = "Install command copied.";
+
+          window.clearTimeout(copyResetTimer);
+          copyResetTimer = window.setTimeout(() => {
+            delete copyButton.dataset.state;
+            copyButton.setAttribute("aria-label", "Copy install command");
+            copyButton.setAttribute("title", "Copy install command");
+            copyStatus.textContent = "";
+          }, 1800);
+        } catch {
+          copyStatus.textContent = "Could not copy the install command.";
+        }
       });
     </script>
   </body>

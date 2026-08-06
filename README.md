@@ -1,7 +1,17 @@
-# SpineCodex Pages video
+# SpineCodex project page
 
-This branch hosts the standalone SpineCodex launch-film player linked from the
-repository README.
+This branch hosts the standalone SpineCodex project page and launch film at
+<https://ghabix.github.io/SpineCodex/>.
+
+## Page behavior
+
+- The launch film uses its final Agent Morphogenesis frame as the poster.
+- Playback starts only after the visitor clicks play.
+- The install command is copied exactly as
+  `npm install -g @spinejit/spine-codex@latest`.
+- The GitHub icon links to the main SpineCodex repository.
+
+## Media
 
 - Video: `spinecodex-film-aria.mp4`
 - Duration: 251.8 seconds
@@ -10,6 +20,5 @@ repository README.
 - Audio codec: AAC
 - Music: Kimiko Ishizaka, Open Goldberg Variations, Aria, CC0 1.0
 
-The player first attempts normal autoplay. If the browser blocks autoplay with
-sound, it retries muted while keeping native controls visible so sound can be
-enabled immediately.
+The page also provides canonical, Open Graph, structured application metadata,
+and a project sitemap for search discovery.
