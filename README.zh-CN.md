@@ -30,6 +30,15 @@ npm install -g @spinejit/spine-codex@latest
 spine-codex
 ```
 
+### Codex Desktop
+
+如需在官方 Codex Desktop 中使用 SpineCodex，请先完全退出 Codex Desktop，再下载对应平台的启动器：
+
+- **Windows：**将 [`start-spinecodex-desktop.cmd`](./scripts/codex-desktop/start-spinecodex-desktop.cmd) 和 [`start-spinecodex-desktop.ps1`](./scripts/codex-desktop/start-spinecodex-desktop.ps1) 放在同一目录，然后运行 `.cmd` 文件。
+- **macOS：**运行 [`start-spinecodex-desktop.command`](./scripts/codex-desktop/start-spinecodex-desktop.command)。如有需要，先执行 `chmod +x start-spinecodex-desktop.command` 添加执行权限。
+
+启动器会使用 npm 安装的原生 SpineCodex 后端，并自动启用 Spine 树形界面。
+
 ## 实验功能
 
 | 功能                                                   | 用途                                                                                                       |
