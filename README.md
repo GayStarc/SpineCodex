@@ -37,6 +37,20 @@ npm install -g @spinejit/spine-codex@latest
 spine-codex
 ```
 
+### Codex Desktop
+
+To use SpineCodex with the official Codex Desktop app, first quit Codex Desktop,
+then download the launcher for your platform:
+
+- **Windows:** Keep [`start-spinecodex-desktop.cmd`](./scripts/codex-desktop/start-spinecodex-desktop.cmd)
+  and [`start-spinecodex-desktop.ps1`](./scripts/codex-desktop/start-spinecodex-desktop.ps1)
+  in the same folder, then run the `.cmd` file.
+- **macOS:** Run [`start-spinecodex-desktop.command`](./scripts/codex-desktop/start-spinecodex-desktop.command).
+  If needed, make it executable with `chmod +x start-spinecodex-desktop.command`.
+
+The launchers use the native SpineCodex backend installed by npm and enable the
+Spine tree UI automatically.
+
 ## Experimental features
 
 | Feature                                                       | Purpose                                                                                                                                                                     |
