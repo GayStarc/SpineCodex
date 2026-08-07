@@ -1,10 +1,10 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="light" />
-    <meta name="theme-color" content="#f4f7f3" />
+    <meta name="theme-color" content="#f7f8f6" />
     <meta name="robots" content="index, follow" />
 
     <title>SpineCodex | Enhanced Codex CLI for Long-Running Tasks</title>
@@ -54,17 +54,44 @@
         ]
       }
     </script>
+
     <script>
       document.documentElement.classList.add("js");
+
+      (() => {
+        let language = navigator.language.toLowerCase().startsWith("zh")
+          ? "zh"
+          : "en";
+
+        try {
+          const savedLanguage = localStorage.getItem("spinecodex-language");
+          if (savedLanguage === "en" || savedLanguage === "zh") {
+            language = savedLanguage;
+          }
+        } catch {}
+
+        document.documentElement.dataset.lang = language;
+        document.documentElement.lang = language === "zh" ? "zh-CN" : "en";
+      })();
     </script>
 
     <style>
       :root {
-        color: #10211b;
-        background: #f4f7f3;
-        font-family:
-          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
-          "Segoe UI", sans-serif;
+        --paper: #f7f8f6;
+        --surface: #ffffff;
+        --ink: #131715;
+        --muted: #77817b;
+        --muted-ui: #5f6963;
+        --line: #cbd1cd;
+        --spine: #087f61;
+        --spine-soft: #cfe7dd;
+        --danger: #a13f37;
+        --sans: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI",
+          "PingFang SC", sans-serif;
+        --mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+        color: var(--ink);
+        background: var(--paper);
+        font-family: var(--sans);
         font-synthesis: none;
       }
 
@@ -79,15 +106,18 @@
       body {
         min-height: 100vh;
         margin: 0;
-        background: #f4f7f3;
+        color: var(--ink);
+        background: var(--paper);
       }
 
       button,
-      a {
+      a,
+      input {
         -webkit-tap-highlight-color: transparent;
       }
 
-      button {
+      button,
+      input {
         font: inherit;
       }
 
@@ -96,8 +126,8 @@
       }
 
       .site-header {
-        width: min(1180px, calc(100% - 40px));
-        min-height: 72px;
+        width: min(1440px, calc(100% - 64px));
+        height: 68px;
         margin: 0 auto;
         display: flex;
         align-items: center;
@@ -105,27 +135,90 @@
         gap: 24px;
       }
 
-      .brand {
+      .wordmark {
         min-width: 0;
+        height: 44px;
         display: inline-flex;
         align-items: center;
-        gap: 10px;
-        color: #10211b;
+        gap: 8px;
+        color: var(--ink);
         text-decoration: none;
       }
 
-      .brand img {
-        width: 28px;
-        height: 32px;
+      .wordmark h1 {
+        margin: 0;
+        font-size: 17px;
+        line-height: 1;
+        font-weight: 650;
+        letter-spacing: 0;
+      }
+
+      .wordmark img {
+        width: 20px;
+        height: 23px;
         flex: 0 0 auto;
       }
 
-      h1 {
-        margin: 0;
-        font-size: 21px;
+      .header-actions,
+      .language-switch,
+      .project-links {
+        display: flex;
+        align-items: center;
+      }
+
+      .header-actions {
+        gap: 18px;
+      }
+
+      .language-switch {
+        height: 44px;
+        gap: 16px;
+      }
+
+      .language-button {
+        position: relative;
+        height: 44px;
+        padding: 0;
+        color: var(--muted-ui);
+        border: 0;
+        background: transparent;
+        font-size: 13px;
         line-height: 1;
-        font-weight: 730;
+        font-weight: 560;
         letter-spacing: 0;
+        cursor: pointer;
+        transition: color 160ms ease;
+      }
+
+      .language-button::after {
+        position: absolute;
+        right: 0;
+        bottom: 7px;
+        left: 0;
+        height: 1px;
+        content: "";
+        background: var(--spine);
+        opacity: 0;
+        transform: scaleX(0.4);
+        transition:
+          opacity 160ms ease,
+          transform 160ms ease;
+      }
+
+      .language-button:hover,
+      .language-button[aria-pressed="true"] {
+        color: var(--ink);
+      }
+
+      .language-button[aria-pressed="true"]::after {
+        opacity: 1;
+        transform: scaleX(1);
+      }
+
+      .project-links {
+        height: 24px;
+        padding-left: 18px;
+        border-left: 1px solid var(--line);
       }
 
       .github-link {
@@ -133,43 +226,47 @@
         height: 44px;
         display: grid;
         place-items: center;
-        flex: 0 0 auto;
-        color: #10211b;
+        color: var(--ink);
         border-radius: 50%;
         transition:
           color 160ms ease,
-          background-color 160ms ease,
-          transform 160ms ease;
+          background-color 160ms ease;
       }
 
       .github-link:hover {
-        color: #087f61;
-        background: #e7eee9;
-        transform: translateY(-1px);
+        color: var(--spine);
+        background: rgba(207, 231, 221, 0.44);
       }
 
       .github-link svg {
-        width: 23px;
-        height: 23px;
+        width: 21px;
+        height: 21px;
       }
 
       main {
-        width: min(1180px, calc(100% - 40px));
-        margin: 8px auto 0;
-        padding-bottom: 56px;
+        padding-bottom: 64px;
+      }
+
+      .stage {
+        width: min(
+          1440px,
+          calc(100% - 64px),
+          calc((100svh - 170px) * 16 / 9)
+        );
+        margin: 0 auto;
       }
 
       .film-frame {
         position: relative;
         width: 100%;
-        max-width: 1020px;
-        margin: 0 auto;
         overflow: hidden;
         aspect-ratio: 16 / 9;
-        border: 1px solid #d8dfda;
-        border-radius: 6px;
-        background: #ffffff;
-        box-shadow: 0 20px 55px rgba(16, 33, 27, 0.1);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--paper);
+        box-shadow:
+          0 28px 80px rgba(19, 23, 21, 0.09),
+          0 2px 10px rgba(19, 23, 21, 0.04);
       }
 
       video {
@@ -177,7 +274,7 @@
         height: 100%;
         display: block;
         object-fit: cover;
-        background: #f4f7f3;
+        background: var(--paper);
       }
 
       .poster-play {
@@ -192,11 +289,13 @@
         display: grid;
         place-items: center;
         padding: 0;
-        color: #ffffff;
-        border: 1px solid rgba(255, 255, 255, 0.7);
+        color: var(--surface);
+        border: 1px solid rgba(255, 255, 255, 0.5);
         border-radius: 50%;
-        background: rgba(16, 33, 27, 0.86);
-        box-shadow: 0 12px 30px rgba(16, 33, 27, 0.22);
+        background: rgba(19, 23, 21, 0.88);
+        box-shadow: 0 14px 38px rgba(19, 23, 21, 0.22);
+        backdrop-filter: blur(14px) saturate(150%);
+        -webkit-backdrop-filter: blur(14px) saturate(150%);
         cursor: pointer;
         transform: translate(-50%, -50%);
         transition:
@@ -205,43 +304,175 @@
       }
 
       .js .poster-play:hover {
-        background: #087f61;
+        background: var(--spine);
         transform: translate(-50%, -50%) scale(1.04);
       }
 
       .poster-play svg {
-        width: 24px;
-        height: 24px;
+        width: 23px;
+        height: 23px;
         margin-left: 3px;
       }
 
-      .install {
-        width: 100%;
-        max-width: 1020px;
+      .player-controls {
+        position: absolute;
+        right: 18px;
+        bottom: 18px;
+        left: 18px;
+        min-height: 50px;
         display: grid;
-        grid-template-columns: minmax(220px, 0.75fr) minmax(0, 1.25fr);
-        gap: 64px;
-        margin: 34px auto 0;
-        padding-top: 28px;
-        border-top: 1px solid #d8dfda;
+        grid-template-columns: 40px minmax(96px, 1fr) auto 40px 40px;
+        align-items: center;
+        gap: 10px;
+        padding: 5px 7px;
+        color: var(--ink);
+        border: 1px solid rgba(203, 209, 205, 0.76);
+        border-radius: 8px;
+        background: rgba(247, 248, 246, 0.84);
+        box-shadow: 0 12px 36px rgba(19, 23, 21, 0.16);
+        backdrop-filter: blur(20px) saturate(170%);
+        -webkit-backdrop-filter: blur(20px) saturate(170%);
+        transition:
+          opacity 180ms ease,
+          transform 180ms ease;
       }
 
-      .section-label {
-        margin: 0 0 9px;
-        color: #087f61;
-        font-size: 13px;
-        line-height: 1.3;
-        font-weight: 750;
+      .film-frame[data-started="false"] .player-controls,
+      .film-frame[data-controls-visible="false"] .player-controls {
+        opacity: 0;
+        pointer-events: none;
+        transform: translateY(7px);
+      }
+
+      .control-button {
+        width: 40px;
+        height: 40px;
+        display: grid;
+        place-items: center;
+        padding: 0;
+        color: var(--ink);
+        border: 0;
+        border-radius: 50%;
+        background: transparent;
+        cursor: pointer;
+        transition:
+          color 160ms ease,
+          background-color 160ms ease;
+      }
+
+      .control-button:hover {
+        color: var(--spine);
+        background: rgba(207, 231, 221, 0.48);
+      }
+
+      .control-button svg {
+        width: 18px;
+        height: 18px;
+      }
+
+      .control-button .state-secondary {
+        display: none;
+      }
+
+      .control-button[data-state="secondary"] .state-primary {
+        display: none;
+      }
+
+      .control-button[data-state="secondary"] .state-secondary {
+        display: block;
+      }
+
+      .seek-control {
+        width: 100%;
+        min-width: 0;
+        height: 20px;
+        margin: 0;
+        appearance: none;
+        -webkit-appearance: none;
+        background: transparent;
+        cursor: pointer;
+      }
+
+      .seek-control::-webkit-slider-runnable-track {
+        height: 3px;
+        border-radius: 2px;
+        background: linear-gradient(
+          to right,
+          var(--spine) 0 var(--seek-progress, 0%),
+          rgba(119, 129, 123, 0.28) var(--seek-progress, 0%) 100%
+        );
+      }
+
+      .seek-control::-webkit-slider-thumb {
+        width: 12px;
+        height: 12px;
+        margin-top: -4.5px;
+        appearance: none;
+        -webkit-appearance: none;
+        border: 2px solid var(--paper);
+        border-radius: 50%;
+        background: var(--spine);
+        box-shadow: 0 1px 5px rgba(19, 23, 21, 0.2);
+      }
+
+      .seek-control::-moz-range-track {
+        height: 3px;
+        border-radius: 2px;
+        background: rgba(119, 129, 123, 0.28);
+      }
+
+      .seek-control::-moz-range-progress {
+        height: 3px;
+        border-radius: 2px;
+        background: var(--spine);
+      }
+
+      .seek-control::-moz-range-thumb {
+        width: 10px;
+        height: 10px;
+        border: 2px solid var(--paper);
+        border-radius: 50%;
+        background: var(--spine);
+        box-shadow: 0 1px 5px rgba(19, 23, 21, 0.2);
+      }
+
+      .player-time {
+        min-width: 80px;
+        color: var(--muted-ui);
+        font-family: var(--mono);
+        font-size: 11px;
+        line-height: 1;
+        font-variant-numeric: tabular-nums;
         letter-spacing: 0;
-        text-transform: uppercase;
+        text-align: center;
+      }
+
+      .install {
+        display: grid;
+        grid-template-columns: minmax(240px, 0.76fr) minmax(0, 1.24fr);
+        align-items: start;
+        gap: clamp(40px, 6vw, 96px);
+        margin-top: 38px;
+        padding: 32px clamp(0px, 5.84%, 84px) 0;
+        border-top: 1px solid var(--line);
+      }
+
+      .install-title {
+        margin: 0;
+        color: var(--ink);
+        font-size: clamp(22px, 2vw, 30px);
+        line-height: 1.08;
+        font-weight: 650;
+        letter-spacing: 0;
       }
 
       .positioning {
-        max-width: 410px;
-        margin: 0;
-        color: #24372f;
-        font-size: 20px;
-        line-height: 1.45;
+        max-width: 430px;
+        margin: 14px 0 0;
+        color: var(--muted-ui);
+        font-size: 15px;
+        line-height: 1.55;
+        font-weight: 480;
         letter-spacing: 0;
       }
 
@@ -249,36 +480,36 @@
         min-width: 0;
       }
 
-      .command-bar {
-        min-height: 60px;
+      .command-line {
+        min-height: 64px;
         display: grid;
         grid-template-columns: minmax(0, 1fr) 44px;
         align-items: center;
         gap: 12px;
-        padding: 7px 8px 7px 18px;
-        border: 1px solid #cdd7d0;
-        border-radius: 6px;
-        background: #ffffff;
+        padding: 4px 0 4px 2px;
+        border-top: 1px solid var(--line);
+        border-bottom: 1px solid var(--line);
       }
 
-      .command-bar code,
+      .command-line code,
       .run-command code {
-        font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+        font-family: var(--mono);
         letter-spacing: 0;
       }
 
-      .command-bar code {
+      .command-line code {
         min-width: 0;
-        color: #10211b;
-        font-size: 15px;
+        color: var(--ink);
+        font-size: clamp(14px, 1.45vw, 18px);
         line-height: 1.5;
+        font-weight: 540;
         overflow-wrap: anywhere;
       }
 
       .prompt {
-        margin-right: 9px;
-        color: #087f61;
-        font-weight: 800;
+        margin-right: 12px;
+        color: var(--spine);
+        font-weight: 700;
       }
 
       .copy-button {
@@ -287,9 +518,9 @@
         display: grid;
         place-items: center;
         padding: 0;
-        color: #52645c;
+        color: var(--muted-ui);
         border: 0;
-        border-radius: 4px;
+        border-radius: 50%;
         background: transparent;
         cursor: pointer;
         transition:
@@ -298,8 +529,8 @@
       }
 
       .copy-button:hover {
-        color: #087f61;
-        background: #edf3ef;
+        color: var(--spine);
+        background: rgba(207, 231, 221, 0.48);
       }
 
       .copy-button svg {
@@ -312,8 +543,8 @@
       }
 
       .copy-button[data-state="copied"] {
-        color: #087f61;
-        background: #e7f1eb;
+        color: var(--spine);
+        background: rgba(207, 231, 221, 0.62);
       }
 
       .copy-button[data-state="copied"] .copy-icon {
@@ -324,16 +555,32 @@
         display: block;
       }
 
+      .copy-button[data-state="error"] {
+        color: var(--danger);
+        background: rgba(161, 63, 55, 0.08);
+      }
+
       .run-command {
-        margin: 12px 0 0;
-        color: #66756f;
-        font-size: 14px;
+        margin: 12px 0 0 2px;
+        color: var(--muted-ui);
+        font-size: 13px;
         line-height: 1.5;
       }
 
       .run-command code {
-        color: #24372f;
+        color: var(--ink);
         font-size: 13px;
+      }
+
+      .status-message {
+        margin: 10px 0 0;
+        color: var(--danger);
+        font-size: 13px;
+        line-height: 1.45;
+      }
+
+      .film-status {
+        padding-inline: clamp(0px, 5.84%, 84px);
       }
 
       .sr-only {
@@ -349,48 +596,148 @@
       }
 
       :focus-visible {
-        outline: 3px solid rgba(8, 127, 97, 0.38);
+        outline: 3px solid rgba(8, 127, 97, 0.34);
         outline-offset: 3px;
       }
 
-      @media (min-width: 761px) and (min-height: 860px) {
-        .film-frame {
-          max-width: 1180px;
-        }
+      .film-frame:fullscreen {
+        width: 100%;
+        height: 100%;
+        border: 0;
+        border-radius: 0;
+        background: #000000;
       }
 
-      @media (max-width: 760px) {
+      .film-frame:fullscreen video {
+        object-fit: contain;
+      }
+
+      @media (max-width: 820px) {
         .site-header,
-        main {
-          width: min(100% - 28px, 1180px);
+        .stage {
+          width: min(100% - 28px, 1440px);
         }
 
         .site-header {
-          min-height: 64px;
+          height: 60px;
         }
 
-        main {
-          margin-top: 4px;
-          padding-bottom: 40px;
+        .stage {
+          margin-top: 2px;
         }
 
         .install {
           grid-template-columns: 1fr;
-          gap: 24px;
-          margin-top: 26px;
-          padding-top: 23px;
+          gap: 28px;
+          margin-top: 28px;
+          padding: 25px 0 0;
         }
 
         .positioning {
-          font-size: 18px;
+          max-width: 620px;
+        }
+      }
+
+      @media (max-width: 560px) {
+        main {
+          padding-bottom: 40px;
         }
 
-        .command-bar {
-          padding-left: 13px;
+        .wordmark {
+          gap: 6px;
         }
 
-        .command-bar code {
-          font-size: 13px;
+        .wordmark h1 {
+          font-size: 16px;
+        }
+
+        .wordmark img {
+          width: 18px;
+          height: 21px;
+        }
+
+        .header-actions {
+          gap: 10px;
+        }
+
+        .language-switch {
+          gap: 11px;
+        }
+
+        .language-button {
+          font-size: 12px;
+        }
+
+        .project-links {
+          padding-left: 10px;
+        }
+
+        .github-link {
+          width: 38px;
+          height: 38px;
+        }
+
+        .film-frame {
+          border-radius: 6px;
+          box-shadow: 0 16px 44px rgba(19, 23, 21, 0.09);
+        }
+
+        .js .poster-play {
+          width: 50px;
+          height: 50px;
+        }
+
+        .player-controls {
+          right: 7px;
+          bottom: 7px;
+          left: 7px;
+          min-height: 42px;
+          grid-template-columns: 34px minmax(42px, 1fr) auto 34px 34px;
+          gap: 3px;
+          padding: 3px 4px;
+          border-radius: 6px;
+        }
+
+        .control-button {
+          width: 34px;
+          height: 34px;
+        }
+
+        .player-time {
+          min-width: 35px;
+          font-size: 10px;
+        }
+
+        .time-divider,
+        .time-duration {
+          display: none;
+        }
+
+        .install-title {
+          font-size: 22px;
+        }
+
+        .positioning {
+          margin-top: 10px;
+          font-size: 14px;
+        }
+
+        .command-line {
+          grid-template-columns: minmax(0, 1fr) 40px;
+          min-height: 60px;
+        }
+
+        .command-line code {
+          font-size: 12px;
+        }
+
+        .prompt {
+          margin-right: 7px;
+        }
+
+        .copy-button {
+          width: 40px;
+          height: 40px;
         }
       }
 
@@ -404,177 +751,866 @@
       }
     </style>
   </head>
+
   <body>
     <header class="site-header">
-      <a class="brand" href="./" aria-label="SpineCodex home">
-        <img src="./spinecodex-tree.svg" alt="" />
+      <a
+        class="wordmark"
+        href="./"
+        aria-label="SpineCodex home"
+        data-i18n-aria-label="homeLabel"
+      >
         <h1>SpineCodex</h1>
+        <img src="./spinecodex-tree.svg" alt="" />
       </a>
 
-      <nav aria-label="Project links">
-        <a
-          class="github-link"
-          href="https://github.com/GhabiX/SpineCodex"
-          aria-label="Open SpineCodex on GitHub"
-          title="GitHub"
+      <div class="header-actions">
+        <div
+          class="language-switch"
+          role="group"
+          aria-label="Language"
+          data-i18n-aria-label="languageSwitch"
         >
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path
-              fill="currentColor"
-              d="M12 .7a11.3 11.3 0 0 0-3.57 22c.57.1.78-.25.78-.55v-2.17c-3.18.7-3.85-1.35-3.85-1.35-.52-1.32-1.27-1.67-1.27-1.67-1.04-.71.08-.7.08-.7 1.15.08 1.76 1.18 1.76 1.18 1.02 1.75 2.68 1.25 3.33.96.1-.74.4-1.25.73-1.54-2.54-.29-5.21-1.27-5.21-5.59 0-1.24.44-2.25 1.18-3.04-.12-.29-.51-1.45.11-3 0 0 .96-.31 3.11 1.16A10.8 10.8 0 0 1 12 6.01c.96 0 1.92.13 2.82.38 2.15-1.47 3.11-1.16 3.11-1.16.62 1.55.23 2.71.11 3 .73.79 1.18 1.8 1.18 3.04 0 4.33-2.68 5.29-5.23 5.57.41.36.78 1.06.78 2.14v3.17c0 .31.21.66.79.55A11.3 11.3 0 0 0 12 .7Z"
-            />
-          </svg>
-        </a>
-      </nav>
+          <button
+            class="language-button"
+            type="button"
+            data-language="en"
+            aria-pressed="true"
+            aria-label="Switch to English"
+          >
+            EN
+          </button>
+          <button
+            class="language-button"
+            type="button"
+            data-language="zh"
+            aria-pressed="false"
+            aria-label="切换为中文"
+          >
+            中文
+          </button>
+        </div>
+
+        <nav
+          class="project-links"
+          aria-label="Project links"
+          data-i18n-aria-label="projectLinks"
+        >
+          <a
+            class="github-link"
+            href="https://github.com/GhabiX/SpineCodex"
+            aria-label="Open SpineCodex on GitHub"
+            data-i18n-aria-label="githubLabel"
+            title="GitHub"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path
+                fill="currentColor"
+                d="M12 .7a11.3 11.3 0 0 0-3.57 22c.57.1.78-.25.78-.55v-2.17c-3.18.7-3.85-1.35-3.85-1.35-.52-1.32-1.27-1.67-1.27-1.67-1.04-.71.08-.7.08-.7 1.15.08 1.76 1.18 1.76 1.18 1.02 1.75 2.68 1.25 3.33.96.1-.74.4-1.25.73-1.54-2.54-.29-5.21-1.27-5.21-5.59 0-1.24.44-2.25 1.18-3.04-.12-.29-.51-1.45.11-3 0 0 .96-.31 3.11 1.16A10.8 10.8 0 0 1 12 6.01c.96 0 1.92.13 2.82.38 2.15-1.47 3.11-1.16 3.11-1.16.62 1.55.23 2.71.11 3 .73.79 1.18 1.8 1.18 3.04 0 4.33-2.68 5.29-5.23 5.57.41.36.78 1.06.78 2.14v3.17c0 .31.21.66.79.55A11.3 11.3 0 0 0 12 .7Z"
+              />
+            </svg>
+          </a>
+        </nav>
+      </div>
     </header>
 
     <main>
-      <section aria-labelledby="film-title">
-        <h2 id="film-title" class="sr-only">
-          SpineCodex Agent Morphogenesis launch film
-        </h2>
-        <div class="film-frame">
-          <video
-            id="film"
-            controls
-            playsinline
-            preload="metadata"
-            poster="./spinecodex-film-poster.jpg"
-            aria-describedby="film-description"
+      <div class="stage">
+        <section aria-labelledby="film-title">
+          <h2 id="film-title" class="sr-only" data-i18n="filmTitle">
+            SpineCodex Agent Morphogenesis launch film
+          </h2>
+          <div
+            id="film-frame"
+            class="film-frame"
+            data-started="false"
+            data-controls-visible="false"
           >
-            <source src="./spinecodex-film-aria.mp4" type="video/mp4" />
-            Your browser does not support HTML video.
-          </video>
-          <button
-            id="play-film"
-            class="poster-play"
-            type="button"
-            aria-label="Play the SpineCodex launch film"
-            title="Play film"
-          >
-            <svg
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2.2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              aria-hidden="true"
+            <video
+              id="film"
+              controls
+              playsinline
+              preload="metadata"
+              poster="./spinecodex-film-poster.jpg"
+              aria-describedby="film-description"
+              tabindex="0"
             >
-              <path d="m7 4 13 8-13 8V4Z" />
-            </svg>
-          </button>
-        </div>
-        <p id="film-description" class="sr-only">
-          A four-minute launch film about SpineCodex and agent morphogenesis.
-        </p>
-      </section>
+              <source src="./spinecodex-film-aria.mp4" type="video/mp4" />
+              Your browser does not support HTML video.
+            </video>
 
-      <section class="install" aria-labelledby="install-title">
-        <div>
-          <h2 id="install-title" class="section-label">Install</h2>
-          <p class="positioning">
-            An enhanced, independently maintained Codex CLI for complex,
-            long-running software engineering tasks.
-          </p>
-        </div>
-
-        <div class="command-panel">
-          <div class="command-bar">
-            <code><span class="prompt" aria-hidden="true">$</span><span id="install-command">npm install -g @spinejit/spine-codex@latest</span></code>
             <button
-              id="copy-install"
-              class="copy-button"
+              id="play-film"
+              class="poster-play"
               type="button"
-              aria-label="Copy install command"
-              title="Copy install command"
-              hidden
+              aria-label="Play the SpineCodex launch film"
+              data-i18n-aria-label="playFilm"
+              title="Play film"
+              data-i18n-title="playTitle"
             >
               <svg
-                class="copy-icon"
                 viewBox="0 0 24 24"
                 fill="none"
                 stroke="currentColor"
-                stroke-width="2"
+                stroke-width="2.2"
                 stroke-linecap="round"
                 stroke-linejoin="round"
                 aria-hidden="true"
               >
-                <rect width="14" height="14" x="8" y="8" rx="2" />
-                <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" />
-              </svg>
-              <svg
-                class="check-icon"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                aria-hidden="true"
-              >
-                <path d="m5 12 4 4L19 6" />
+                <path d="m7 4 13 8-13 8V4Z" />
               </svg>
             </button>
+
+            <div id="player-controls" class="player-controls" hidden>
+              <button
+                id="play-toggle"
+                class="control-button"
+                type="button"
+                aria-label="Pause film"
+                data-state="secondary"
+              >
+                <svg
+                  class="state-primary"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="m7 4 13 8-13 8V4Z" />
+                </svg>
+                <svg
+                  class="state-secondary"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M8 5v14M16 5v14" />
+                </svg>
+              </button>
+
+              <input
+                id="film-seek"
+                class="seek-control"
+                type="range"
+                min="0"
+                max="1000"
+                value="0"
+                step="1"
+                aria-label="Seek film"
+              />
+
+              <span class="player-time" aria-live="off">
+                <span id="time-current">0:00</span><span class="time-divider"> / </span><span id="time-duration" class="time-duration">4:12</span>
+              </span>
+
+              <button
+                id="mute-toggle"
+                class="control-button"
+                type="button"
+                aria-label="Mute film"
+              >
+                <svg
+                  class="state-primary"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M11 5 6 9H2v6h4l5 4V5Z" />
+                  <path d="M15.5 8.5a5 5 0 0 1 0 7M18 6a9 9 0 0 1 0 12" />
+                </svg>
+                <svg
+                  class="state-secondary"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M11 5 6 9H2v6h4l5 4V5Z" />
+                  <path d="m22 9-6 6M16 9l6 6" />
+                </svg>
+              </button>
+
+              <button
+                id="fullscreen-toggle"
+                class="control-button"
+                type="button"
+                aria-label="Enter fullscreen"
+              >
+                <svg
+                  class="state-primary"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5" />
+                </svg>
+                <svg
+                  class="state-secondary"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M3 8h5V3M21 8h-5V3M3 16h5v5M21 16h-5v5" />
+                </svg>
+              </button>
+            </div>
           </div>
-          <p class="run-command">Then run <code>spine-codex</code>.</p>
-          <span id="copy-status" class="sr-only" aria-live="polite"></span>
-        </div>
-      </section>
+          <p
+            id="film-status"
+            class="status-message film-status"
+            aria-live="polite"
+            hidden
+          ></p>
+          <p id="film-description" class="sr-only" data-i18n="filmDescription">
+            A four-minute launch film about SpineCodex and agent morphogenesis.
+          </p>
+        </section>
+
+        <section class="install" aria-labelledby="install-title">
+          <div>
+            <h2 id="install-title" class="install-title" data-i18n="installTitle">
+              Install SpineCodex
+            </h2>
+            <p class="positioning" data-i18n="positioning">
+              An enhanced, independently maintained Codex CLI for complex,
+              long-running software engineering tasks.
+            </p>
+          </div>
+
+          <div class="command-panel">
+            <div class="command-line">
+              <code><span class="prompt" aria-hidden="true">$</span><span id="install-command">npm install -g @spinejit/spine-codex@latest</span></code>
+              <button
+                id="copy-install"
+                class="copy-button"
+                type="button"
+                aria-label="Copy install command"
+                data-i18n-aria-label="copyInstall"
+                title="Copy install command"
+                data-i18n-title="copyInstall"
+                hidden
+              >
+                <svg
+                  class="copy-icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <rect width="14" height="14" x="8" y="8" rx="2" />
+                  <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" />
+                </svg>
+                <svg
+                  class="check-icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="m5 12 4 4L19 6" />
+                </svg>
+              </button>
+            </div>
+            <p class="run-command">
+              <span data-i18n="runLead">Then run</span>
+              <code>spine-codex</code><span data-i18n="sentenceEnd">.</span>
+            </p>
+            <span id="copy-status" class="sr-only" aria-live="polite"></span>
+            <p id="copy-error" class="status-message" aria-live="polite" hidden></p>
+          </div>
+        </section>
+      </div>
     </main>
 
     <script>
+      const translations = {
+        en: {
+          documentTitle:
+            "SpineCodex | Enhanced Codex CLI for Long-Running Tasks",
+          metaDescription:
+            "SpineCodex is an enhanced, independently maintained Codex CLI for complex, long-running software engineering tasks.",
+          homeLabel: "SpineCodex home",
+          languageSwitch: "Language",
+          projectLinks: "Project links",
+          githubLabel: "Open SpineCodex on GitHub",
+          filmTitle: "SpineCodex Agent Morphogenesis launch film",
+          filmDescription:
+            "A four-minute launch film about SpineCodex and agent morphogenesis.",
+          playFilm: "Play the SpineCodex launch film",
+          playTitle: "Play film",
+          pauseFilm: "Pause film",
+          replayFilm: "Replay film",
+          seekFilm: "Seek film",
+          muteFilm: "Mute film",
+          unmuteFilm: "Unmute film",
+          enterFullscreen: "Enter fullscreen",
+          exitFullscreen: "Exit fullscreen",
+          installTitle: "Install SpineCodex",
+          positioning:
+            "An enhanced, independently maintained Codex CLI for complex, long-running software engineering tasks.",
+          copyInstall: "Copy install command",
+          copiedLabel: "Install command copied",
+          copiedTitle: "Copied",
+          copiedStatus: "Install command copied.",
+          copyError: "Could not copy the install command.",
+          mediaFallback:
+            "The selected film could not be loaded. The previous language was restored.",
+          mediaUnavailable: "The film could not be loaded.",
+          runLead: "Then run",
+          sentenceEnd: ".",
+          ogImageAlt: "SpineCodex Agent Morphogenesis launch film end card",
+        },
+        zh: {
+          documentTitle: "SpineCodex | 面向复杂长任务的增强型 Codex CLI",
+          metaDescription:
+            "SpineCodex 是一款独立维护的增强版 Codex CLI，面向复杂、长周期软件工程任务。",
+          homeLabel: "SpineCodex 首页",
+          languageSwitch: "语言",
+          projectLinks: "项目链接",
+          githubLabel: "在 GitHub 上打开 SpineCodex",
+          filmTitle: "SpineCodex 智能体形态发生发布影片",
+          filmDescription:
+            "一部介绍 SpineCodex 与智能体形态发生的四分钟发布影片。",
+          playFilm: "播放 SpineCodex 发布影片",
+          playTitle: "播放影片",
+          pauseFilm: "暂停影片",
+          replayFilm: "重新播放影片",
+          seekFilm: "调整影片进度",
+          muteFilm: "影片静音",
+          unmuteFilm: "取消影片静音",
+          enterFullscreen: "进入全屏",
+          exitFullscreen: "退出全屏",
+          installTitle: "安装 SpineCodex",
+          positioning:
+            "一款独立维护的增强版 Codex CLI，面向复杂、长周期软件工程任务。",
+          copyInstall: "复制安装命令",
+          copiedLabel: "安装命令已复制",
+          copiedTitle: "已复制",
+          copiedStatus: "安装命令已复制。",
+          copyError: "无法复制安装命令。",
+          mediaFallback: "所选影片无法加载，已恢复此前的语言版本。",
+          mediaUnavailable: "影片无法加载。",
+          runLead: "然后运行",
+          sentenceEnd: "。",
+          ogImageAlt: "SpineCodex 智能体形态发生发布影片片尾画面",
+        },
+      };
+
+      const media = {
+        en: {
+          source: "./spinecodex-film-aria.mp4",
+          poster: "./spinecodex-film-poster.jpg",
+        },
+        zh: {
+          source: "./spinecodex-film-zh-cn.mp4",
+          poster: "./spinecodex-film-poster-zh-cn.jpg",
+        },
+      };
+
       const film = document.querySelector("#film");
+      const filmSource = film.querySelector("source");
+      const filmFrame = document.querySelector("#film-frame");
       const playButton = document.querySelector("#play-film");
+      const playerControls = document.querySelector("#player-controls");
+      const playToggle = document.querySelector("#play-toggle");
+      const seekControl = document.querySelector("#film-seek");
+      const timeCurrent = document.querySelector("#time-current");
+      const timeDuration = document.querySelector("#time-duration");
+      const muteToggle = document.querySelector("#mute-toggle");
+      const fullscreenToggle = document.querySelector("#fullscreen-toggle");
+      const filmStatus = document.querySelector("#film-status");
       const copyButton = document.querySelector("#copy-install");
       const installCommand = document.querySelector("#install-command");
       const copyStatus = document.querySelector("#copy-status");
+      const copyError = document.querySelector("#copy-error");
+      const languageButtons = document.querySelectorAll("[data-language]");
+      const descriptionMeta = document.querySelector('meta[name="description"]');
+      const ogTitleMeta = document.querySelector('meta[property="og:title"]');
+      const ogDescriptionMeta = document.querySelector(
+        'meta[property="og:description"]',
+      );
+      const ogImageAltMeta = document.querySelector(
+        'meta[property="og:image:alt"]',
+      );
       let copyResetTimer;
+      let controlsHideTimer;
+      let currentLanguage = document.documentElement.dataset.lang;
+      let currentMediaLanguage = "en";
+      let mediaSwitchEpoch = 0;
+      let mediaSwitchState = null;
 
-      film.controls = false;
-      copyButton.hidden = false;
+      const text = () => translations[currentLanguage];
 
-      playButton.addEventListener("click", async () => {
+      const formatTime = (seconds) => {
+        if (!Number.isFinite(seconds)) {
+          return "0:00";
+        }
+
+        const wholeSeconds = Math.max(0, Math.floor(seconds));
+        const minutes = Math.floor(wholeSeconds / 60);
+        return `${minutes}:${String(wholeSeconds % 60).padStart(2, "0")}`;
+      };
+
+      const updateTimeline = () => {
+        const currentTimeText = formatTime(film.currentTime);
+        const durationText = formatTime(film.duration);
+
+        timeCurrent.textContent = currentTimeText;
+        timeDuration.textContent = durationText;
+
+        const progress =
+          Number.isFinite(film.duration) && film.duration > 0
+            ? Math.min(100, (film.currentTime / film.duration) * 100)
+            : 0;
+        seekControl.value = String(Math.round(progress * 10));
+        seekControl.style.setProperty("--seek-progress", `${progress}%`);
+        seekControl.setAttribute(
+          "aria-valuetext",
+          `${currentTimeText} / ${durationText}`,
+        );
+      };
+
+      const updateControlState = () => {
+        const labels = text();
+        const isPlaying = !film.paused && !film.ended;
+        const isMuted = film.muted || film.volume === 0;
+        const isFullscreen = document.fullscreenElement === filmFrame;
+
+        playToggle.dataset.state = isPlaying ? "secondary" : "primary";
+        playToggle.setAttribute(
+          "aria-label",
+          isPlaying ? labels.pauseFilm : labels.playFilm,
+        );
+        playToggle.title = isPlaying ? labels.pauseFilm : labels.playTitle;
+
+        playButton.setAttribute(
+          "aria-label",
+          film.ended ? labels.replayFilm : labels.playFilm,
+        );
+        playButton.title = film.ended ? labels.replayFilm : labels.playTitle;
+
+        muteToggle.dataset.state = isMuted ? "secondary" : "primary";
+        muteToggle.setAttribute(
+          "aria-label",
+          isMuted ? labels.unmuteFilm : labels.muteFilm,
+        );
+        muteToggle.title = isMuted ? labels.unmuteFilm : labels.muteFilm;
+
+        fullscreenToggle.dataset.state = isFullscreen
+          ? "secondary"
+          : "primary";
+        fullscreenToggle.setAttribute(
+          "aria-label",
+          isFullscreen ? labels.exitFullscreen : labels.enterFullscreen,
+        );
+        fullscreenToggle.title = isFullscreen
+          ? labels.exitFullscreen
+          : labels.enterFullscreen;
+        seekControl.setAttribute("aria-label", labels.seekFilm);
+
+        if (copyButton.dataset.state === "copied") {
+          copyButton.setAttribute("aria-label", labels.copiedLabel);
+          copyButton.title = labels.copiedTitle;
+          copyStatus.textContent = labels.copiedStatus;
+        } else if (copyButton.dataset.state === "error") {
+          copyButton.setAttribute("aria-label", labels.copyError);
+          copyButton.title = labels.copyError;
+          copyStatus.textContent = labels.copyError;
+          copyError.textContent = labels.copyError;
+        } else {
+          copyButton.setAttribute("aria-label", labels.copyInstall);
+          copyButton.title = labels.copyInstall;
+        }
+      };
+
+      const setPlayerStarted = (started) => {
+        filmFrame.dataset.started = String(started);
+        playerControls.hidden = !started;
+        playerControls.inert = !started;
+        playButton.hidden = started;
+
+        if (!started) {
+          filmFrame.dataset.controlsVisible = "false";
+        }
+      };
+
+      const showControls = () => {
+        if (playerControls.hidden) {
+          return;
+        }
+
+        window.clearTimeout(controlsHideTimer);
+        filmFrame.dataset.controlsVisible = "true";
+      };
+
+      const scheduleControlsHide = () => {
+        window.clearTimeout(controlsHideTimer);
+        if (!film.paused && !film.ended) {
+          controlsHideTimer = window.setTimeout(() => {
+            if (!filmFrame.contains(document.activeElement)) {
+              filmFrame.dataset.controlsVisible = "false";
+            }
+          }, 1800);
+        }
+      };
+
+      const captureMediaState = (persistSelection) => ({
+        resumeTime: film.currentTime,
+        resumePlayback: !film.paused && !film.ended,
+        wasStarted: filmFrame.dataset.started === "true",
+        muted: film.muted,
+        volume: film.volume,
+        persistSelection,
+      });
+
+      const restoreMediaState = async (state) => {
+        film.muted = state.muted;
+        film.volume = state.volume;
+        setPlayerStarted(state.wasStarted);
+
+        if (state.wasStarted && Number.isFinite(film.duration)) {
+          film.currentTime = Math.min(
+            state.resumeTime,
+            Math.max(0, film.duration - 0.1),
+          );
+          showControls();
+        }
+
+        updateTimeline();
+        updateControlState();
+
+        if (state.resumePlayback) {
+          try {
+            await film.play();
+          } catch {
+            showControls();
+          }
+        }
+      };
+
+      const applyLanguageUi = (language, persist = true) => {
+        currentLanguage = language === "zh" ? "zh" : "en";
+        const labels = text();
+
+        document.documentElement.dataset.lang = currentLanguage;
+        document.documentElement.lang = currentLanguage === "zh" ? "zh-CN" : "en";
+        document.title = labels.documentTitle;
+        descriptionMeta.content = labels.metaDescription;
+        ogTitleMeta.content = labels.documentTitle;
+        ogDescriptionMeta.content = labels.metaDescription;
+        ogImageAltMeta.content = labels.ogImageAlt;
+
+        document.querySelectorAll("[data-i18n]").forEach((element) => {
+          element.textContent = labels[element.dataset.i18n];
+        });
+
+        document
+          .querySelectorAll("[data-i18n-aria-label]")
+          .forEach((element) => {
+            element.setAttribute(
+              "aria-label",
+              labels[element.dataset.i18nAriaLabel],
+            );
+          });
+
+        document.querySelectorAll("[data-i18n-title]").forEach((element) => {
+          element.title = labels[element.dataset.i18nTitle];
+        });
+
+        languageButtons.forEach((button) => {
+          button.setAttribute(
+            "aria-pressed",
+            String(button.dataset.language === currentLanguage),
+          );
+        });
+
+        if (persist) {
+          try {
+            localStorage.setItem("spinecodex-language", currentLanguage);
+          } catch {}
+        }
+
+        updateControlState();
+      };
+
+      const showFilmStatus = (message) => {
+        filmStatus.textContent = message;
+        filmStatus.hidden = false;
+      };
+
+      const clearFilmStatus = () => {
+        filmStatus.textContent = "";
+        filmStatus.hidden = true;
+      };
+
+      const restorePreviousMedia = (state) => {
+        const fallbackLanguage = currentMediaLanguage;
+        const fallback = media[fallbackLanguage];
+        const rollbackEpoch = ++mediaSwitchEpoch;
+        let fallbackTimeout;
+
+        applyLanguageUi(fallbackLanguage, state.persistSelection);
+        film.poster = fallback.poster;
+        film.pause();
+        filmSource.src = fallback.source;
+
+        const onFallbackLoaded = async () => {
+          cleanupFallbackListeners();
+          if (rollbackEpoch !== mediaSwitchEpoch) {
+            return;
+          }
+
+          filmFrame.removeAttribute("aria-busy");
+          await restoreMediaState(state);
+          mediaSwitchState = null;
+          showFilmStatus(text().mediaFallback);
+        };
+
+        const onFallbackError = () => {
+          cleanupFallbackListeners();
+          if (rollbackEpoch !== mediaSwitchEpoch) {
+            return;
+          }
+
+          filmFrame.removeAttribute("aria-busy");
+          mediaSwitchState = null;
+          film.controls = true;
+          setPlayerStarted(false);
+          showFilmStatus(text().mediaUnavailable);
+        };
+
+        const cleanupFallbackListeners = () => {
+          window.clearTimeout(fallbackTimeout);
+          film.removeEventListener("loadedmetadata", onFallbackLoaded);
+          film.removeEventListener("error", onFallbackError);
+          filmSource.removeEventListener("error", onFallbackError);
+        };
+
+        fallbackTimeout = window.setTimeout(onFallbackError, 12000);
+        film.addEventListener("loadedmetadata", onFallbackLoaded);
+        film.addEventListener("error", onFallbackError);
+        filmSource.addEventListener("error", onFallbackError);
+        film.load();
+      };
+
+      const setFilmLanguage = (language, persistSelection = true) => {
+        const selected = media[language];
+        const resolvedSource = new URL(selected.source, document.baseURI).href;
+
+        film.poster = selected.poster;
+        if (film.currentSrc === resolvedSource && !mediaSwitchState) {
+          currentMediaLanguage = language;
+          clearFilmStatus();
+          return;
+        }
+
+        const switchEpoch = ++mediaSwitchEpoch;
+        const state = mediaSwitchState ?? captureMediaState(persistSelection);
+        let loadTimeout;
+        state.persistSelection = persistSelection;
+        mediaSwitchState = state;
+        filmFrame.setAttribute("aria-busy", "true");
+
+        film.pause();
+        filmSource.src = selected.source;
+
+        const onLoaded = async () => {
+          cleanupListeners();
+          if (switchEpoch !== mediaSwitchEpoch) {
+            return;
+          }
+
+          currentMediaLanguage = language;
+          filmFrame.removeAttribute("aria-busy");
+          clearFilmStatus();
+          await restoreMediaState(state);
+          mediaSwitchState = null;
+        };
+
+        const onError = () => {
+          cleanupListeners();
+          if (switchEpoch !== mediaSwitchEpoch) {
+            return;
+          }
+
+          restorePreviousMedia(state);
+        };
+
+        const cleanupListeners = () => {
+          window.clearTimeout(loadTimeout);
+          film.removeEventListener("loadedmetadata", onLoaded);
+          film.removeEventListener("error", onError);
+          filmSource.removeEventListener("error", onError);
+        };
+
+        loadTimeout = window.setTimeout(onError, 12000);
+        film.addEventListener("loadedmetadata", onLoaded);
+        film.addEventListener("error", onError);
+        filmSource.addEventListener("error", onError);
+        film.load();
+      };
+
+      const setLanguage = (language, persist = true) => {
+        const selectedLanguage = language === "zh" ? "zh" : "en";
+        applyLanguageUi(selectedLanguage, persist);
+        setFilmLanguage(selectedLanguage, persist);
+      };
+
+      const togglePlayback = async () => {
+        if (!film.paused && !film.ended) {
+          film.pause();
+          showControls();
+          return;
+        }
+
         if (film.ended) {
           film.currentTime = 0;
         }
 
         try {
-          film.controls = true;
           await film.play();
         } catch {
-          film.controls = false;
-          playButton.hidden = false;
+          film.controls = true;
+          setPlayerStarted(false);
+        }
+      };
+
+      film.controls = false;
+      playerControls.hidden = true;
+      playerControls.inert = true;
+      copyButton.hidden = false;
+      setLanguage(currentLanguage, false);
+      updateTimeline();
+
+      languageButtons.forEach((button) => {
+        button.addEventListener("click", () => {
+          setLanguage(button.dataset.language);
+        });
+      });
+
+      playButton.addEventListener("click", togglePlayback);
+      playToggle.addEventListener("click", togglePlayback);
+      film.addEventListener("click", togglePlayback);
+
+      film.addEventListener("keydown", (event) => {
+        if (event.key === " " || event.key.toLowerCase() === "k") {
+          event.preventDefault();
+          togglePlayback();
+        } else if (event.key === "ArrowLeft") {
+          film.currentTime = Math.max(0, film.currentTime - 5);
+        } else if (event.key === "ArrowRight") {
+          film.currentTime = Math.min(film.duration || 0, film.currentTime + 5);
         }
       });
 
       film.addEventListener("play", () => {
-        film.controls = true;
-        playButton.hidden = true;
+        setPlayerStarted(true);
+        showControls();
+        scheduleControlsHide();
+        updateControlState();
       });
 
+      film.addEventListener("pause", () => {
+        showControls();
+        updateControlState();
+      });
+      film.addEventListener("loadedmetadata", updateTimeline);
+      film.addEventListener("durationchange", updateTimeline);
+      film.addEventListener("timeupdate", updateTimeline);
+
+      seekControl.addEventListener("input", () => {
+        if (Number.isFinite(film.duration) && film.duration > 0) {
+          film.currentTime = (Number(seekControl.value) / 1000) * film.duration;
+          updateTimeline();
+        }
+      });
+
+      muteToggle.addEventListener("click", () => {
+        film.muted = !film.muted;
+      });
+      film.addEventListener("volumechange", updateControlState);
+
+      fullscreenToggle.addEventListener("click", async () => {
+        if (document.fullscreenElement === filmFrame) {
+          await document.exitFullscreen();
+        } else if (filmFrame.requestFullscreen) {
+          await filmFrame.requestFullscreen();
+        } else if (film.webkitEnterFullscreen) {
+          film.webkitEnterFullscreen();
+        }
+      });
+      document.addEventListener("fullscreenchange", updateControlState);
+
+      filmFrame.addEventListener("pointermove", () => {
+        showControls();
+        scheduleControlsHide();
+      });
+      filmFrame.addEventListener("pointerleave", scheduleControlsHide);
+      filmFrame.addEventListener("focusin", showControls);
+      filmFrame.addEventListener("focusout", scheduleControlsHide);
+
       film.addEventListener("ended", () => {
-        film.controls = false;
-        playButton.hidden = false;
+        window.clearTimeout(controlsHideTimer);
+        setPlayerStarted(false);
+        updateTimeline();
+        updateControlState();
       });
 
       copyButton.addEventListener("click", async () => {
+        window.clearTimeout(copyResetTimer);
+        copyError.hidden = true;
+        copyError.textContent = "";
+
         try {
           await navigator.clipboard.writeText(installCommand.textContent);
           copyButton.dataset.state = "copied";
-          copyButton.setAttribute("aria-label", "Install command copied");
-          copyButton.setAttribute("title", "Copied");
-          copyStatus.textContent = "Install command copied.";
+          updateControlState();
 
-          window.clearTimeout(copyResetTimer);
           copyResetTimer = window.setTimeout(() => {
             delete copyButton.dataset.state;
-            copyButton.setAttribute("aria-label", "Copy install command");
-            copyButton.setAttribute("title", "Copy install command");
             copyStatus.textContent = "";
+            updateControlState();
           }, 1800);
         } catch {
-          copyStatus.textContent = "Could not copy the install command.";
+          copyButton.dataset.state = "error";
+          copyError.hidden = false;
+          updateControlState();
+
+          copyResetTimer = window.setTimeout(() => {
+            delete copyButton.dataset.state;
+            copyStatus.textContent = "";
+            copyError.textContent = "";
+            copyError.hidden = true;
+            updateControlState();
+          }, 3200);
         }
       });
     </script>
