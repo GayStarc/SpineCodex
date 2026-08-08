@@ -48,8 +48,7 @@ fn task_envelope_injects_identity_and_same_call_peer_roster() {
         SpawnTask {
             summary: "parser".to_string(),
             prompt: concat!(
-                "Shared collaboration directory: tasks/trial/collab\n",
-                "My collaboration file: tasks/trial/collab/parser.md\n",
+                "Shared blackboard: tasks/trial/blackboard\n",
                 "Implement parser."
             )
             .to_string(),
@@ -57,8 +56,7 @@ fn task_envelope_injects_identity_and_same_call_peer_roster() {
         SpawnTask {
             summary: "compatibility tests".to_string(),
             prompt: concat!(
-                "Shared collaboration directory: tasks/trial/collab\n",
-                "My collaboration file: tasks/trial/collab/compatibility-tests.md\n",
+                "Shared blackboard: tasks/trial/blackboard\n",
                 "Test compatibility."
             )
             .to_string(),
@@ -66,8 +64,7 @@ fn task_envelope_injects_identity_and_same_call_peer_roster() {
         SpawnTask {
             summary: "interface review".to_string(),
             prompt: concat!(
-                "Shared collaboration directory: tasks/trial/collab\n",
-                "My collaboration file: tasks/trial/collab/interface-review.md\n",
+                "Shared blackboard: tasks/trial/blackboard\n",
                 "Review the interface."
             )
             .to_string(),
@@ -78,7 +75,7 @@ fn task_envelope_injects_identity_and_same_call_peer_roster() {
 
     assert!(envelope.contains("You are: parser"));
     assert!(envelope.contains("- compatibility tests\n- interface review"));
-    assert!(envelope.contains("tasks/trial/collab/parser.md"));
+    assert!(envelope.contains("Shared blackboard: tasks/trial/blackboard"));
     assert!(envelope.ends_with(&format!("Assignment:\n{}", tasks[0].prompt)));
 }
 

@@ -30,10 +30,7 @@ const SPAWN_DESCRIPTION: &str = concat!(
     "Each branch receives a differentiated assignment and must own a semantically independent direction: either resolve a concrete uncertainty or produce an independently verifiable outcome, with an explicit scope, evidence boundary, and completion predicate. ",
     "A branch may investigate, review, or implement directly and must return one terminal final memory. ",
     "Give every branch a concise summary that is unique within this spawn call; the runtime uses it as the branch's public identity. ",
-    "Branches should collaborate effectively through the shared blackboard to reduce duplicated work and improve the final result. ",
-    "Independent execution is the default. When coordination is required, provision and verify one task-local writable coordination directory before calling spine.spawn. Every affected task prompt must repeat the same `Shared collaboration directory: <path>` line, include a distinct `My collaboration file: <path>` inside it, identify relevant peer summaries and roles, and declare the artifact format, update/read protocol, required synchronization points, and a bounded fallback for unavailable or incomplete peer state. ",
-    "Absent an environment-provided locking or atomic-append protocol, each branch artifact must be append-only and single-writer. Within that directory, affected branches may write only their own coordination artifact, may read named peer artifacts through the declared protocol even when the investigated source or evidence is otherwise read-only, and must not write a peer artifact. ",
-    "Coordinate through the collaboration directory to minimize unnecessary duplicate work: respect assigned scopes, share reusable evidence early, and independently verify load-bearing or disputed claims. Peer coordination must never become a dependency, correctness-critical state, or an expansion of the assignment. ",
+    "Every spine.spawn call uses one task-local shared blackboard directory. Before calling spine.spawn, the parent must provision the directory and repeat the same `Shared blackboard: <path>` line in every task prompt so branches can coordinate, share useful findings, and reduce duplicated exploration. ",
     "For exploration or review, treat inherited analytical conclusions as hypotheses to verify, refine, or falsify against primary evidence. ",
     "The original continuation is suspended during the fission; no supervisory model remains active. ",
     "Join waits for every branch, records their terminal results as closed task nodes under the current Spine scope atomically in input order, and then resumes the original continuation. ",
@@ -126,7 +123,7 @@ pub(crate) fn create_spine_spawn_tool(max_tasks: usize) -> ToolSpec {
             (
                 "prompt".to_string(),
                 JsonSchema::string(Some(
-                    "Complete initial branch assignment. The branch identity is this task's summary. When coordination is required, include the same task-local `Shared collaboration directory: <path>` used by every affected branch, a distinct `My collaboration file: <path>` inside it, relevant peer summaries and roles, the artifact format and update/read protocol, required synchronization points, and a bounded fallback for unavailable or incomplete peer state. Absent locking or atomic append, the branch artifact must be append-only and single-writer. Coordination must never become a dependency, correctness-critical state, or an expansion of the assignment.".to_string(),
+                    "Complete initial branch assignment. The branch identity is this task's summary. Include the same task-local `Shared blackboard: <path>` line used by every branch so they can coordinate, share useful findings, and reduce duplicated exploration.".to_string(),
                 )),
             ),
         ]),

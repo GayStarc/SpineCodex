@@ -48,8 +48,9 @@ const SECOND_PARENT_PROMPT: &str = "run the replacement spawn batch";
 const BRANCH_PROMPT_MARKER: &str = "You are a spawned execution branch.";
 const CORRECTION_MESSAGE: &str = concat!(
     "This spawned execution branch remains active. Continue exactly the declared\n",
-    "assignment and follow its collaboration contract when one is declared. When the\n",
-    "assignment is complete or precisely bounded, return exactly one non-empty,\n",
+    "assignment and use its declared shared blackboard to collaborate with peer\n",
+    "branches. When the assignment is complete or precisely bounded, return exactly\n",
+    "one non-empty,\n",
     "tool-free assistant final response containing terminal memory. That response\n",
     "ends this branch execution."
 );
