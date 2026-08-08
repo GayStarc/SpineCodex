@@ -681,6 +681,9 @@ pub struct Config {
     /// Base instructions override.
     pub base_instructions: Option<String>,
 
+    /// Resolved optional `<spine_view>` override.
+    pub spine_instructions: Option<String>,
+
     /// Developer instructions override injected as a separate message.
     pub developer_instructions: Option<String>,
 
@@ -3655,6 +3658,20 @@ impl Config {
         let base_instructions = base_instructions
             .or(file_base_instructions)
             .or(cfg.instructions.clone());
+        let spine_instructions = Self::try_read_non_empty_file(
+            fs,
+            cfg.spine_instruction_file.as_ref(),
+            "Spine instruction file",
+        )
+        .await?;
+        if let Some(instructions) = spine_instructions.as_deref() {
+            crate::spine::instructions::validate_override(instructions).map_err(|message| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("invalid Spine instruction file: {message}"),
+                )
+            })?;
+        }
         let developer_instructions = developer_instructions.or(cfg.developer_instructions);
         let include_permissions_instructions = cfg.include_permissions_instructions.unwrap_or(true);
         let include_apps_instructions = cfg.include_apps_instructions.unwrap_or(true);
@@ -3854,6 +3871,7 @@ impl Config {
             enforce_residency: enforce_residency.value,
             notify: cfg.notify,
             base_instructions,
+            spine_instructions,
             personality,
             developer_instructions,
             compact_prompt,

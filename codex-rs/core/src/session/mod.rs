@@ -628,6 +628,7 @@ impl Codex {
             base_instructions,
             config.features.enabled(Feature::SpineJit),
             config.features.enabled(Feature::SpineTrim),
+            config.spine_instructions.as_deref(),
         );
 
         // Dynamic tools are defined at thread start and persisted in rollout session metadata.

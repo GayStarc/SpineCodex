@@ -5515,6 +5515,14 @@
       ],
       "description": "User-level skill config entries keyed by SKILL.md path."
     },
+    "spine_instruction_file": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/AbsolutePathBuf"
+        }
+      ],
+      "description": "Optional path to a file containing a complete `<spine_view>` override."
+    },
     "spine_spawn": {
       "allOf": [
         {

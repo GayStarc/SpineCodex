@@ -87,13 +87,34 @@ Execution rules:
 "#;
 
 const SPINE_VIEW_START_MARKER: &str = "\n\n<spine_view>";
+const MAX_SPINE_INSTRUCTION_BYTES: usize = 32 * 1024;
 // The Trim segment is intentionally empty until its model-visible copy is approved.
 const SPINE_TRIM_INSTRUCTIONS: &str = "";
+
+pub(crate) fn validate_override(instructions: &str) -> Result<(), String> {
+    let instructions = instructions.trim();
+    if instructions.len() > MAX_SPINE_INSTRUCTION_BYTES {
+        return Err(format!(
+            "contents exceed the {MAX_SPINE_INSTRUCTION_BYTES}-byte limit"
+        ));
+    }
+    let Some(body) = instructions
+        .strip_prefix("<spine_view>")
+        .and_then(|contents| contents.strip_suffix("</spine_view>"))
+    else {
+        return Err("contents must be one complete <spine_view> block".to_string());
+    };
+    if body.contains("<spine_view>") || body.contains("</spine_view>") {
+        return Err("contents must contain exactly one <spine_view> block".to_string());
+    }
+    Ok(())
+}
 
 pub(crate) fn append(
     mut base_instructions: String,
     spine_jit_enabled: bool,
     spine_trim_enabled: bool,
+    spine_instructions: Option<&str>,
 ) -> String {
     let trim_segment = spine_trim_enabled.then_some(SPINE_TRIM_INSTRUCTIONS);
     if !spine_jit_enabled && trim_segment.map_or(true, str::is_empty) {
@@ -104,7 +125,7 @@ pub(crate) fn append(
         if let Some(start) = base_instructions.rfind(SPINE_VIEW_START_MARKER) {
             base_instructions.truncate(start);
         }
-        Some(SPINE_JIT_INSTRUCTIONS)
+        Some(spine_instructions.unwrap_or(SPINE_JIT_INSTRUCTIONS))
     } else {
         None
     };
@@ -128,13 +149,13 @@ mod tests {
     #[test]
     fn feature_off_is_identity() {
         let base = "base instructions".to_string();
-        assert_eq!(append(base.clone(), false, false), base);
+        assert_eq!(append(base.clone(), false, false, None), base);
     }
 
     #[test]
     fn enabled_instructions_are_idempotent() {
-        let once = append("base".to_string(), true, false);
-        assert_eq!(append(once.clone(), true, false), once);
+        let once = append("base".to_string(), true, false, None);
+        assert_eq!(append(once.clone(), true, false, None), once);
     }
 
     #[test]
@@ -143,6 +164,7 @@ mod tests {
             "base\n\n<spine_view>old instructions</spine_view>".to_string(),
             true,
             false,
+            None,
         );
         assert!(!replaced.contains("old instructions"));
         assert_eq!(replaced.matches("<spine_view>").count(), 1);
@@ -150,8 +172,30 @@ mod tests {
 
     #[test]
     fn trim_instructions_are_independent_and_idempotent() {
-        let once = append("base".to_string(), false, true);
+        let once = append("base".to_string(), false, true, None);
         assert_eq!(once, "base");
-        assert_eq!(append(once.clone(), false, true), once);
+        assert_eq!(append(once.clone(), false, true, None), once);
+    }
+
+    #[test]
+    fn configured_override_replaces_the_embedded_segment() {
+        let instructions = "<spine_view>\nSPINE_OVERRIDE_SENTINEL\n</spine_view>";
+        let actual = append("base".to_string(), true, false, Some(instructions));
+        assert_eq!(actual, format!("base\n\n{instructions}"));
+    }
+
+    #[test]
+    fn configured_override_requires_one_complete_bounded_block() {
+        assert!(validate_override(SPINE_JIT_INSTRUCTIONS).is_ok());
+        assert!(validate_override("missing wrapper").is_err());
+        assert!(
+            validate_override("<spine_view>one</spine_view><spine_view>two</spine_view>").is_err()
+        );
+
+        let oversized = format!(
+            "<spine_view>{}</spine_view>",
+            "x".repeat(MAX_SPINE_INSTRUCTION_BYTES)
+        );
+        assert!(validate_override(&oversized).is_err());
     }
 }

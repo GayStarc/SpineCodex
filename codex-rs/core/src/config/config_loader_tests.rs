@@ -2665,6 +2665,37 @@ async fn cli_override_model_instructions_file_sets_base_instructions() -> std::i
 }
 
 #[tokio::test]
+async fn cli_override_spine_instruction_file_sets_spine_instructions() -> std::io::Result<()> {
+    let tmp = tempdir()?;
+    let codex_home = tmp.path().join("home");
+    tokio::fs::create_dir_all(&codex_home).await?;
+    tokio::fs::write(codex_home.join(CONFIG_TOML_FILE), "").await?;
+
+    let cwd = tmp.path().join("work");
+    tokio::fs::create_dir_all(&cwd).await?;
+
+    let instructions_path = tmp.path().join("spine.md");
+    let instructions = "<spine_view>\nSPINE_OVERRIDE_SENTINEL\n</spine_view>";
+    tokio::fs::write(&instructions_path, instructions).await?;
+
+    let config = ConfigBuilder::default()
+        .codex_home(codex_home)
+        .cli_overrides(vec![(
+            "spine_instruction_file".to_string(),
+            TomlValue::String(instructions_path.to_string_lossy().to_string()),
+        )])
+        .harness_overrides(ConfigOverrides {
+            cwd: Some(cwd),
+            ..ConfigOverrides::default()
+        })
+        .build()
+        .await?;
+
+    assert_eq!(config.spine_instructions.as_deref(), Some(instructions));
+    Ok(())
+}
+
+#[tokio::test]
 async fn inline_instructions_set_base_instructions() -> std::io::Result<()> {
     let tmp = tempdir()?;
     let codex_home = tmp.path().join("home");
