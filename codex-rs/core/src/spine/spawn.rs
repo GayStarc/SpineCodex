@@ -988,6 +988,7 @@ fn task_envelope(task: &SpawnTask, call_tasks: &[SpawnTask]) -> String {
             "The assignment is already an active branch scope. Begin the assigned work directly. ",
             "Use spine.open, spine.close, and spine.next only to manage genuine descendant work ",
             "within this assignment.\n\n",
+            "Branches should collaborate effectively through the shared blackboard to reduce duplicated work and improve the final result.\n\n",
             "Executable work is defined by the assignment. Inherited context supplies constraints ",
             "and evidence for that work.\n\n",
             "When the assignment declares a collaboration contract, follow its named root, peer ",
