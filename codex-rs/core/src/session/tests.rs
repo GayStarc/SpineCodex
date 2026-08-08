@@ -112,6 +112,7 @@ use codex_otel::THREAD_SKILLS_TRUNCATED_METRIC;
 use codex_otel::TelemetryAuthMode;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
+use codex_protocol::config_types::MultiAgentMode;
 use codex_protocol::config_types::Settings;
 use codex_protocol::items::HookPromptFragment;
 use codex_protocol::items::build_hook_prompt_message;
@@ -9195,7 +9196,7 @@ async fn build_initial_context_adds_multi_agent_v2_subagent_usage_hint_as_develo
 }
 
 #[tokio::test]
-async fn multi_agent_prompt_requires_feature_when_runtime_is_v2() {
+async fn multi_agent_prompt_uses_resolved_v2_runtime_when_feature_is_off() {
     let (session, turn_context) =
         make_multi_agent_v2_usage_hint_test_session(/*enable_multi_agent_v2*/ false).await;
 
@@ -9203,16 +9204,22 @@ async fn multi_agent_prompt_requires_feature_when_runtime_is_v2() {
 
     assert_eq!(turn_context.multi_agent_version, MultiAgentVersion::V2);
     assert!(!turn_context.config.features.enabled(Feature::MultiAgentV2));
-    assert_eq!(turn_context.to_turn_context_item().multi_agent_mode, None);
+    assert_eq!(
+        turn_context.to_turn_context_item().multi_agent_mode,
+        Some(MultiAgentMode::ExplicitRequestOnly)
+    );
     let developer_messages = developer_message_texts(&initial_context);
     assert!(
-        !developer_messages.iter().any(|message| {
-            matches!(
-                message.as_slice(),
-                ["Root guidance."] | ["Subagent guidance."]
-            )
-        }),
-        "did not expect multi-agent v2 usage hint developer messages, got {developer_messages:?}"
+        developer_messages
+            .iter()
+            .any(|message| message.as_slice() == ["Root guidance."]),
+        "expected resolved v2 runtime to install the root usage hint, got {developer_messages:?}"
+    );
+    assert!(
+        !developer_messages
+            .iter()
+            .any(|message| message.as_slice() == ["Subagent guidance."]),
+        "did not expect subagent usage hint for a root runtime, got {developer_messages:?}"
     );
 }
 
