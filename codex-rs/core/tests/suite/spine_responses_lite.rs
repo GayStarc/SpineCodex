@@ -226,13 +226,13 @@ async fn responses_lite_direct_controls_admit_first_valid_native_ordinal() -> Re
                     "direct-open-first",
                     "spine",
                     "open",
-                    r#"{"summary":"first child"}"#,
+                    r#"{"goal":"first child"}"#,
                 ),
                 responses::ev_function_call_with_namespace(
                     "direct-open-second",
                     "spine",
                     "open",
-                    r#"{"summary":"second child"}"#,
+                    r#"{"goal":"second child"}"#,
                 ),
                 responses::ev_completed("resp-direct-control-batch"),
             ]),
@@ -297,7 +297,7 @@ async fn responses_lite_direct_controls_skip_runtime_invalid_earlier_call() -> R
                     "direct-open-after-invalid",
                     "spine",
                     "open",
-                    r#"{"summary":"valid child"}"#,
+                    r#"{"goal":"valid child"}"#,
                 ),
                 responses::ev_completed("resp-direct-control-invalid-first"),
             ]),
@@ -357,13 +357,13 @@ async fn responses_lite_direct_control_post_hook_failure_releases_next_ordinal()
                     "direct-open-blocked",
                     "spine",
                     "open",
-                    r#"{"summary":"blocked child"}"#,
+                    r#"{"goal":"blocked child"}"#,
                 ),
                 responses::ev_function_call_with_namespace(
                     "direct-open-after-hook",
                     "spine",
                     "open",
-                    r#"{"summary":"hook survivor"}"#,
+                    r#"{"goal":"hook survivor"}"#,
                 ),
                 responses::ev_completed("resp-direct-control-post-hook"),
             ]),
@@ -430,7 +430,7 @@ async fn responses_lite_spine_transition_status_follows_tool_output() -> Result<
                     "status-open",
                     "spine",
                     "open",
-                    r#"{"summary":"status child"}"#,
+                    r#"{"goal":"status child"}"#,
                 ),
                 responses::ev_completed("resp-status-open"),
             ]),
@@ -501,7 +501,7 @@ async fn responses_lite_spine_transition_status_uses_body_after_prefix_context_l
                     "status-body-window-open",
                     "spine",
                     "open",
-                    r#"{"summary":"body window child"}"#,
+                    r#"{"goal":"body window child"}"#,
                 ),
                 responses::ev_completed_with_tokens("resp-status-body-window-open", 100_000),
             ]),
@@ -558,7 +558,7 @@ async fn responses_lite_open_rewrite_preserves_body_after_prefix_growth() -> Res
                     "body-prefix-open-call",
                     "spine",
                     "open",
-                    r#"{"summary":"body budget child"}"#,
+                    r#"{"goal":"body budget child"}"#,
                 ),
                 completed_with_usage(
                     "body-prefix-open",
@@ -707,7 +707,7 @@ async fn persisted_spine_transition_status_survives_shutdown_and_resume() -> Res
                     "status-resume-open",
                     "spine",
                     "open",
-                    r#"{"summary":"resumed child"}"#,
+                    r#"{"goal":"resumed child"}"#,
                 ),
                 responses::ev_completed("resp-status-resume-open"),
             ]),
@@ -771,7 +771,7 @@ async fn responses_lite_spine_memory_slots_precede_the_transition_status() -> Re
                     "memory-open",
                     "spine",
                     "open",
-                    r#"{"summary":"memory child"}"#,
+                    r#"{"goal":"memory child"}"#,
                 ),
                 responses::ev_completed_with_tokens("resp-memory-open", 10_000),
             ]),
@@ -884,7 +884,7 @@ async fn responses_lite_spine_close_rebases_provider_usage_before_auto_compact()
                     "rebase-open",
                     "spine",
                     "open",
-                    r#"{"summary":"large child"}"#,
+                    r#"{"goal":"large child"}"#,
                 ),
                 responses::ev_completed_with_tokens("resp-rebase-open", 10_000),
             ])),
@@ -1023,7 +1023,7 @@ async fn responses_lite_body_after_prefix_rewrite_keeps_full_window_hard_stop() 
                     "body-prefix-open",
                     "spine",
                     "open",
-                    r#"{"summary":"body prefix child"}"#,
+                    r#"{"goal":"body prefix child"}"#,
                 ),
                 responses::ev_completed_with_tokens("resp-body-prefix-open", 5_000),
             ]),
@@ -1527,7 +1527,7 @@ const args = () => ({
 const [left, right, opened] = await Promise.all([
   tools.test_sync_tool(args()),
   tools.test_sync_tool(args()),
-  tools.spine__open({summary: "nested child"}),
+  tools.spine__open({goal: "nested child"}),
 ]);
 text(JSON.stringify({left, right, opened}));
 "#;
@@ -1663,7 +1663,7 @@ async fn responses_lite_exec_runs_nested_open_next_close_lifecycle() -> Result<(
                 responses::ev_custom_tool_call(
                     "exec-lifecycle-open",
                     "exec",
-                    r#"text(await tools.spine__open({summary: "first nested task"}));"#,
+                    r#"text(await tools.spine__open({goal: "first nested task"}));"#,
                 ),
                 responses::ev_completed_with_tokens("resp-nested-lifecycle-open", 10_000),
             ]),
@@ -1673,7 +1673,7 @@ async fn responses_lite_exec_runs_nested_open_next_close_lifecycle() -> Result<(
                     "exec-lifecycle-next",
                     "exec",
                     r#"text(await tools.spine__next({
-  summary: "second nested task",
+  goal: "second nested task",
   memory: "first nested task complete"
 }));"#,
                 ),
@@ -1809,7 +1809,7 @@ async fn responses_lite_first_yield_commits_nested_open_and_wait_stays_ordinary(
                 "exec-yield-open",
                 "exec",
                 r#"// @exec: {"yield_time_ms": 30000}
-text(await tools.spine__open({summary: "yielded nested task"}));
+text(await tools.spine__open({goal: "yielded nested task"}));
 yield_control();
 while (true) {}
 "#,

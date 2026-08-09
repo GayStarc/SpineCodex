@@ -255,12 +255,12 @@ fn trim_validation_rejects_missed_ids_and_missing_anchors() {
     );
 }
 
-fn open(value: u64, summary: &str) -> RolloutEvent {
+fn open(value: u64, goal: &str) -> RolloutEvent {
     RolloutEvent::ToolCall(group(
         value,
         vec![tool_use(
             "spine.open",
-            &serde_json::json!({"summary": summary}).to_string(),
+            &serde_json::json!({"goal": goal}).to_string(),
             Some(ToolOutcome::Succeeded),
         )],
     ))
@@ -277,12 +277,12 @@ fn close(value: u64, memory: &str) -> RolloutEvent {
     ))
 }
 
-fn next(value: u64, summary: &str, memory: &str) -> RolloutEvent {
+fn next(value: u64, goal: &str, memory: &str) -> RolloutEvent {
     RolloutEvent::ToolCall(group(
         value,
         vec![tool_use(
             "spine.next",
-            &serde_json::json!({"summary": summary, "memory": memory}).to_string(),
+            &serde_json::json!({"goal": goal, "memory": memory}).to_string(),
             Some(ToolOutcome::Succeeded),
         )],
     ))
@@ -474,7 +474,7 @@ fn leading_assistant_messages_remain_inside_tool_group() {
 fn incomplete_control_group_is_ordinary() {
     let projection = apply(&[RolloutEvent::ToolCall(group(
         1,
-        vec![tool_use("spine.open", r#"{"summary":"child"}"#, None)],
+        vec![tool_use("spine.open", r#"{"goal":"child"}"#, None)],
     ))]);
     assert_eq!(projection.cursor.to_string(), "1");
     assert!(matches!(
@@ -489,7 +489,7 @@ fn failed_control_group_is_ordinary() {
         1,
         vec![tool_use(
             "spine.open",
-            r#"{"summary":"child"}"#,
+            r#"{"goal":"child"}"#,
             Some(ToolOutcome::Failed),
         )],
     ))]);
@@ -503,7 +503,7 @@ fn unknown_control_outcome_is_ordinary() {
         1,
         vec![tool_use(
             "spine.open",
-            r#"{"summary":"child"}"#,
+            r#"{"goal":"child"}"#,
             Some(ToolOutcome::Unknown),
         )],
     ))]);
@@ -524,20 +524,25 @@ fn malformed_control_arguments_are_ordinary() {
 }
 
 #[test]
-fn unknown_control_fields_are_rejected() {
-    let projection = apply(&[RolloutEvent::ToolCall(group(
-        1,
-        vec![tool_use(
-            "spine.open",
-            r#"{"summary":"child","extra":true}"#,
-            Some(ToolOutcome::Succeeded),
-        )],
-    ))]);
-    assert_eq!(projection.nodes.len(), 1);
+fn unknown_and_legacy_control_fields_are_rejected() {
+    for arguments in [
+        r#"{"goal":"child","extra":true}"#,
+        r#"{"summary":"legacy child"}"#,
+    ] {
+        let projection = apply(&[RolloutEvent::ToolCall(group(
+            1,
+            vec![tool_use(
+                "spine.open",
+                arguments,
+                Some(ToolOutcome::Succeeded),
+            )],
+        ))]);
+        assert_eq!(projection.nodes.len(), 1);
+    }
 }
 
 #[test]
-fn empty_open_summary_is_ordinary() {
+fn empty_open_goal_is_ordinary() {
     let projection = apply(&[open(1, "  \n")]);
     assert_eq!(projection.nodes.len(), 1);
 }
@@ -729,7 +734,7 @@ fn conflicting_successful_controls_apply_no_transition() {
         vec![
             tool_use(
                 "spine.open",
-                r#"{"summary":"child"}"#,
+                r#"{"goal":"child"}"#,
                 Some(ToolOutcome::Succeeded),
             ),
             tool_use(
@@ -754,7 +759,7 @@ fn ordinary_call_can_coexist_with_one_control() {
             tool_use("shell", "{}", Some(ToolOutcome::Succeeded)),
             tool_use(
                 "spine.open",
-                r#"{"summary":"child"}"#,
+                r#"{"goal":"child"}"#,
                 Some(ToolOutcome::Succeeded),
             ),
         ],
@@ -941,7 +946,7 @@ fn spawn_mixed_with_spine_control_does_not_import_children() {
     group.calls.push(ToolUse {
         call_id: "open".to_string(),
         name: "spine.open".to_string(),
-        arguments: r#"{"summary":"conflict"}"#.to_string(),
+        arguments: r#"{"goal":"conflict"}"#.to_string(),
         call_ordinal: None,
         outcome: Some(ToolOutcome::Succeeded),
         output: Some("opened".to_string()),

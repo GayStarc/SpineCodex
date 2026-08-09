@@ -84,7 +84,7 @@ impl SpineHandler {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct OpenArgs {
-    summary: String,
+    goal: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -96,7 +96,7 @@ struct CloseArgs {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct NextArgs {
-    summary: String,
+    goal: String,
     memory: String,
 }
 
@@ -114,7 +114,7 @@ fn validate_arguments(kind: SpineControlKind, arguments: &str) -> Result<(), Fun
     match kind {
         SpineControlKind::Open => {
             let args: OpenArgs = parse_arguments(arguments)?;
-            non_empty(args.summary, SPINE_OPEN)?;
+            non_empty(args.goal, SPINE_OPEN)?;
         }
         SpineControlKind::Close => {
             let args: CloseArgs = parse_arguments(arguments)?;
@@ -122,7 +122,7 @@ fn validate_arguments(kind: SpineControlKind, arguments: &str) -> Result<(), Fun
         }
         SpineControlKind::Next => {
             let args: NextArgs = parse_arguments(arguments)?;
-            non_empty(args.summary, SPINE_NEXT)?;
+            non_empty(args.goal, SPINE_NEXT)?;
             non_empty(args.memory, SPINE_NEXT)?;
         }
     }
@@ -367,24 +367,22 @@ mod tests {
     #[test]
     fn validates_control_argument_matrix() {
         for (kind, arguments) in [
-            (SpineControlKind::Open, r#"{"summary":"task"}"#),
+            (SpineControlKind::Open, r#"{"goal":"task"}"#),
             (SpineControlKind::Close, r#"{"memory":"done"}"#),
             (
                 SpineControlKind::Next,
-                r#"{"summary":"sibling","memory":"done"}"#,
+                r#"{"goal":"sibling","memory":"done"}"#,
             ),
         ] {
             assert!(validate_arguments(kind, arguments).is_ok());
         }
 
         for (kind, arguments) in [
-            (SpineControlKind::Open, r#"{"summary":" "}"#),
+            (SpineControlKind::Open, r#"{"goal":" "}"#),
             (SpineControlKind::Close, r#"{"memory":""}"#),
-            (
-                SpineControlKind::Next,
-                r#"{"summary":"sibling","memory":" "}"#,
-            ),
-            (SpineControlKind::Open, r#"{"summary":"task","extra":1}"#),
+            (SpineControlKind::Next, r#"{"goal":"sibling","memory":" "}"#),
+            (SpineControlKind::Open, r#"{"summary":"task"}"#),
+            (SpineControlKind::Open, r#"{"goal":"task","extra":1}"#),
             (SpineControlKind::Close, "not-json"),
         ] {
             assert!(validate_arguments(kind, arguments).is_err());

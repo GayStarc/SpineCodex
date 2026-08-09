@@ -310,7 +310,7 @@ pub(crate) enum DebugToolArguments {
     },
     Open {
         object: DebugObjectState,
-        summary: DebugStringShape,
+        goal: DebugStringShape,
         unknown_fields: bool,
         valid: bool,
     },
@@ -322,7 +322,7 @@ pub(crate) enum DebugToolArguments {
     },
     Next {
         object: DebugObjectState,
-        summary: DebugStringShape,
+        goal: DebugStringShape,
         memory: DebugStringShape,
         unknown_fields: bool,
         valid: bool,
@@ -1383,14 +1383,14 @@ impl RolloutDebugRedactor {
         let fields = parsed.as_ref().and_then(Value::as_object);
         match tool {
             DebugToolKind::SpineOpen => {
-                let summary = string_shape(field(fields, "summary"));
+                let goal = string_shape(field(fields, "goal"));
                 DebugToolArguments::Open {
                     object,
-                    summary,
-                    unknown_fields: has_unknown_fields(fields, &["summary"]),
+                    goal,
+                    unknown_fields: has_unknown_fields(fields, &["goal"]),
                     valid: object == DebugObjectState::Object
-                        && summary.is_non_empty()
-                        && !has_unknown_fields(fields, &["summary"]),
+                        && goal.is_non_empty()
+                        && !has_unknown_fields(fields, &["goal"]),
                 }
             }
             DebugToolKind::SpineClose => {
@@ -1405,17 +1405,17 @@ impl RolloutDebugRedactor {
                 }
             }
             DebugToolKind::SpineNext => {
-                let summary = string_shape(field(fields, "summary"));
+                let goal = string_shape(field(fields, "goal"));
                 let memory = string_shape(field(fields, "memory"));
                 DebugToolArguments::Next {
                     object,
-                    summary,
+                    goal,
                     memory,
-                    unknown_fields: has_unknown_fields(fields, &["summary", "memory"]),
+                    unknown_fields: has_unknown_fields(fields, &["goal", "memory"]),
                     valid: object == DebugObjectState::Object
-                        && summary.is_non_empty()
+                        && goal.is_non_empty()
                         && memory.is_non_empty()
-                        && !has_unknown_fields(fields, &["summary", "memory"]),
+                        && !has_unknown_fields(fields, &["goal", "memory"]),
                 }
             }
             DebugToolKind::SpineTrim => DebugToolArguments::Trim {

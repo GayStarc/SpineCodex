@@ -430,16 +430,16 @@ fn assert_conforms(name: &str, events: &[LogicalEvent], expected_cursor: &str) {
 
 #[test]
 fn codex_and_kimi_fixture_adapters_conform() {
-    let open = LogicalCall::success("open", "spine.open", r#"{"summary":"task"}"#);
-    let nested = LogicalCall::success("nested", "spine.open", r#"{"summary":"nested"}"#);
+    let open = LogicalCall::success("open", "spine.open", r#"{"goal":"task"}"#);
+    let nested = LogicalCall::success("nested", "spine.open", r#"{"goal":"nested"}"#);
     let close = LogicalCall::success("close", "spine.close", r#"{"memory":"done"}"#);
     let next = LogicalCall::success(
         "next",
         "spine.next",
-        r#"{"summary":"sibling","memory":"done"}"#,
+        r#"{"goal":"sibling","memory":"done"}"#,
     );
     let ordinary = LogicalCall::success("shell", "shell", r#"{"cmd":"pwd"}"#);
-    let failed = LogicalCall::failed("failed", "spine.open", r#"{"summary":"ignored"}"#);
+    let failed = LogicalCall::failed("failed", "spine.open", r#"{"goal":"ignored"}"#);
 
     let cases = vec![
         (
@@ -548,7 +548,7 @@ fn codex_and_kimi_resume_from_full_native_transcript() {
             calls: vec![LogicalCall::success(
                 "open",
                 "spine.open",
-                r#"{"summary":"task"}"#,
+                r#"{"goal":"task"}"#,
             )],
         },
         LogicalEvent::User("detail"),
@@ -578,7 +578,7 @@ fn codex_and_kimi_rollback_use_the_same_native_prefix() {
             calls: vec![LogicalCall::success(
                 "open",
                 "spine.open",
-                r#"{"summary":"task"}"#,
+                r#"{"goal":"task"}"#,
             )],
         },
         LogicalEvent::User("rolled back detail"),
@@ -597,7 +597,7 @@ fn codex_and_kimi_incomplete_outputs_are_non_transitions() {
         calls: vec![LogicalCall {
             id: "open",
             name: "spine.open",
-            arguments: r#"{"summary":"task"}"#,
+            arguments: r#"{"goal":"task"}"#,
             success: None,
             output: None,
         }],

@@ -152,7 +152,7 @@ fn direct_control_shapes_preserve_invalidity_and_exact_success() {
                 "namespace": "spine",
                 "name": "next",
                 "arguments": serde_json::to_string(&json!({
-                    "summary": " ",
+                    "goal": " ",
                     "memory": SECRET,
                     "unexpected": SECRET
                 })).expect("arguments serialize"),
@@ -162,7 +162,7 @@ fn direct_control_shapes_preserve_invalidity_and_exact_success() {
     );
     assert_secret_absent(&request);
     assert_eq!(request["item"]["tool"], "spine_next");
-    assert_eq!(request["item"]["arguments"]["summary"], "whitespace");
+    assert_eq!(request["item"]["arguments"]["goal"], "whitespace");
     assert_eq!(request["item"]["arguments"]["memory"], "non_empty");
     assert_eq!(request["item"]["arguments"]["unknown_fields"], true);
     assert_eq!(request["item"]["arguments"]["valid"], false);
@@ -187,7 +187,7 @@ fn direct_control_shapes_preserve_invalidity_and_exact_success() {
                 "namespace": "spine",
                 "name": "next",
                 "arguments": serde_json::to_string(&json!({
-                    "summary": " ",
+                    "goal": " ",
                     "memory": SECRET,
                     "unexpected": SECRET
                 })).expect("arguments serialize"),
@@ -214,17 +214,17 @@ fn direct_control_shapes_preserve_invalidity_and_exact_success() {
 fn direct_control_argument_classification_matrix_is_preserved() {
     let cases = [
         ("open", json!({}), false),
-        ("open", json!({"summary": ""}), false),
-        ("open", json!({"summary": " \n"}), false),
-        ("open", json!({"summary": 7}), false),
-        ("open", json!({"summary": SECRET}), true),
+        ("open", json!({"goal": ""}), false),
+        ("open", json!({"goal": " \n"}), false),
+        ("open", json!({"goal": 7}), false),
+        ("open", json!({"goal": SECRET}), true),
         ("close", json!({"memory": ""}), false),
         ("close", json!({"memory": SECRET}), true),
-        ("next", json!({"summary": SECRET, "memory": false}), false),
-        ("next", json!({"summary": SECRET, "memory": SECRET}), true),
+        ("next", json!({"goal": SECRET, "memory": false}), false),
+        ("next", json!({"goal": SECRET, "memory": SECRET}), true),
         (
             "next",
-            json!({"summary": SECRET, "memory": SECRET, "extra": SECRET}),
+            json!({"goal": SECRET, "memory": SECRET, "extra": SECRET}),
             false,
         ),
         ("spawn", json!({"tasks": []}), false),
@@ -359,7 +359,7 @@ fn malformed_code_mode_boolean_fields_keep_their_shape() {
             "runtime_call_id": format!("{SECRET}-runtime"),
             "invocation_ordinal": 0,
             "name": "open",
-            "arguments": serde_json::to_string(&json!({"summary": SECRET}))
+            "arguments": serde_json::to_string(&json!({"goal": SECRET}))
                 .expect("arguments serialize"),
             "output": {"success": "false", "body": "Spine open accepted."}
         }]
@@ -423,7 +423,7 @@ fn valid_code_mode_keeps_order_control_shape_and_boolean_values() {
             "invocation_ordinal": 1,
             "name": "open",
             "arguments": serde_json::to_string(&json!({
-                "summary": SECRET
+                "goal": SECRET
             })).expect("arguments serialize"),
             "output": {"success": true, "body": "Spine open accepted."}
         }]
@@ -477,7 +477,7 @@ fn code_mode_valid_controls_and_spawn_keep_classification() {
     let cases = [
         (
             "open",
-            json!({"summary": SECRET}),
+            json!({"goal": SECRET}),
             "Spine open accepted.".to_string(),
         ),
         (
@@ -487,7 +487,7 @@ fn code_mode_valid_controls_and_spawn_keep_classification() {
         ),
         (
             "next",
-            json!({"summary": SECRET, "memory": SECRET}),
+            json!({"goal": SECRET, "memory": SECRET}),
             "Spine next accepted.".to_string(),
         ),
         (
@@ -675,7 +675,7 @@ fn pending_call_limit_fails_closed_and_completed_output_releases_slot() {
                 "type": "function_call",
                 "namespace": "spine",
                 "name": "open",
-                "arguments": serde_json::to_string(&json!({"summary": SECRET}))
+                "arguments": serde_json::to_string(&json!({"goal": SECRET}))
                     .expect("arguments serialize"),
                 "call_id": call_id
             }),
@@ -925,7 +925,7 @@ fn duplicate_outstanding_call_id_is_ambiguous_but_completed_id_can_be_reused() {
                 "type": "function_call",
                 "namespace": namespace,
                 "name": name,
-                "arguments": serde_json::to_string(&json!({"summary": SECRET}))
+                "arguments": serde_json::to_string(&json!({"goal": SECRET}))
                     .expect("arguments serialize"),
                 "call_id": call_id
             }),

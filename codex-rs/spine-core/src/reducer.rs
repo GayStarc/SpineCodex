@@ -168,19 +168,19 @@ impl SpineReducer {
         }
         let control = classify_control(&group);
         match control {
-            Some(Control::Open { summary }) => self.open(group, summary),
+            Some(Control::Open { goal }) => self.open(group, goal),
             Some(Control::Close { memory }) if self.cursor_kind() == NodeKind::Task => {
                 self.close(group, memory)
             }
-            Some(Control::Next { summary, memory }) if self.cursor_kind() == NodeKind::Task => {
-                self.next(group, summary, memory)
+            Some(Control::Next { goal, memory }) if self.cursor_kind() == NodeKind::Task => {
+                self.next(group, goal, memory)
             }
             Some(Control::Spawn { calls }) => self.spawn(group, calls),
             _ => self.push_cursor_entry(NodeEntry::Leaf(ContextItem::ToolCall(group))),
         }
     }
 
-    fn open(&mut self, group: ToolCallGroup, summary: String) {
+    fn open(&mut self, group: ToolCallGroup, goal: String) {
         let parent_id = self.cursor.clone();
         let parent_index = self.node_index(&parent_id);
         let child_ordinal = self.nodes[parent_index].children.len() as u32 + 1;
@@ -196,7 +196,7 @@ impl SpineReducer {
             children: Vec::new(),
             kind: NodeKind::Task,
             status: NodeStatus::Live,
-            summary: Some(summary),
+            summary: Some(goal),
             memory: None,
             start: group.start,
             end: None,
@@ -232,7 +232,7 @@ impl SpineReducer {
         self.cursor = parent_id;
     }
 
-    fn next(&mut self, group: ToolCallGroup, summary: String, model_memory: String) {
+    fn next(&mut self, group: ToolCallGroup, goal: String, model_memory: String) {
         let closed_id = self.cursor.clone();
         let closed_index = self.node_index(&closed_id);
         let parent_id = self.nodes[closed_index]
@@ -265,7 +265,7 @@ impl SpineReducer {
             children: Vec::new(),
             kind: NodeKind::Task,
             status: NodeStatus::Live,
-            summary: Some(summary),
+            summary: Some(goal),
             memory: None,
             start: group.start,
             end: None,
@@ -466,7 +466,7 @@ impl SpineReducer {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct OpenArgs {
-    summary: String,
+    goal: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -478,7 +478,7 @@ struct CloseArgs {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct NextArgs {
-    summary: String,
+    goal: String,
     memory: String,
 }
 
@@ -489,9 +489,9 @@ struct SpawnArgs {
 }
 
 enum Control {
-    Open { summary: String },
+    Open { goal: String },
     Close { memory: String },
-    Next { summary: String, memory: String },
+    Next { goal: String, memory: String },
     Spawn { calls: Vec<ValidSpawnCall> },
 }
 
@@ -516,16 +516,16 @@ fn classify_control(group: &ToolCallGroup) -> Option<Control> {
         match call.name.as_str() {
             SPINE_OPEN => serde_json::from_str::<OpenArgs>(&call.arguments)
                 .ok()
-                .and_then(|args| non_empty(args.summary))
-                .map(|summary| Control::Open { summary }),
+                .and_then(|args| non_empty(args.goal))
+                .map(|goal| Control::Open { goal }),
             SPINE_CLOSE => serde_json::from_str::<CloseArgs>(&call.arguments)
                 .ok()
                 .and_then(|args| non_empty(args.memory))
                 .map(|memory| Control::Close { memory }),
             SPINE_NEXT => serde_json::from_str::<NextArgs>(&call.arguments)
                 .ok()
-                .and_then(|args| Some((non_empty(args.summary)?, non_empty(args.memory)?)))
-                .map(|(summary, memory)| Control::Next { summary, memory }),
+                .and_then(|args| Some((non_empty(args.goal)?, non_empty(args.memory)?)))
+                .map(|(goal, memory)| Control::Next { goal, memory }),
             _ => None,
         }
     });

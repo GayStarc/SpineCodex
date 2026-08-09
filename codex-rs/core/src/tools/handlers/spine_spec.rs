@@ -22,8 +22,8 @@ const NODE_MEMORY_DESCRIPTION: &str = concat!(
     "Use existing `[U#]` anchors only to bind approvals, corrections, rejections, clarifications, and elliptical replies to their referents and record the resulting continuation-relevant semantic deltas in task scope, decisions, constraints, progress, and remaining obligations; the underlying user messages remain available independently of these references."
 );
 
-const OPEN_SUMMARY_DESCRIPTION: &str = "Concise, actionable, completable goal for a direct child that will own one distinct body of work and local working context with an independently completable lifecycle. The call carrying it remains in the child's context.";
-const NEXT_SUMMARY_DESCRIPTION: &str = "Concise, actionable, completable goal for a true sibling that will own one distinct body of work and local working context with an independently completable lifecycle. The call carrying it remains in the sibling's context; finalized-node state belongs in memory.";
+const OPEN_GOAL_DESCRIPTION: &str = "Concise, actionable, independently completable outcome owned by the direct child. The call carrying this goal remains in the child's context.";
+const NEXT_GOAL_DESCRIPTION: &str = "Concise, actionable, independently completable outcome owned by the true sibling. The call carrying this goal remains in the sibling's context; finalized-node state belongs in memory.";
 const TRIM_DESCRIPTION: &str = "Conservatively trim one tagged tool-result projection without changing the Spine tree or creating memory. A TRIM_ID is valid only for the immediately preceding tool-result batch and expires after the next assistant tool request; after a miss, do not retry it. Use slice to retain needed evidence, use snip only after useful facts are preserved, and otherwise leave the result unchanged.";
 const SPAWN_DESCRIPTION: &str = concat!(
     "Fission the current work into two or more concurrent peer branches created from the current full history. ",
@@ -51,15 +51,15 @@ pub(crate) fn create_spine_tool(name: &str) -> ToolSpec {
     let function = match name {
         SPINE_OPEN => ResponsesApiTool {
             name: SPINE_OPEN.to_string(),
-            description: "Enter a direct child under the current Spine cursor to own one distinct body of work and local working context with an independently completable lifecycle. Co-issued ordinary tools belong to the child; the transition applies to the current node's prior ReAct history.".to_string(),
+            description: "Enter a direct child under the current Spine cursor. The child owns one independently completable goal and the local working context needed to achieve it. Co-issued ordinary tools belong to the child; the transition applies to the current node's prior ReAct history.".to_string(),
             strict: false,
             defer_loading: None,
             parameters: JsonSchema::object(
                 BTreeMap::from([(
-                    "summary".to_string(),
-                    JsonSchema::string(Some(OPEN_SUMMARY_DESCRIPTION.to_string())),
+                    "goal".to_string(),
+                    JsonSchema::string(Some(OPEN_GOAL_DESCRIPTION.to_string())),
                 )]),
-                Some(vec!["summary".to_string()]),
+                Some(vec!["goal".to_string()]),
                 Some(false.into()),
             ),
             output_schema: None,
@@ -81,21 +81,21 @@ pub(crate) fn create_spine_tool(name: &str) -> ToolSpec {
         },
         SPINE_NEXT => ResponsesApiTool {
             name: SPINE_NEXT.to_string(),
-            description: "Finalize the current node once its owned result is complete or precisely bounded and continuation can proceed from compact memory and inherited context without its full local working context, then enter a true sibling under the same parent. Co-issued ordinary tools belong to the sibling; the transition applies to the current node's prior ReAct history.".to_string(),
+            description: "Finalize the current node once its owned result is complete or precisely bounded and continuation can proceed from compact memory and inherited context without its full local working context, then enter a true sibling under the same parent. The sibling owns one independently completable goal and the local working context needed to achieve it. Co-issued ordinary tools belong to the sibling; the transition applies to the current node's prior ReAct history.".to_string(),
             strict: false,
             defer_loading: None,
             parameters: JsonSchema::object(
                 BTreeMap::from([
                     (
-                        "summary".to_string(),
-                        JsonSchema::string(Some(NEXT_SUMMARY_DESCRIPTION.to_string())),
+                        "goal".to_string(),
+                        JsonSchema::string(Some(NEXT_GOAL_DESCRIPTION.to_string())),
                     ),
                     (
                         "memory".to_string(),
                         JsonSchema::string(Some(NODE_MEMORY_DESCRIPTION.to_string())),
                     ),
                 ]),
-                Some(vec!["summary".to_string(), "memory".to_string()]),
+                Some(vec!["goal".to_string(), "memory".to_string()]),
                 Some(false.into()),
             ),
             output_schema: None,
@@ -244,10 +244,11 @@ mod tests {
     }
 
     #[test]
-    fn close_and_next_require_memory() {
+    fn control_schemas_require_goal_and_memory() {
         for (name, required) in [
+            (SPINE_OPEN, vec!["goal"]),
             (SPINE_CLOSE, vec!["memory"]),
-            (SPINE_NEXT, vec!["summary", "memory"]),
+            (SPINE_NEXT, vec!["goal", "memory"]),
         ] {
             let ToolSpec::Namespace(namespace) = create_spine_tool(name) else {
                 panic!("expected namespace spec");

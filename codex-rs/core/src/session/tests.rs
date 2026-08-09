@@ -2001,7 +2001,7 @@ async fn spinetree_memory_projection_publishes_closed_memory_after_recording() -
             id: None,
             name: "open".to_string(),
             namespace: Some("spine".to_string()),
-            arguments: r#"{"summary":"task"}"#.to_string(),
+            arguments: r#"{"goal":"task"}"#.to_string(),
             call_id: "open-call".to_string(),
             internal_chat_message_metadata_passthrough: None,
         },

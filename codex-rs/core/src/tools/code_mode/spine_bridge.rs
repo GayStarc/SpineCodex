@@ -659,7 +659,7 @@ mod tests {
             .admit(
                 "runtime-2".to_string(),
                 NestedSpineToolName::Open,
-                r#"{"summary":"child"}"#.to_string(),
+                r#"{"goal":"child"}"#.to_string(),
             )
             .expect("second admission");
 

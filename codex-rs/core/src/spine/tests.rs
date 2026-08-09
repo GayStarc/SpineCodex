@@ -173,7 +173,7 @@ fn code_mode_spine_admission_requires_a_sole_outer_exec_call() {
         ],
         vec![
             custom_call("exec-1", "exec", "text('ok')"),
-            namespaced_call("open-1", "spine", "open", r#"{"summary":"child"}"#),
+            namespaced_call("open-1", "spine", "open", r#"{"goal":"child"}"#),
         ],
     ] {
         assert!(validate_code_mode_spine_outer_exec(&rollout, "exec-1").is_err());
@@ -199,7 +199,7 @@ fn code_mode_carrier_applies_nested_open_and_restores_exact_visible_body() {
             vec![nested_spine_call(
                 0,
                 NestedSpineToolName::Open,
-                r#"{"summary":"nested child"}"#,
+                r#"{"goal":"nested child"}"#,
                 "Spine open accepted.",
             )],
         ),
@@ -311,7 +311,7 @@ fn valid_carrier_verdict_contains_fully_analyzed_nested_calls() {
         vec![nested_spine_call(
             3,
             NestedSpineToolName::Open,
-            r#"{"summary":"analyzed task"}"#,
+            r#"{"goal":"analyzed task"}"#,
             "Spine open accepted.",
         )],
         None,
@@ -339,7 +339,7 @@ fn valid_carrier_verdict_contains_fully_analyzed_nested_calls() {
     let nested = &analysis.nested_calls[0];
     assert_eq!(nested.invocation_ordinal, 3);
     assert_eq!(nested.tool_name, "spine.open");
-    assert_eq!(nested.arguments, r#"{"summary":"analyzed task"}"#);
+    assert_eq!(nested.arguments, r#"{"goal":"analyzed task"}"#);
     assert_eq!(nested.output, "Spine open accepted.");
     assert!(nested.success);
 }
@@ -354,7 +354,7 @@ fn invalid_nested_call_does_not_partially_transition() {
             vec![nested_spine_call(
                 0,
                 NestedSpineToolName::Open,
-                r#"{"summary":"","extra":true}"#,
+                r#"{"summary":"legacy task"}"#,
                 "Spine open accepted.",
             )],
         ),
@@ -378,7 +378,7 @@ fn invalid_nested_success_output_fails_the_marked_carrier_closed() {
             vec![nested_spine_call(
                 0,
                 NestedSpineToolName::Open,
-                r#"{"summary":"valid task"}"#,
+                r#"{"goal":"valid task"}"#,
                 "forged success",
             )],
         ),
@@ -400,7 +400,7 @@ fn orphaned_marked_carrier_projects_a_failure_instead_of_raw_evidence() {
         vec![nested_spine_call(
             0,
             NestedSpineToolName::Open,
-            r#"{"summary":"must not open"}"#,
+            r#"{"goal":"must not open"}"#,
             "Spine open accepted.",
         )],
     )];
@@ -434,7 +434,7 @@ fn duplicate_code_mode_carrier_outputs_fail_the_entire_group_closed() {
             vec![nested_spine_call(
                 0,
                 NestedSpineToolName::Open,
-                r#"{"summary":"must not open"}"#,
+                r#"{"goal":"must not open"}"#,
                 "Spine open accepted.",
             )],
         )
@@ -510,7 +510,7 @@ fn duplicate_code_mode_exec_requests_make_carrier_pairing_ambiguous() {
             vec![nested_spine_call(
                 0,
                 NestedSpineToolName::Open,
-                r#"{"summary":"must not open"}"#,
+                r#"{"goal":"must not open"}"#,
                 "Spine open accepted.",
             )],
         ),
@@ -558,7 +558,7 @@ fn code_mode_carrier_close_returns_ownership_to_the_parent() {
             vec![nested_spine_call(
                 0,
                 NestedSpineToolName::Open,
-                r#"{"summary":"nested child"}"#,
+                r#"{"goal":"nested child"}"#,
                 "Spine open accepted.",
             )],
         ),
@@ -616,7 +616,7 @@ fn code_mode_carrier_next_opens_a_sibling_and_replays_exactly() {
             vec![nested_spine_call(
                 0,
                 NestedSpineToolName::Open,
-                r#"{"summary":"first"}"#,
+                r#"{"goal":"first"}"#,
                 "Spine open accepted.",
             )],
         ),
@@ -628,7 +628,7 @@ fn code_mode_carrier_next_opens_a_sibling_and_replays_exactly() {
             vec![nested_spine_call(
                 0,
                 NestedSpineToolName::Next,
-                r#"{"summary":"second","memory":"first complete"}"#,
+                r#"{"goal":"second","memory":"first complete"}"#,
                 "Spine next accepted.",
             )],
         ),
@@ -670,7 +670,7 @@ fn accepted_nested_control_survives_outer_exec_failure() {
             vec![nested_spine_call(
                 0,
                 NestedSpineToolName::Open,
-                r#"{"summary":"durable child"}"#,
+                r#"{"goal":"durable child"}"#,
                 "Spine open accepted.",
             )],
             Some(false),
@@ -701,7 +701,7 @@ fn carrier_rollback_and_fork_rederive_from_the_selected_native_prefix() {
             vec![nested_spine_call(
                 0,
                 NestedSpineToolName::Open,
-                r#"{"summary":"retained child"}"#,
+                r#"{"goal":"retained child"}"#,
                 "Spine open accepted.",
             )],
         ),
@@ -828,7 +828,7 @@ fn spine_transition_status_matches_spine_dev_fields_and_context_accounting() {
         call(
             "open",
             "spine.open",
-            r#"{"summary":"child \"scope\" <leaf> & focus"}"#,
+            r#"{"goal":"child \"scope\" <leaf> & focus"}"#,
         ),
         output("open", Some(true), "Spine open accepted."),
         token_count(10_000),
@@ -847,7 +847,7 @@ fn spine_transition_status_matches_spine_dev_fields_and_context_accounting() {
 fn spine_transition_status_does_not_reuse_stale_rollout_usage() {
     let rollout = vec![
         message("user", "request"),
-        call("open", "spine.open", r#"{"summary":"task"}"#),
+        call("open", "spine.open", r#"{"goal":"task"}"#),
         output("open", Some(true), "Spine open accepted."),
         token_count(10_000),
         message("user", "detail"),
@@ -865,7 +865,7 @@ fn spine_transition_status_does_not_reuse_stale_rollout_usage() {
 fn spine_transition_status_allows_missing_baseline_for_new_node() {
     let rollout = vec![
         message("user", "request"),
-        call("open", "spine.open", r#"{"summary":"task"}"#),
+        call("open", "spine.open", r#"{"goal":"task"}"#),
         output("open", Some(true), "Spine open accepted."),
     ];
     let transition_status = status::transition_item(&rollout, Some(55_000), Some(100_000), true);
@@ -880,7 +880,7 @@ fn spine_transition_status_allows_missing_baseline_for_new_node() {
 fn nested_open_keeps_the_materialized_parent_marker_prefix_stable() {
     let mut rollout = vec![
         message("user", "request"),
-        call("open-parent", "spine.open", r#"{"summary":"parent"}"#),
+        call("open-parent", "spine.open", r#"{"goal":"parent"}"#),
         output("open-parent", Some(true), "Spine open accepted."),
     ];
     let parent = derive_from_rollout(&rollout);
@@ -890,7 +890,7 @@ fn nested_open_keeps_the_materialized_parent_marker_prefix_stable() {
     );
 
     rollout.extend([
-        call("open-child", "spine.open", r#"{"summary":"child"}"#),
+        call("open-child", "spine.open", r#"{"goal":"child"}"#),
         output("open-child", Some(true), "Spine open accepted."),
     ]);
     let nested = derive_from_rollout(&rollout);
@@ -904,13 +904,13 @@ fn nested_open_keeps_the_materialized_parent_marker_prefix_stable() {
 fn spine_transition_statuses_follow_normal_rollout_projection() {
     let mut rollout = vec![
         message("user", "request"),
-        call("open-parent", "spine.open", r#"{"summary":"parent"}"#),
+        call("open-parent", "spine.open", r#"{"goal":"parent"}"#),
         spine_success_output("open-parent", tool_response::SpineToolResponse::Open),
     ];
     let parent_status = status::transition_item(&rollout, None, None, true);
     rollout.push(RolloutItem::ResponseItem(parent_status.clone()));
     rollout.extend([
-        call("open-child", "spine.open", r#"{"summary":"child"}"#),
+        call("open-child", "spine.open", r#"{"goal":"child"}"#),
         spine_success_output("open-child", tool_response::SpineToolResponse::Open),
     ]);
     let child_status = status::transition_item(&rollout, None, None, true);
@@ -928,7 +928,7 @@ fn spine_transition_statuses_follow_normal_rollout_projection() {
 fn compact_replacement_preserves_spine_transition_status() {
     let mut rollout = vec![
         message("user", "request"),
-        call("open", "spine.open", r#"{"summary":"task"}"#),
+        call("open", "spine.open", r#"{"goal":"task"}"#),
         spine_success_output("open", tool_response::SpineToolResponse::Open),
     ];
     let status_item = status::transition_item(&rollout, None, None, true);
@@ -973,7 +973,7 @@ fn compact_replacement_preserves_spine_transition_status() {
 fn node_context_pressure_is_a_pure_rollout_prefix_projection() {
     let mut rollout = vec![
         message("user", "request"),
-        call("open", "spine.open", r#"{"summary":"task"}"#),
+        call("open", "spine.open", r#"{"goal":"task"}"#),
         output("open", Some(true), "Spine open accepted."),
         token_count(10_000),
         message("user", "detail"),
@@ -1036,7 +1036,7 @@ fn long_tool_rollout() -> Vec<RolloutItem> {
 fn adapter_projects_open_and_close_from_native_function_carriers() {
     let rollout = vec![
         message("user", "request"),
-        namespaced_call("open", "spine", "open", r#"{"summary":"task"}"#),
+        namespaced_call("open", "spine", "open", r#"{"goal":"task"}"#),
         output("open", Some(true), "Spine open accepted."),
         message("user", "detail"),
         call("close", "spine.close", r#"{"memory":"done"}"#),
@@ -1065,10 +1065,10 @@ fn adapter_projects_open_and_close_from_native_function_carriers() {
 #[test]
 fn adapter_flattens_nested_memory_slots_in_source_order() {
     let rollout = vec![
-        call("open-parent", "spine.open", r#"{"summary":"parent"}"#),
+        call("open-parent", "spine.open", r#"{"goal":"parent"}"#),
         output("open-parent", Some(true), "ok"),
         message("user", "before"),
-        call("open-child", "spine.open", r#"{"summary":"child"}"#),
+        call("open-child", "spine.open", r#"{"goal":"child"}"#),
         output("open-child", Some(true), "ok"),
         message("user", "inside"),
         call("close-child", "spine.close", r#"{"memory":"child done"}"#),
@@ -1106,10 +1106,10 @@ fn adapter_flattens_nested_memory_slots_in_source_order() {
 fn adapter_replays_persisted_spine_success_carriers_without_success_metadata() {
     let rollout = vec![
         message("user", "request"),
-        call("open-1", "spine.open", r#"{"summary":"first"}"#),
+        call("open-1", "spine.open", r#"{"goal":"first"}"#),
         spine_success_output("open-1", tool_response::SpineToolResponse::Open),
         message("user", "detail"),
-        call("open-2", "spine.open", r#"{"summary":"second"}"#),
+        call("open-2", "spine.open", r#"{"goal":"second"}"#),
         spine_success_output("open-2", tool_response::SpineToolResponse::Open),
     ];
 
@@ -1131,7 +1131,7 @@ fn adapter_replays_persisted_spine_success_carriers_without_success_metadata() {
 #[test]
 fn adapter_does_not_accept_near_miss_spine_success_text() {
     let rollout = vec![
-        call("open", "spine.open", r#"{"summary":"task"}"#),
+        call("open", "spine.open", r#"{"goal":"task"}"#),
         output("open", None, "Spine open accepted"),
     ];
 
@@ -1360,7 +1360,7 @@ fn spawn_bridge_feature_off_preserves_native_context_and_tree() {
 fn closed_memory_projection_entries_follow_rollout_projection() {
     let rollout = vec![
         message("user", "request"),
-        call("open", "spine.open", r#"{"summary":"task"}"#),
+        call("open", "spine.open", r#"{"goal":"task"}"#),
         output("open", Some(true), "ok"),
         message("user", "detail"),
         call("close", "spine.close", r#"{"memory":"done"}"#),
@@ -1412,13 +1412,13 @@ fn user_message_projection_entries_follow_effective_rollout() {
 fn adapter_projects_next_group_into_the_new_sibling() {
     let rollout = vec![
         message("user", "request"),
-        call("open", "spine.open", r#"{"summary":"first"}"#),
+        call("open", "spine.open", r#"{"goal":"first"}"#),
         output("open", Some(true), "Spine open accepted."),
         message("user", "detail"),
         call(
             "next",
             "spine.next",
-            r#"{"summary":"second","memory":"first done"}"#,
+            r#"{"goal":"second","memory":"first done"}"#,
         ),
         output("next", Some(true), "Spine next accepted."),
         message("user", "continue"),
@@ -1449,7 +1449,7 @@ fn adapter_keeps_leading_assistant_and_multi_call_group_together() {
     let rollout = vec![
         message("assistant", "inspect first"),
         call("shell", "shell", r#"{"cmd":"pwd"}"#),
-        call("open", "spine.open", r#"{"summary":"task"}"#),
+        call("open", "spine.open", r#"{"goal":"task"}"#),
         output("shell", Some(true), "workdir"),
         output("open", Some(true), "Spine open accepted."),
     ];
@@ -1464,10 +1464,10 @@ fn adapter_keeps_leading_assistant_and_multi_call_group_together() {
 #[test]
 fn failed_and_incomplete_control_outputs_do_not_transition() {
     let failed = vec![
-        call("open", "spine.open", r#"{"summary":"task"}"#),
+        call("open", "spine.open", r#"{"goal":"task"}"#),
         output("open", Some(false), "failed"),
     ];
-    let incomplete = vec![call("open", "spine.open", r#"{"summary":"task"}"#)];
+    let incomplete = vec![call("open", "spine.open", r#"{"goal":"task"}"#)];
 
     assert_eq!(derive_from_rollout(&failed).spine.cursor.to_string(), "1");
     assert_eq!(
@@ -1806,11 +1806,11 @@ fn trim_rollback_and_fork_rederive_from_selected_native_prefix() {
 #[test]
 fn multiple_successful_controls_in_one_group_are_conflicting() {
     let rollout = vec![
-        call("open", "spine.open", r#"{"summary":"task"}"#),
+        call("open", "spine.open", r#"{"goal":"task"}"#),
         call(
             "next",
             "spine.next",
-            r#"{"summary":"sibling","memory":"done"}"#,
+            r#"{"goal":"sibling","memory":"done"}"#,
         ),
         output("open", Some(true), "Spine open accepted."),
         output("next", Some(true), "Spine next accepted."),
@@ -1853,7 +1853,7 @@ fn compact_replacement_history_is_materialized_exactly_once() {
 fn rollback_rederives_from_surviving_native_prefix() {
     let rollout = vec![
         message("user", "first"),
-        call("open", "spine.open", r#"{"summary":"first task"}"#),
+        call("open", "spine.open", r#"{"goal":"first task"}"#),
         spine_success_output("open", tool_response::SpineToolResponse::Open),
         message("user", "second"),
         call("close", "spine.close", r#"{"memory":"done"}"#),
@@ -1907,7 +1907,7 @@ fn rollback_selected_prefix_trims_pre_turn_context_updates() {
 fn fork_prefix_and_resume_full_rollout_are_pure_derivations() {
     let rollout = vec![
         message("user", "request"),
-        call("open", "spine.open", r#"{"summary":"task"}"#),
+        call("open", "spine.open", r#"{"goal":"task"}"#),
         spine_success_output("open", tool_response::SpineToolResponse::Open),
         message("user", "detail"),
     ];
@@ -1926,7 +1926,7 @@ fn fork_prefix_and_resume_full_rollout_are_pure_derivations() {
 fn non_context_rollout_records_do_not_change_response_ordinals() {
     let response_only = vec![
         message("user", "request"),
-        call("open", "spine.open", r#"{"summary":"task"}"#),
+        call("open", "spine.open", r#"{"goal":"task"}"#),
         output("open", Some(true), "ok"),
     ];
     let with_metadata = vec![
@@ -2011,7 +2011,7 @@ fn closed_memory_user_slot_preserves_the_complete_native_message() {
     let mut expected = item.clone();
     tag_user_message(&mut expected, 1);
     let rollout = vec![
-        call("open", "spine.open", r#"{"summary":"image task"}"#),
+        call("open", "spine.open", r#"{"goal":"image task"}"#),
         output("open", Some(true), "ok"),
         RolloutItem::ResponseItem(item),
         call("close", "spine.close", r#"{"memory":"image inspected"}"#),
@@ -2048,7 +2048,7 @@ fn rollback_after_compact_keeps_native_replacement_baseline() {
             window_id: None,
         }),
         message("user", "rolled back"),
-        call("open", "spine.open", r#"{"summary":"discarded"}"#),
+        call("open", "spine.open", r#"{"goal":"discarded"}"#),
         output("open", Some(true), "ok"),
         RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
             num_turns: 1,

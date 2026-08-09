@@ -773,7 +773,7 @@ fn nested_spine_tool_name(name: NestedSpineToolName) -> &'static str {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct NestedOpenArgs {
-    summary: String,
+    goal: String,
 }
 
 #[derive(Deserialize)]
@@ -785,7 +785,7 @@ struct NestedCloseArgs {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct NestedNextArgs {
-    summary: String,
+    goal: String,
     memory: String,
 }
 
@@ -794,7 +794,7 @@ fn analyze_nested_spine_call(call: NestedSpineCallV1) -> Result<AnalyzedNestedSp
         NestedSpineToolName::Open => {
             let args: NestedOpenArgs =
                 serde_json::from_str(&call.arguments).map_err(|error| error.to_string())?;
-            require_non_empty(&args.summary, "spine.open summary")?;
+            require_non_empty(&args.goal, "spine.open goal")?;
             Some(tool_response::SpineToolResponse::Open)
         }
         NestedSpineToolName::Close => {
@@ -806,7 +806,7 @@ fn analyze_nested_spine_call(call: NestedSpineCallV1) -> Result<AnalyzedNestedSp
         NestedSpineToolName::Next => {
             let args: NestedNextArgs =
                 serde_json::from_str(&call.arguments).map_err(|error| error.to_string())?;
-            require_non_empty(&args.summary, "spine.next summary")?;
+            require_non_empty(&args.goal, "spine.next goal")?;
             require_non_empty(&args.memory, "spine.next memory")?;
             Some(tool_response::SpineToolResponse::Next)
         }
