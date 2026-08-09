@@ -33,6 +33,12 @@ const UPDATE_PID_FILE_NAME: &str = "app-server-updater.pid";
 const OPERATION_LOCK_FILE_NAME: &str = "daemon.lock";
 const SETTINGS_FILE_NAME: &str = "settings.json";
 const STATE_DIR_NAME: &str = "app-server-daemon";
+const PERSISTENT_DAEMON_DISABLED_MESSAGE: &str = concat!(
+    "persistent app-server daemon lifecycle is disabled in SpineCodex until it has a ",
+    "SpineCodex-owned managed binary and update channel; no process or daemon state was ",
+    "changed; use foreground `spine-codex remote-control` or ",
+    "`spine-codex app-server --listen unix://` instead"
+);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LifecycleCommand {
@@ -189,16 +195,21 @@ enum RestartDecision {
 }
 
 pub async fn run(command: LifecycleCommand) -> Result<LifecycleOutput> {
+    if command != LifecycleCommand::Version {
+        reject_persistent_daemon_lifecycle()?;
+    }
     ensure_supported_platform()?;
     Daemon::from_environment()?.run(command).await
 }
 
 pub async fn bootstrap(options: BootstrapOptions) -> Result<BootstrapOutput> {
+    reject_persistent_daemon_lifecycle()?;
     ensure_supported_platform()?;
     Daemon::from_environment()?.bootstrap(options).await
 }
 
 pub async fn ensure_remote_control_started() -> Result<RemoteControlStartOutput> {
+    reject_persistent_daemon_lifecycle()?;
     ensure_supported_platform()?;
     Daemon::from_environment()?
         .ensure_remote_control_started()
@@ -206,6 +217,7 @@ pub async fn ensure_remote_control_started() -> Result<RemoteControlStartOutput>
 }
 
 pub async fn ensure_remote_control_ready() -> Result<RemoteControlReadyOutput> {
+    reject_persistent_daemon_lifecycle()?;
     ensure_supported_platform()?;
     Daemon::from_environment()?
         .ensure_remote_control_ready()
@@ -228,19 +240,26 @@ pub async fn enable_remote_control_on_socket(
 
 /// Starts a manual pairing session through an already-running daemon app-server.
 pub async fn start_remote_control_pairing() -> Result<RemoteControlPairingStartResponse> {
+    reject_persistent_daemon_lifecycle()?;
     ensure_supported_platform()?;
     let daemon = Daemon::from_environment()?;
     remote_control_client::start_pairing(&daemon.socket_path).await
 }
 
 pub async fn set_remote_control(mode: RemoteControlMode) -> Result<RemoteControlOutput> {
+    reject_persistent_daemon_lifecycle()?;
     ensure_supported_platform()?;
     Daemon::from_environment()?.set_remote_control(mode).await
 }
 
 pub async fn run_pid_update_loop() -> Result<()> {
+    reject_persistent_daemon_lifecycle()?;
     ensure_supported_platform()?;
     update_loop::run().await
+}
+
+fn reject_persistent_daemon_lifecycle() -> Result<()> {
+    Err(anyhow!(PERSISTENT_DAEMON_DISABLED_MESSAGE))
 }
 
 #[cfg(unix)]
@@ -858,11 +877,14 @@ mod tests {
     use tempfile::TempDir;
 
     use super::BackendKind;
+    use super::BootstrapOptions;
     use super::BootstrapOutput;
     use super::BootstrapStatus;
     use super::Daemon;
     use super::LifecycleOutput;
     use super::LifecycleStatus;
+    use super::PERSISTENT_DAEMON_DISABLED_MESSAGE;
+    use super::RemoteControlMode;
     use super::RemoteControlStartOutput;
     use super::RemoteControlStatus;
     use super::RestartDecision;
@@ -878,6 +900,82 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&RemoteControlStatus::AlreadyEnabled).expect("serialize"),
             "\"alreadyEnabled\""
+        );
+    }
+
+    #[tokio::test]
+    async fn persistent_daemon_mutations_fail_before_side_effects() {
+        assert_eq!(
+            super::run(super::LifecycleCommand::Start)
+                .await
+                .expect_err("start should be disabled")
+                .to_string(),
+            PERSISTENT_DAEMON_DISABLED_MESSAGE
+        );
+        assert_eq!(
+            super::run(super::LifecycleCommand::Restart)
+                .await
+                .expect_err("restart should be disabled")
+                .to_string(),
+            PERSISTENT_DAEMON_DISABLED_MESSAGE
+        );
+        assert_eq!(
+            super::run(super::LifecycleCommand::Stop)
+                .await
+                .expect_err("stop should be disabled")
+                .to_string(),
+            PERSISTENT_DAEMON_DISABLED_MESSAGE
+        );
+        assert_eq!(
+            super::bootstrap(BootstrapOptions {
+                remote_control_enabled: true,
+            })
+            .await
+            .expect_err("bootstrap should be disabled")
+            .to_string(),
+            PERSISTENT_DAEMON_DISABLED_MESSAGE
+        );
+        assert_eq!(
+            super::ensure_remote_control_started()
+                .await
+                .expect_err("remote control start should be disabled")
+                .to_string(),
+            PERSISTENT_DAEMON_DISABLED_MESSAGE
+        );
+        assert_eq!(
+            super::ensure_remote_control_ready()
+                .await
+                .expect_err("remote control readiness should be disabled")
+                .to_string(),
+            PERSISTENT_DAEMON_DISABLED_MESSAGE
+        );
+        assert_eq!(
+            super::start_remote_control_pairing()
+                .await
+                .expect_err("pairing should be disabled")
+                .to_string(),
+            PERSISTENT_DAEMON_DISABLED_MESSAGE
+        );
+        assert_eq!(
+            super::set_remote_control(RemoteControlMode::Enabled)
+                .await
+                .expect_err("enabling remote control should be disabled")
+                .to_string(),
+            PERSISTENT_DAEMON_DISABLED_MESSAGE
+        );
+        assert_eq!(
+            super::set_remote_control(RemoteControlMode::Disabled)
+                .await
+                .expect_err("disabling remote control should be disabled")
+                .to_string(),
+            PERSISTENT_DAEMON_DISABLED_MESSAGE
+        );
+        assert_eq!(
+            super::run_pid_update_loop()
+                .await
+                .expect_err("updater should be disabled")
+                .to_string(),
+            PERSISTENT_DAEMON_DISABLED_MESSAGE
         );
     }
 

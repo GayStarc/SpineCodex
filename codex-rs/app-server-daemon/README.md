@@ -8,6 +8,15 @@ lifecycle commands used by remote clients such as the desktop and mobile apps.
 It is intended for Codex instances launched over SSH, including fresh developer
 machines that should expose app-server with `remote_control` enabled.
 
+> **SpineCodex build status:** persistent daemon lifecycle mutations are
+> currently disabled before they can change processes or daemon state. The
+> managed binary and updater still belong to the ordinary Codex install lane,
+> so `start`, `restart`, `stop`, `bootstrap`, remote-control mutation/pairing,
+> and the updater fail closed. The read-only `version` command remains
+> available. Use foreground `spine-codex remote-control` or
+> `spine-codex app-server --listen unix://` instead. The implementation notes
+> below describe the dormant lifecycle design until SpineCodex owns that lane.
+
 ## Platform support
 
 The current daemon implementation is Unix-only. It uses pidfile-backed
@@ -26,10 +35,9 @@ spine-codex app-server daemon version
 spine-codex app-server daemon bootstrap --remote-control
 ```
 
-On success, every command writes exactly one JSON object to stdout. Consumers
-should parse that JSON rather than relying on human-readable text. Lifecycle
-responses report the resolved backend, socket path, local CLI version, and
-running app-server version when applicable.
+The read-only `version` command writes one JSON object to stdout on success.
+Mutating commands return the fail-closed error described above without changing
+processes or daemon state.
 
 ## Bootstrap flow
 
