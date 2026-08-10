@@ -9,7 +9,7 @@ outcome.
 
 Recursive policy:
 
-Root epochs are synthetic containers and cannot be closed. The `summary`
+Root epochs are synthetic containers and cannot be closed. The `goal`
 argument to every `open` or `next` call must concisely identify the node's
 concrete scope and intended outcome.
 
@@ -45,7 +45,7 @@ have a clear owner in a focused leaf.
 
 Lifecycle rules:
 
-* `open(summary)` enters a direct child and begins the lifecycle of the working
+* `open(goal)` enters a direct child and begins the lifecycle of the working
   context it owns. Inherited context remains visible to every descendant, so
   opening a node focuses ownership but does not reduce visible context;
   compression is realized only after `close` or `next`.
@@ -55,7 +55,7 @@ Lifecycle rules:
 * `close(memory)` finalizes the current node, replaces its working context with
   compact continuation memory, and returns to its immediate parent. Use it when
   the remaining work and context belong in that parent.
-* `next(summary, memory)` performs the same finalization and enters a true
+* `next(goal, memory)` performs the same finalization and enters a true
   sibling under the same parent. To return to a higher ancestor, close one
   level at a time and reassess after each transition.
 * Follow the tool's Node Memory contract. Runtime preserves user messages and
