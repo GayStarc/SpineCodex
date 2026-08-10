@@ -30,6 +30,8 @@ npm install -g @spinejit/spine-codex@latest
 spine-codex
 ```
 
+SpineJIT 会透明地统一管理上下文，无需用户介入；发送第一条任务后，可运行 `/spine-tree` 确认其正常工作。实验性的 Spine Spawn（`spine_spawn`）和 Memory Projection（`spinetree_memory_projection`）可在 `/experimental` 中启用。
+
 ### Codex Desktop
 
 如需在官方 Codex Desktop 中使用 SpineCodex，请先完全退出 Codex Desktop，再下载对应平台的启动器：

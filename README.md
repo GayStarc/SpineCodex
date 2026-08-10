@@ -37,6 +37,8 @@ npm install -g @spinejit/spine-codex@latest
 spine-codex
 ```
 
+SpineJIT transparently manages context with no user intervention; after sending your first task, run `/spine-tree` to confirm it is working. Experimental Spine Spawn (`spine_spawn`) and Memory Projection (`spinetree_memory_projection`) can be enabled via `/experimental`.
+
 ### Codex Desktop
 
 To use SpineCodex with the official Codex Desktop app, first quit Codex Desktop,
