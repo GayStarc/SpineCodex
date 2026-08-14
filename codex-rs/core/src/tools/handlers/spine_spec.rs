@@ -14,16 +14,16 @@ pub(crate) const SPINE_SPAWN: &str = "spawn";
 pub(crate) const SPINE_TRIM: &str = "trim";
 
 const NODE_MEMORY_DESCRIPTION: &str = concat!(
-    "Model-authored continuation state for replacing the finalized node's local working context. ",
+    "Model-authored continuation state for replacing the finalized branch's local working context. ",
     "Preserve only what later work needs beyond inherited context: completed or confirmed progress, confirmed findings, decisions and constraints, validation results, bounded unresolved factual gaps or risks, remaining work that can proceed from this memory and inherited context without reconstructing the replaced working context, and the logic linking evidence and findings to decisions and next steps. ",
     "Include compact supporting evidence or precise, recoverable references when needed. ",
     "For source code, cite exact paths and lines; for commands, cite the exact command and decisive output or result, so continuation need not replay the work. ",
     "Runtime preserves user messages and child memories. ",
-    "Use existing `[U#]` anchors only to bind approvals, corrections, rejections, clarifications, and elliptical replies to their referents and record the resulting continuation-relevant semantic deltas in task scope, decisions, constraints, progress, and remaining obligations; the underlying user messages remain available independently of these references."
+    "Use existing `[U#]` anchors only inside memory to bind approvals, corrections, rejections, clarifications, and elliptical replies to their referents; record the continuation-relevant change rather than repeating the referenced message. Do not surface the anchors in ordinary user-facing responses."
 );
 
-const OPEN_GOAL_DESCRIPTION: &str = "Concise, actionable, independently completable outcome owned by the direct child. The call carrying this goal remains in the child's context.";
-const NEXT_GOAL_DESCRIPTION: &str = "Concise, actionable, independently completable outcome owned by the true sibling. The call carrying this goal remains in the sibling's context; finalized-node state belongs in memory.";
+const OPEN_GOAL_DESCRIPTION: &str = "Concise, actionable, independently completable outcome owned by the direct child branch. The call carrying this goal remains in the child branch's context.";
+const NEXT_GOAL_DESCRIPTION: &str = "Concise, actionable, independently completable outcome owned by the true sibling branch. The call carrying this goal remains in the sibling branch's context; finalized branch state belongs in memory.";
 const TRIM_DESCRIPTION: &str = "Conservatively trim one tagged tool-result projection without changing the Spine tree or creating memory. A TRIM_ID is valid only for the immediately preceding tool-result batch and expires after the next assistant tool request; after a miss, do not retry it. Use slice to retain needed evidence, use snip only after useful facts are preserved, and otherwise leave the result unchanged.";
 const SPAWN_DESCRIPTION: &str = concat!(
     "Fission the current work into two or more concurrent peer branches created from the current full history. ",
@@ -33,7 +33,7 @@ const SPAWN_DESCRIPTION: &str = concat!(
     "Every spine.spawn call uses one task-local shared blackboard directory. Before calling spine.spawn, the parent must provision the directory and repeat the same `Shared blackboard: <path>` line in every task prompt so branches can coordinate, share useful findings, and reduce duplicated exploration. ",
     "For exploration or review, treat inherited analytical conclusions as hypotheses to verify, refine, or falsify against primary evidence. ",
     "The original continuation is suspended during the fission; no supervisory model remains active. ",
-    "Join waits for every branch, records their terminal results as closed task nodes under the current Spine scope atomically in input order, and then resumes the original continuation. ",
+    "Join waits for every branch, records their terminal results as finalized task branches under the current Spine scope atomically in input order, and then resumes the original continuation. ",
     "Call spine.spawn at most once in one model response; place every concurrent branch in that call's tasks array. ",
     "Use spine.spawn only when the current work has at least two substantial, self-contained, independently completable branches and concurrent execution would materially improve speed or result quality. Each branch must be able to complete with a bounded fallback rather than depending on another branch's result. ",
     "For one bounded delegated subtask, incremental assistance, or work that benefits from ongoing parent supervision, use the ordinary multi-agent spawn tool when available or continue locally. ",
@@ -51,7 +51,7 @@ pub(crate) fn create_spine_tool(name: &str) -> ToolSpec {
     let function = match name {
         SPINE_OPEN => ResponsesApiTool {
             name: SPINE_OPEN.to_string(),
-            description: "Enter a direct child under the current Spine cursor. The child owns one independently completable goal and the local working context needed to achieve it. Co-issued ordinary tools belong to the child; the transition applies to the current node's prior ReAct history.".to_string(),
+            description: "Enter a direct child branch under the current Spine cursor. Inherited context remains visible in the branch and its descendants; subsequent local context belongs to the branch. Open does not replace context with memory; close or next does so when the branch is finalized. Co-issued ordinary tools belong to the child branch; the transition applies to the current branch's prior ReAct history.".to_string(),
             strict: false,
             defer_loading: None,
             parameters: JsonSchema::object(
@@ -66,7 +66,7 @@ pub(crate) fn create_spine_tool(name: &str) -> ToolSpec {
         },
         SPINE_CLOSE => ResponsesApiTool {
             name: SPINE_CLOSE.to_string(),
-            description: "Finalize the current node once its owned result is complete or precisely bounded and continuation can proceed from compact memory and inherited context without its full local working context, then return to its immediate parent. Root epochs cannot be closed. Co-issued ordinary tools belong to the parent; the transition applies to the current node's prior ReAct history.".to_string(),
+            description: "Finalize the current branch, replace its local working context with memory, and return to its immediate parent branch. Call only when the owned result is complete or precisely bounded and later work can continue from memory and inherited context without the full local context. The root epoch cannot be finalized or closed. Co-issued ordinary tools belong to the parent branch; the transition applies to the current branch's prior ReAct history.".to_string(),
             strict: false,
             defer_loading: None,
             parameters: JsonSchema::object(
@@ -81,7 +81,7 @@ pub(crate) fn create_spine_tool(name: &str) -> ToolSpec {
         },
         SPINE_NEXT => ResponsesApiTool {
             name: SPINE_NEXT.to_string(),
-            description: "Finalize the current node once its owned result is complete or precisely bounded and continuation can proceed from compact memory and inherited context without its full local working context, then enter a true sibling under the same parent. The sibling owns one independently completable goal and the local working context needed to achieve it. Co-issued ordinary tools belong to the sibling; the transition applies to the current node's prior ReAct history.".to_string(),
+            description: "Finalize the current branch, replace its local working context with memory, and enter a true sibling branch under the same parent branch. Call only when the owned result is complete or precisely bounded and later work can continue from memory and inherited context without the full local context. The root epoch has no parent branch, so next is invalid there. The sibling branch owns one independently completable goal and subsequent local context. Co-issued ordinary tools belong to the sibling branch; the transition applies to the current branch's prior ReAct history.".to_string(),
             strict: false,
             defer_loading: None,
             parameters: JsonSchema::object(
@@ -156,7 +156,7 @@ pub(crate) fn create_spine_spawn_tool(max_tasks: usize) -> ToolSpec {
 fn wrap_spine_tool(function: ResponsesApiTool) -> ToolSpec {
     ToolSpec::Namespace(ResponsesApiNamespace {
         name: SPINE_NAMESPACE.to_string(),
-        description: "Use Spine to shape the work.".to_string(),
+        description: "Use Spine to manage work-context ownership and lifecycle.".to_string(),
         tools: vec![ResponsesApiNamespaceTool::Function(function)],
     })
 }
@@ -200,7 +200,7 @@ pub(crate) fn create_spine_trim_tool() -> ToolSpec {
     ]);
     ToolSpec::Namespace(ResponsesApiNamespace {
         name: SPINE_NAMESPACE.to_string(),
-        description: "Use Spine to shape the work.".to_string(),
+        description: "Use Spine to manage work-context ownership and lifecycle.".to_string(),
         tools: vec![ResponsesApiNamespaceTool::Function(ResponsesApiTool {
             name: SPINE_TRIM.to_string(),
             description: TRIM_DESCRIPTION.to_string(),

@@ -886,7 +886,7 @@ fn nested_open_keeps_the_materialized_parent_marker_prefix_stable() {
     let parent = derive_from_rollout(&rollout);
     assert_eq!(
         text(&parent.context[1]),
-        r#"<spine_node id="1.1" summary="parent" status="opened" />"#
+        r#"<spine_branch id="1.1" summary="parent" status="opened" />"#
     );
 
     rollout.extend([
@@ -1050,7 +1050,7 @@ fn adapter_projects_open_and_close_from_native_function_carriers() {
     assert_eq!(text(&projection.context[1]), "[U2]\ndetail");
     assert_eq!(
         text(&projection.context[2]),
-        "<spine_memory node_id=\"1.1\">\ndone\n</spine_memory>"
+        "<spine_memory branch_id=\"1.1\">\ndone\n</spine_memory>"
     );
     assert!(matches!(
         projection.context[3],
@@ -1085,12 +1085,12 @@ fn adapter_flattens_nested_memory_slots_in_source_order() {
     assert_eq!(text(&projection.context[1]), "[U2]\ninside");
     assert_eq!(
         text(&projection.context[2]),
-        "<spine_memory node_id=\"1.1.1\">\nchild done\n</spine_memory>"
+        "<spine_memory branch_id=\"1.1.1\">\nchild done\n</spine_memory>"
     );
     assert_eq!(text(&projection.context[3]), "[U3]\nafter");
     assert_eq!(
         text(&projection.context[4]),
-        "<spine_memory node_id=\"1.1\">\nparent done\n</spine_memory>"
+        "<spine_memory branch_id=\"1.1\">\nparent done\n</spine_memory>"
     );
     assert!(matches!(
         projection.context[5],
@@ -1172,13 +1172,13 @@ fn spawn_bridge_keeps_toolcall_and_reduces_only_spawn_output_in_context() {
     );
     assert_eq!(
         text(&projection.context[4]),
-        "<spine_memory node_id=\"1.1\">\nfirst memory\n</spine_memory>"
+        "<spine_memory branch_id=\"1.1\">\nfirst memory\n</spine_memory>"
     );
     assert!(text(&projection.context[5]).contains("\"summary\": \"second\""));
     assert!(text(&projection.context[5]).contains("\"diagnostic\": \"child failed\""));
     assert_eq!(
         text(&projection.context[6]),
-        "<spine_memory node_id=\"1.2\">\nsecond error memory\n</spine_memory>"
+        "<spine_memory branch_id=\"1.2\">\nsecond error memory\n</spine_memory>"
     );
     assert_eq!(text(&projection.context[7]), "[U2]\nafter");
     assert_eq!(projection.context.len(), 8);
@@ -1371,10 +1371,7 @@ fn closed_memory_projection_entries_follow_rollout_projection() {
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].node_id, "1.1");
     assert_eq!(entries[0].summary, "task");
-    assert_eq!(
-        entries[0].body,
-        "# Spine Memory 1.1\n\n## Node Memory\ndone"
-    );
+    assert_eq!(entries[0].body, "# Spine Memory 1.1\n\n## Memory\ndone");
 }
 
 #[test]
@@ -1430,7 +1427,7 @@ fn adapter_projects_next_group_into_the_new_sibling() {
     assert_eq!(text(&projection.context[1]), "[U2]\ndetail");
     assert_eq!(
         text(&projection.context[2]),
-        "<spine_memory node_id=\"1.1\">\nfirst done\n</spine_memory>"
+        "<spine_memory branch_id=\"1.1\">\nfirst done\n</spine_memory>"
     );
     assert!(text(&projection.context[3]).contains("id=\"1.2\""));
     assert!(matches!(
@@ -1456,7 +1453,7 @@ fn adapter_keeps_leading_assistant_and_multi_call_group_together() {
 
     let projection = derive_from_rollout(&rollout);
     assert_eq!(projection.spine.cursor.to_string(), "1.1");
-    assert!(text(&projection.context[0]).starts_with("<spine_node"));
+    assert!(text(&projection.context[0]).starts_with("<spine_branch"));
     assert_eq!(text(&projection.context[1]), "inspect first");
     assert_eq!(projection.context.len(), 6);
 }
@@ -2022,7 +2019,7 @@ fn closed_memory_user_slot_preserves_the_complete_native_message() {
     assert_eq!(projection.context[0], expected);
     assert_eq!(
         text(&projection.context[1]),
-        "<spine_memory node_id=\"1.1\">\nimage inspected\n</spine_memory>"
+        "<spine_memory branch_id=\"1.1\">\nimage inspected\n</spine_memory>"
     );
 }
 

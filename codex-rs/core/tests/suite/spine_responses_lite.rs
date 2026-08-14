@@ -832,7 +832,7 @@ async fn responses_lite_spine_memory_slots_precede_the_transition_status() -> Re
     let child_summary = user_texts
         .iter()
         .find(|(_, text)| {
-            *text == "<spine_memory node_id=\"1.1\">\nchild complete\n</spine_memory>"
+            *text == "<spine_memory branch_id=\"1.1\">\nchild complete\n</spine_memory>"
         })
         .context("closed child summary slot should be present")?;
     let status_index = input.len() - 1;

@@ -964,7 +964,7 @@ async fn spine_feature_on_projects_live_native_rollout_at_clone_boundary() {
 
     let projected = state.clone_history();
     assert_eq!(projected.raw_items().len(), 3);
-    assert!(response_text(&projected.raw_items()[0]).starts_with("<spine_node"));
+    assert!(response_text(&projected.raw_items()[0]).starts_with("<spine_branch"));
 }
 
 #[tokio::test]
@@ -1022,11 +1022,20 @@ async fn spawn_context_install_is_atomic_and_independently_feature_gated() {
     state.append_spine_rollout_items(&[RolloutItem::ResponseItem(output.clone())]);
     let projected = state.clone_history();
     assert_eq!(projected.raw_items().len(), 8);
-    assert!(response_text(&projected.raw_items()[2]).contains("spine_spawn_evidence"));
+    assert!(
+        response_text(&projected.raw_items()[2])
+            .starts_with("<spine_spawn_evidence branch_id=\"1.1\">")
+    );
     assert!(response_text(&projected.raw_items()[3]).contains("first memory"));
-    assert!(response_text(&projected.raw_items()[4]).contains("spine_spawn_evidence"));
+    assert!(
+        response_text(&projected.raw_items()[4])
+            .starts_with("<spine_spawn_evidence branch_id=\"1.2\">")
+    );
     assert!(response_text(&projected.raw_items()[5]).contains("second memory"));
-    assert!(response_text(&projected.raw_items()[6]).contains("spine_spawn_evidence"));
+    assert!(
+        response_text(&projected.raw_items()[6])
+            .starts_with("<spine_spawn_evidence branch_id=\"1.3\">")
+    );
     assert!(response_text(&projected.raw_items()[7]).contains("third memory"));
     let tree = state.spine_tree_update().expect("tree enabled");
     assert_eq!(tree.nodes.len(), 4);

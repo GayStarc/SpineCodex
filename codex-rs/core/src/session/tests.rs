@@ -2055,7 +2055,7 @@ async fn spinetree_memory_projection_publishes_closed_memory_after_recording() -
     assert!(std::fs::symlink_metadata(&path)?.file_type().is_file());
     assert!(!session_dir.join(".memory").exists());
     let body = std::fs::read_to_string(path)?;
-    assert_eq!(body, "# Spine Memory 1.1\n\n## Node Memory\ndone");
+    assert_eq!(body, "# Spine Memory 1.1\n\n## Memory\ndone");
     assert_eq!(
         std::fs::read_to_string(session_dir.join("USER.md"))?,
         "# User Messages\n\n## User Message [U1]\nrequest\n\n## User Message [U2]\ndetail\n"

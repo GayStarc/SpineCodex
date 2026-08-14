@@ -5521,7 +5521,7 @@
           "$ref": "#/definitions/AbsolutePathBuf"
         }
       ],
-      "description": "Optional path to a file containing a complete `<spine_view>` override."
+      "description": "Optional path to a file containing a complete `<spine_instruction>` override."
     },
     "spine_spawn": {
       "allOf": [

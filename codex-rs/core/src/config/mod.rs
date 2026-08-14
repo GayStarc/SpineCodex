@@ -681,7 +681,7 @@ pub struct Config {
     /// Base instructions override.
     pub base_instructions: Option<String>,
 
-    /// Resolved optional `<spine_view>` override.
+    /// Resolved optional `<spine_instruction>` override.
     pub spine_instructions: Option<String>,
 
     /// Developer instructions override injected as a separate message.

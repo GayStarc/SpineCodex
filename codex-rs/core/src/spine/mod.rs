@@ -981,7 +981,7 @@ fn materialize_context(
             } => materialized.push(text_message(
                 MessageRole::Developer,
                 format!(
-                    "<spine_node id=\"{node_id}\" summary=\"{}\" status=\"{}\" />",
+                    "<spine_branch id=\"{node_id}\" summary=\"{}\" status=\"{}\" />",
                     escape_attribute(summary),
                     status_name(*status),
                 ),
@@ -1010,7 +1010,7 @@ fn materialize_context(
                     owner_node, body, ..
                 } => materialized.push(text_message(
                     MessageRole::ContextualUser,
-                    format!("<spine_memory node_id=\"{owner_node}\">\n{body}\n</spine_memory>"),
+                    format!("<spine_memory branch_id=\"{owner_node}\">\n{body}\n</spine_memory>"),
                 )),
                 MemorySlot::SpawnEvidence {
                     owner_node,
@@ -1368,7 +1368,7 @@ fn text_message(role: MessageRole, text: String) -> ResponseItem {
 }
 
 fn render_memory_artifact(node_id: &str, body: &str) -> String {
-    format!("# Spine Memory {node_id}\n\n## Node Memory\n{body}")
+    format!("# Spine Memory {node_id}\n\n## Memory\n{body}")
 }
 
 fn render_spawn_evidence(
@@ -1379,7 +1379,7 @@ fn render_spawn_evidence(
     execution_ref: Option<&str>,
 ) -> String {
     format!(
-        "<spine_spawn_evidence node_id=\"{owner_node}\">\n{}\n</spine_spawn_evidence>",
+        "<spine_spawn_evidence branch_id=\"{owner_node}\">\n{}\n</spine_spawn_evidence>",
         render_spawn_evidence_body(task, outcome, diagnostic, execution_ref)
     )
 }

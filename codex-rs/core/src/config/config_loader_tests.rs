@@ -2675,7 +2675,7 @@ async fn cli_override_spine_instruction_file_sets_spine_instructions() -> std::i
     tokio::fs::create_dir_all(&cwd).await?;
 
     let instructions_path = tmp.path().join("spine.md");
-    let instructions = "<spine_view>\nSPINE_OVERRIDE_SENTINEL\n</spine_view>";
+    let instructions = "<spine_instruction>\nSPINE_OVERRIDE_SENTINEL\n</spine_instruction>";
     tokio::fs::write(&instructions_path, instructions).await?;
 
     let config = ConfigBuilder::default()
