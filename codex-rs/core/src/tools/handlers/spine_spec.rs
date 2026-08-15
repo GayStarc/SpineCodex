@@ -22,8 +22,8 @@ const NODE_MEMORY_DESCRIPTION: &str = concat!(
     "Use existing `[U#]` anchors only inside memory to bind approvals, corrections, rejections, clarifications, and elliptical replies to their referents; record the continuation-relevant change rather than repeating the referenced message. Do not surface the anchors in ordinary user-facing responses."
 );
 
-const OPEN_GOAL_DESCRIPTION: &str = "Concise, actionable, independently completable outcome owned by the direct child branch. The call carrying this goal remains in the child branch's context.";
-const NEXT_GOAL_DESCRIPTION: &str = "Concise, actionable, independently completable outcome owned by the true sibling branch. The call carrying this goal remains in the sibling branch's context; finalized branch state belongs in memory.";
+const OPEN_GOAL_DESCRIPTION: &str = "Concise scope and intended outcome for the direct child branch. The call carrying this goal remains in the child branch's context.";
+const NEXT_GOAL_DESCRIPTION: &str = "Concise scope and intended outcome for the true sibling branch. The call carrying this goal remains in the sibling branch's context; finalized branch state belongs in memory.";
 const TRIM_DESCRIPTION: &str = "Conservatively trim one tagged tool-result projection without changing the Spine tree or creating memory. A TRIM_ID is valid only for the immediately preceding tool-result batch and expires after the next assistant tool request; after a miss, do not retry it. Use slice to retain needed evidence, use snip only after useful facts are preserved, and otherwise leave the result unchanged.";
 const SPAWN_DESCRIPTION: &str = concat!(
     "Fission the current work into two or more concurrent peer branches created from the current full history. ",
@@ -51,7 +51,7 @@ pub(crate) fn create_spine_tool(name: &str) -> ToolSpec {
     let function = match name {
         SPINE_OPEN => ResponsesApiTool {
             name: SPINE_OPEN.to_string(),
-            description: "Enter a direct child branch under the current Spine cursor. Inherited context remains visible in the branch and its descendants; subsequent local context belongs to the branch. Open does not replace context with memory; close or next does so when the branch is finalized. Co-issued ordinary tools belong to the child branch; the transition applies to the current branch's prior ReAct history.".to_string(),
+            description: "Enter a direct child under the active branch. The child inherits the parent context and owns the context produced by its work. `spine.open` does not reduce context; reduction occurs when the branch is finalized with `spine.close` or `spine.next`. Co-issued ordinary tools execute in and belong to the child; the transition applies to the active branch's prior ReAct history.".to_string(),
             strict: false,
             defer_loading: None,
             parameters: JsonSchema::object(
@@ -66,7 +66,7 @@ pub(crate) fn create_spine_tool(name: &str) -> ToolSpec {
         },
         SPINE_CLOSE => ResponsesApiTool {
             name: SPINE_CLOSE.to_string(),
-            description: "Finalize the current branch, replace its local working context with memory, and return to its immediate parent branch. Call only when the owned result is complete or precisely bounded and later work can continue from memory and inherited context without the full local context. The root epoch cannot be finalized or closed. Co-issued ordinary tools belong to the parent branch; the transition applies to the current branch's prior ReAct history.".to_string(),
+            description: "Finalize the active branch, replace its local working context with returned memory, and return to its immediate parent. Use when continuation no longer needs the exact branch-owned context and the returned memory is sufficient. The root epoch cannot be finalized or closed. Co-issued ordinary tools execute in and belong to the parent; the transition applies to the active branch's prior ReAct history.".to_string(),
             strict: false,
             defer_loading: None,
             parameters: JsonSchema::object(
@@ -81,7 +81,7 @@ pub(crate) fn create_spine_tool(name: &str) -> ToolSpec {
         },
         SPINE_NEXT => ResponsesApiTool {
             name: SPINE_NEXT.to_string(),
-            description: "Finalize the current branch, replace its local working context with memory, and enter a true sibling branch under the same parent branch. Call only when the owned result is complete or precisely bounded and later work can continue from memory and inherited context without the full local context. The root epoch has no parent branch, so next is invalid there. The sibling branch owns one independently completable goal and subsequent local context. Co-issued ordinary tools belong to the sibling branch; the transition applies to the current branch's prior ReAct history.".to_string(),
+            description: "Finalize the active branch, replace its local working context with returned memory in the parent, and enter a true sibling under that parent. The sibling receives the parent context, including the finalized branch's memory, and owns the context produced by its work. Use when continuation no longer needs the exact branch-owned context and the returned memory is sufficient. The root epoch has no parent, so `spine.next` is invalid there. Co-issued ordinary tools execute in and belong to the sibling; the transition applies to the active branch's prior ReAct history.".to_string(),
             strict: false,
             defer_loading: None,
             parameters: JsonSchema::object(

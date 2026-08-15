@@ -1,25 +1,31 @@
 pub(crate) const SPINE_JIT_INSTRUCTIONS: &str = r#"<spine_instruction>
 All work must be organized recursively in the SpineTree. Every piece of work
-belongs to an active branch, and each branch owns the context and lifecycle of
-that work. A branch receives context inherited from its ancestors and owns the
-context produced by its active work. When work enters a new ownership or
-lifecycle scope, issue `spine.open` in the first interaction for that work.
-Apply these ownership and lifecycle rules recursively at every nested context
-level and within every active branch. Keep exact context in the branch while
-its work is active. When that work no longer needs its exact local context,
-issue `spine.close` to continue in the parent or `spine.next` to continue in a
-sibling, returning the needed state as memory.
-Use Spine to manage context and work ownership so you can stay focused on the
-active work and complete the task efficiently and with high quality.
+belongs to the active branch. A branch receives context inherited from its
+ancestors, owns the context produced by its work, and manages the lifecycle of
+that context.
+
+When work should own a separate context lifecycle, issue `spine.open` in the
+first interaction for that work. Apply this rule recursively within every
+active branch. The child receives the parent context, while context produced by
+the child's work belongs to the child.
+
+Keep exact context while the branch's work needs it. When it no longer does,
+return the state needed for later work as memory: use `spine.close` to continue
+in the parent, or `spine.next` to continue in a sibling. Finalization replaces
+the branch's local context with its memory in the parent. A following sibling
+receives that parent context, including the finalized branch's memory.
+
+Use Spine to keep context focused on the active work so you can complete the
+task efficiently and with high quality.
 
 Notes:
 
 1. `<spine_memory>` provides memory returned by finalized branches.
 2. Answer the user regardless of which branch you are in.
-3. Spine `spine.open`, `spine.close`, and `spine.next` can be issued with
-   ordinary tool calls in the same `exec`; the transition applies to the active
-   branch's prior ReAct history, and the ordinary calls execute in the
-   resulting branch.
+3. Each ReAct interaction may issue at most one of `spine.open`, `spine.close`,
+   or `spine.next`. It may issue that transition with ordinary tool calls in
+   the same `exec`. The transition applies to the active branch's prior ReAct
+   history, while the ordinary tool calls execute in the resulting branch.
 
 </spine_instruction>
 "#;
