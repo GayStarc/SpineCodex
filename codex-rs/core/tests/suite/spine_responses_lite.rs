@@ -269,7 +269,7 @@ async fn responses_lite_direct_controls_admit_first_valid_native_ordinal() -> Re
     assert_eq!(statuses.len(), 1);
     assert!(statuses[0].contains(r#"cursor="1.1""#), "{}", statuses[0]);
     assert!(
-        statuses[0].contains(r#"summary="first child""#),
+        statuses[0].contains(r#"goal="first child""#),
         "{}",
         statuses[0]
     );
@@ -335,7 +335,7 @@ async fn responses_lite_direct_controls_skip_runtime_invalid_earlier_call() -> R
     assert_eq!(statuses.len(), 1);
     assert!(statuses[0].contains(r#"cursor="1.1""#), "{}", statuses[0]);
     assert!(
-        statuses[0].contains(r#"summary="valid child""#),
+        statuses[0].contains(r#"goal="valid child""#),
         "{}",
         statuses[0]
     );
@@ -408,7 +408,7 @@ async fn responses_lite_direct_control_post_hook_failure_releases_next_ordinal()
     assert_eq!(statuses.len(), 1);
     assert!(statuses[0].contains(r#"cursor="1.1""#), "{}", statuses[0]);
     assert!(
-        statuses[0].contains(r#"summary="hook survivor""#),
+        statuses[0].contains(r#"goal="hook survivor""#),
         "{}",
         statuses[0]
     );
@@ -468,9 +468,9 @@ async fn responses_lite_spine_transition_status_follows_tool_output() -> Result<
     assert!(text.contains(r#"cursor="1.1""#), "{text}");
     for field in [
         "cursor=",
-        "summary=",
+        "goal=",
         "parent=",
-        "parent_summary=",
+        "parent_goal=",
         "cursor_context=",
         "context_left=",
     ] {
@@ -849,9 +849,9 @@ async fn responses_lite_spine_memory_slots_precede_the_transition_status() -> Re
     );
     for field in [
         "cursor=",
-        "summary=",
+        "goal=",
         "parent=",
-        "parent_summary=",
+        "parent_goal=",
         "cursor_context=",
         "context_left=",
     ] {

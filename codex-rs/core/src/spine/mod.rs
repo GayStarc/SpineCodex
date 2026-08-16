@@ -981,7 +981,7 @@ fn materialize_context(
             } => materialized.push(text_message(
                 MessageRole::Developer,
                 format!(
-                    "<spine_branch id=\"{node_id}\" summary=\"{}\" status=\"{}\" />",
+                    "<spine_branch id=\"{node_id}\" goal=\"{}\" status=\"{}\" />",
                     escape_attribute(summary),
                     status_name(*status),
                 ),

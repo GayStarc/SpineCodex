@@ -20,7 +20,7 @@ task efficiently and with high quality.
 
 Notes:
 
-1. `<spine_memory>` provides memory returned by finalized branches.
+1. `<spine_memory>` contains memory from finalized branches.
 2. Answer the user regardless of which branch you are in.
 3. Each ReAct interaction may issue at most one of `spine.open`, `spine.close`,
    or `spine.next`. It may issue that transition with ordinary tool calls in

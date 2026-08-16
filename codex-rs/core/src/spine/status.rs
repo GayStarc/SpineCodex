@@ -106,14 +106,14 @@ fn format_spine_transition_status(signal: &SpineTransitionStatusSignal) -> Strin
         .context_left_tokens
         .map(format_si_suffix)
         .unwrap_or_else(|| "unavailable".to_string());
-    let summary = format_optional_summary_attribute(signal.node_summary.as_deref());
-    let parent_summary = format_optional_summary_attribute(signal.parent_summary.as_deref());
+    let goal = format_optional_summary_attribute(signal.node_summary.as_deref());
+    let parent_goal = format_optional_summary_attribute(signal.parent_summary.as_deref());
     format!(
-        r#"<spine_tran_status cursor="{}" summary="{}" parent="{}" parent_summary="{}" cursor_context="{}" context_left="{}""#,
+        r#"<spine_tran_status cursor="{}" goal="{}" parent="{}" parent_goal="{}" cursor_context="{}" context_left="{}""#,
         signal.cursor,
-        summary,
+        goal,
         signal.parent.as_deref().unwrap_or("none"),
-        parent_summary,
+        parent_goal,
         cursor_node_context,
         context_left,
     ) + " />"

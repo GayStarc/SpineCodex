@@ -839,7 +839,7 @@ fn spine_transition_status_matches_spine_dev_fields_and_context_accounting() {
 
     assert_eq!(
         text(&transition_status),
-        r#"<spine_tran_status cursor="1.1" summary="child &quot;scope&quot; &lt;leaf&gt; &amp; focus" parent="1" parent_summary="root" cursor_context="45.0K" context_left="100K" />"#
+        r#"<spine_tran_status cursor="1.1" goal="child &quot;scope&quot; &lt;leaf&gt; &amp; focus" parent="1" parent_goal="root" cursor_context="45.0K" context_left="100K" />"#
     );
 }
 
@@ -857,7 +857,7 @@ fn spine_transition_status_does_not_reuse_stale_rollout_usage() {
 
     assert_eq!(
         text(&transition_status),
-        r#"<spine_tran_status cursor="1.1" summary="task" parent="1" parent_summary="root" cursor_context="unavailable" context_left="unavailable" />"#
+        r#"<spine_tran_status cursor="1.1" goal="task" parent="1" parent_goal="root" cursor_context="unavailable" context_left="unavailable" />"#
     );
 }
 
@@ -872,7 +872,7 @@ fn spine_transition_status_allows_missing_baseline_for_new_node() {
 
     assert_eq!(
         text(&transition_status),
-        r#"<spine_tran_status cursor="1.1" summary="task" parent="1" parent_summary="root" cursor_context="unavailable" context_left="100K" />"#
+        r#"<spine_tran_status cursor="1.1" goal="task" parent="1" parent_goal="root" cursor_context="unavailable" context_left="100K" />"#
     );
 }
 
@@ -886,7 +886,7 @@ fn nested_open_keeps_the_materialized_parent_marker_prefix_stable() {
     let parent = derive_from_rollout(&rollout);
     assert_eq!(
         text(&parent.context[1]),
-        r#"<spine_branch id="1.1" summary="parent" status="opened" />"#
+        r#"<spine_branch id="1.1" goal="parent" status="opened" />"#
     );
 
     rollout.extend([
