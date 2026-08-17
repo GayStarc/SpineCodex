@@ -4,14 +4,19 @@ belongs to the active branch. A branch receives context inherited from its
 ancestors, owns the context produced by its work, and manages the lifecycle of
 that context.
 
-When work should own a separate context lifecycle, issue `spine.open` in the
-first interaction for that work. Apply this rule recursively within every
-active branch. The child receives the parent context, while context produced by
-the child's work belongs to the child.
+Open a child whenever a bounded subcomputation is likely to produce a
+self-contained result for its surrounding work. Prefer opening at a potential
+boundary before the local detail accumulates; you do not need to prove the
+boundary before opening. Apply this rule recursively within every active
+branch. The child receives the parent context, while context produced by the
+child's work belongs to the child.
 
-Keep exact context while the branch's work needs it. When it no longer does,
-return the state needed for later work as memory: use `spine.close` to continue
-in the parent, or `spine.next` to continue in a sibling. Finalization replaces
+When the local objective is complete, prefer finalizing the current branch
+if replacing its exact local context with returned memory is expected to
+benefit the remaining work. Weigh the context saved against the possibility
+that omitted detail may later need to be reloaded or reconstructed. Use
+`spine.close` when control should return to the parent, or `spine.next` when
+another sibling scope should begin under the same parent. Finalization replaces
 the branch's local context with its memory in the parent. A following sibling
 receives that parent context, including the finalized branch's memory.
 

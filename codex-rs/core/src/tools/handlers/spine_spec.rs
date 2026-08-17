@@ -14,10 +14,12 @@ pub(crate) const SPINE_SPAWN: &str = "spawn";
 pub(crate) const SPINE_TRIM: &str = "trim";
 
 const NODE_MEMORY_DESCRIPTION: &str = concat!(
-    "Model-authored memory replaces the finalized branch's local context. ",
-    "Preserve only the outcomes, decisions, unresolved state, and precise evidence or references later work needs beyond inherited context, so later work can continue without replaying the branch. ",
+    "Model-authored continuation state for replacing the finalized branch's local working context. ",
+    "Preserve only what later work needs beyond inherited context: completed or confirmed progress, confirmed findings, decisions and constraints, validation results, bounded unresolved factual gaps or risks, remaining work that can proceed from this memory and inherited context without reconstructing the replaced working context, and the logic linking evidence and findings to decisions and next steps. ",
+    "Include compact supporting evidence or precise, recoverable references when needed. ",
+    "For source code, cite exact paths and lines; for commands, cite the exact command and decisive output or result, so continuation need not replay the work. ",
     "Runtime preserves user messages and child memories. ",
-    "Use existing `[U#]` anchors only in memory when a continuation-relevant user reply depends on an earlier referent; record its effect rather than repeat the message, and never expose anchors in user-facing responses."
+    "Use existing `[U#]` anchors only inside memory to bind approvals, corrections, rejections, clarifications, and elliptical replies to their referents; record the continuation-relevant change rather than repeating the referenced message. Do not surface the anchors in ordinary user-facing responses."
 );
 
 const OPEN_GOAL_DESCRIPTION: &str = "Concise scope and intended outcome for the direct child branch. The call carrying this goal remains in the child branch's context.";
@@ -64,7 +66,7 @@ pub(crate) fn create_spine_tool(name: &str) -> ToolSpec {
         },
         SPINE_CLOSE => ResponsesApiTool {
             name: SPINE_CLOSE.to_string(),
-            description: "Finalize the active branch, replace its local working context with returned memory, and return to its immediate parent. Use when continuation no longer needs the exact branch-owned context and the returned memory is sufficient. The root epoch cannot be finalized or closed. Co-issued ordinary tools execute in and belong to the parent; the transition applies to the active branch's prior ReAct history.".to_string(),
+            description: "Finalize the active branch, replace its local working context with returned memory, and return to its immediate parent. Use when the expected Context savings from replacing exact branch detail outweigh the likely cost of later reloading or reconstructing omitted detail. The root epoch cannot be finalized or closed. Co-issued ordinary tools execute in and belong to the parent; the transition applies to the active branch's prior ReAct history.".to_string(),
             strict: false,
             defer_loading: None,
             parameters: JsonSchema::object(
@@ -79,7 +81,7 @@ pub(crate) fn create_spine_tool(name: &str) -> ToolSpec {
         },
         SPINE_NEXT => ResponsesApiTool {
             name: SPINE_NEXT.to_string(),
-            description: "Finalize the active branch, replace its local working context with returned memory in the parent, and enter a true sibling under that parent. The sibling receives the parent context, including the finalized branch's memory, and owns the context produced by its work. Use when continuation no longer needs the exact branch-owned context and the returned memory is sufficient. The root epoch has no parent, so `spine.next` is invalid there. Co-issued ordinary tools execute in and belong to the sibling; the transition applies to the active branch's prior ReAct history.".to_string(),
+            description: "Finalize the active branch, replace its local working context with returned memory in the parent, and enter a true sibling under that parent. The sibling receives the parent context, including the finalized branch's memory, and owns the context produced by its work. Use when the expected Context savings from replacing exact branch detail outweigh the likely cost of later reloading or reconstructing omitted detail. The root epoch has no parent, so `spine.next` is invalid there. Co-issued ordinary tools execute in and belong to the sibling; the transition applies to the active branch's prior ReAct history.".to_string(),
             strict: false,
             defer_loading: None,
             parameters: JsonSchema::object(
