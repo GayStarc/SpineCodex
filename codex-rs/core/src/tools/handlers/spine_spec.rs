@@ -15,15 +15,16 @@ pub(crate) const SPINE_TRIM: &str = "trim";
 
 const NODE_MEMORY_DESCRIPTION: &str = concat!(
     "Model-authored continuation state for replacing the finalized branch's local working context. ",
-    "Preserve only what later work needs beyond inherited context: completed or confirmed progress, confirmed findings, decisions and constraints, validation results, bounded unresolved factual gaps or risks, remaining work that can proceed from this memory and inherited context without reconstructing the replaced working context, and the logic linking evidence and findings to decisions and next steps. ",
+    "Preserve only what later work needs beyond inherited context: completed or confirmed progress, confirmed findings, decisions and constraints, validation results, bounded unresolved factual gaps or risks, remaining work, and the logic linking evidence and findings to decisions and next steps. ",
+    "Make the memory sufficient for the parent to continue primarily from it and inherited context, while noting omitted detail that may later need reloading or reconstruction. ",
     "Include compact supporting evidence or precise, recoverable references when needed. ",
     "For source code, cite exact paths and lines; for commands, cite the exact command and decisive output or result, so continuation need not replay the work. ",
     "Runtime preserves user messages and child memories. ",
     "Use existing `[U#]` anchors only inside memory to bind approvals, corrections, rejections, clarifications, and elliptical replies to their referents; record the continuation-relevant change rather than repeating the referenced message. Do not surface the anchors in ordinary user-facing responses."
 );
 
-const OPEN_GOAL_DESCRIPTION: &str = "Concise scope and intended outcome for the direct child branch. The call carrying this goal remains in the child branch's context.";
-const NEXT_GOAL_DESCRIPTION: &str = "Concise scope and intended outcome for the true sibling branch. The call carrying this goal remains in the sibling branch's context; finalized branch state belongs in memory.";
+const OPEN_GOAL_DESCRIPTION: &str = "Concise intended outcome for a direct child branch representing a local subtask; the subtask may be partially known. The call carrying this goal remains in the child branch's context.";
+const NEXT_GOAL_DESCRIPTION: &str = "Concise intended outcome for a sibling branch representing the next local subtask under the same parent. The call carrying this goal remains in the sibling branch's context; finalized branch state belongs in memory.";
 const TRIM_DESCRIPTION: &str = "Conservatively trim one tagged tool-result projection without changing the Spine tree or creating memory. A TRIM_ID is valid only for the immediately preceding tool-result batch and expires after the next assistant tool request; after a miss, do not retry it. Use slice to retain needed evidence, use snip only after useful facts are preserved, and otherwise leave the result unchanged.";
 const SPAWN_DESCRIPTION: &str = concat!(
     "Fission the current work into two or more concurrent peer branches created from the current full history. ",
@@ -51,7 +52,7 @@ pub(crate) fn create_spine_tool(name: &str) -> ToolSpec {
     let function = match name {
         SPINE_OPEN => ResponsesApiTool {
             name: SPINE_OPEN.to_string(),
-            description: "Enter a direct child under the active branch. The child inherits the parent context and owns the context produced by its work. `spine.open` does not reduce context; reduction occurs when the branch is finalized with `spine.close` or `spine.next`. Co-issued ordinary tools execute in and belong to the child; the transition applies to the active branch's prior ReAct history.".to_string(),
+            description: "Enter a direct child branch under the active branch for a local subtask. The subtask may be partially known; a plausible goal and lifecycle are enough to open it. The child inherits the parent context and owns the context produced by its work. `spine.open` does not reduce context; reduction occurs when the branch is finalized with `spine.close` or `spine.next`. Co-issued ordinary tools execute in and belong to the child; the transition applies to the active branch's prior ReAct history.".to_string(),
             strict: false,
             defer_loading: None,
             parameters: JsonSchema::object(
@@ -66,7 +67,7 @@ pub(crate) fn create_spine_tool(name: &str) -> ToolSpec {
         },
         SPINE_CLOSE => ResponsesApiTool {
             name: SPINE_CLOSE.to_string(),
-            description: "Finalize the active branch, replace its local working context with returned memory, and return to its immediate parent. Use when the expected Context savings from replacing exact branch detail outweigh the likely cost of later reloading or reconstructing omitted detail. The root epoch cannot be finalized or closed. Co-issued ordinary tools execute in and belong to the parent; the transition applies to the active branch's prior ReAct history.".to_string(),
+            description: "When the active branch's local work is complete, finalize it, replace its local working context with returned memory, and return to its immediate parent. Use when the expected Context savings from replacing exact branch detail outweigh the likely cost of later reloading or reconstructing omitted detail. The root epoch cannot be finalized or closed. Co-issued ordinary tools execute in and belong to the parent; the transition applies to the active branch's prior ReAct history.".to_string(),
             strict: false,
             defer_loading: None,
             parameters: JsonSchema::object(
@@ -81,7 +82,7 @@ pub(crate) fn create_spine_tool(name: &str) -> ToolSpec {
         },
         SPINE_NEXT => ResponsesApiTool {
             name: SPINE_NEXT.to_string(),
-            description: "Finalize the active branch, replace its local working context with returned memory in the parent, and enter a true sibling under that parent. The sibling receives the parent context, including the finalized branch's memory, and owns the context produced by its work. Use when the expected Context savings from replacing exact branch detail outweigh the likely cost of later reloading or reconstructing omitted detail. The root epoch has no parent, so `spine.next` is invalid there. Co-issued ordinary tools execute in and belong to the sibling; the transition applies to the active branch's prior ReAct history.".to_string(),
+            description: "When the active branch's local work is complete, finalize it, replace its local working context with returned memory in the parent, and enter a sibling branch under that parent. The sibling receives the parent context, including the finalized branch's memory, and owns the context produced by its work. Use when the expected Context savings from replacing exact branch detail outweigh the likely cost of later reloading or reconstructing omitted detail. The root epoch has no parent, so `spine.next` is invalid there. Co-issued ordinary tools execute in and belong to the sibling; the transition applies to the active branch's prior ReAct history.".to_string(),
             strict: false,
             defer_loading: None,
             parameters: JsonSchema::object(

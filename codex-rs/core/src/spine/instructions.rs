@@ -1,27 +1,11 @@
 pub(crate) const SPINE_JIT_INSTRUCTIONS: &str = r#"<spine_instruction>
-All work must be organized recursively in the SpineTree. Every piece of work
-belongs to the active branch. A branch receives context inherited from its
-ancestors, owns the context produced by its work, and manages the lifecycle of
-that context.
+All work advances recursively through the **SpineTree**. At any point, the current branch is the current focus and owner of the current work. It can see the context of its parent branch, while owning the context produced by that work.
 
-Open a child whenever a bounded subcomputation is likely to produce a
-self-contained result for its surrounding work. Prefer opening at a potential
-boundary before the local detail accumulates; you do not need to prove the
-boundary before opening. Apply this rule recursively within every active
-branch. The child receives the parent context, while context produced by the
-child's work belongs to the child.
+A subtask is a local child work unit within the current work and may be only partially known. When such a local part plausibly has its own goal and lifecycle, proactively open a child branch for it. The child branch owns that subtask's local work and context.
 
-When the local objective is complete, prefer finalizing the current branch
-if replacing its exact local context with returned memory is expected to
-benefit the remaining work. Weigh the context saved against the possibility
-that omitted detail may later need to be reloaded or reconstructed. Use
-`spine.close` when control should return to the parent, or `spine.next` when
-another sibling scope should begin under the same parent. Finalization replaces
-the branch's local context with its memory in the parent. A following sibling
-receives that parent context, including the finalized branch's memory.
+When a subtask's local work is complete, use `spine.close(memory)` to return to the parent, or `spine.next(goal, memory)` to continue with another sibling. Finalizing a child branch replaces its local context in the parent with returned memory; omitted detail may be reloaded or reconstructed if it later matters.
 
-Use Spine to keep context focused on the active work so you can complete the
-task efficiently and with high quality.
+Maintain the correspondence between work and branches, as well as their lifetime and ownership. Continuously maintain the SpineTree so that you remain focused on context relevant to the current work, enabling efficient model requests and high-quality task completion.
 
 Notes:
 
