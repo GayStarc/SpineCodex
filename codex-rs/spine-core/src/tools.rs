@@ -343,12 +343,12 @@ fn parameters_for(tool: SpineTool) -> Value {
             "properties": {
                 "tasks": {
                     "type": "array",
-                    "description": "Ordered differentiated branch assignments.",
+                    "description": "Ordered branch assignments with distinct responsibilities or contributions.",
                     "minItems": 2,
                     "items": {
                         "type": "object",
                         "properties": {
-                            "summary": { "type": "string", "maxLength": MAX_SUMMARY_BYTES, "description": "Concise branch label, distinct within this spawn call, and its independently owned outcome." },
+                            "summary": { "type": "string", "maxLength": MAX_SUMMARY_BYTES, "description": "Concise branch label, distinct within this spawn call, naming the branch's responsibility or contribution." },
                             "prompt": { "type": "string", "maxLength": MAX_SPAWN_PROMPT_BYTES, "description": "Complete initial branch assignment. The branch identity is this task's summary. Include the same task-local `Shared blackboard: <path>` line used by every branch so they can coordinate, share useful findings, and reduce duplicated exploration." }
                         },
                         "required": ["summary", "prompt"],
