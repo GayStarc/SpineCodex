@@ -98,7 +98,6 @@ impl ContextPlanBuilder<'_> {
                         matches!(
                             &cell.payload,
                             SourceCellPayload::Message(source)
-                                | SourceCellPayload::TurnAborted(source)
                                 if source == message
                         )
                     })
@@ -119,7 +118,6 @@ impl ContextPlanBuilder<'_> {
                         matches!(
                             &cell.payload,
                             SourceCellPayload::Message(source)
-                                | SourceCellPayload::TurnAborted(source)
                                 if source == message
                         )
                     })
@@ -230,14 +228,14 @@ fn source_span_labels(
     spawn_enabled: bool,
     spawn_call_outcomes: &BTreeMap<RawBoundary, bool>,
 ) -> Vec<ContextLabel> {
-    let SourceCellPayload::ToolResponse { call_id, .. } = &cell.payload else {
+    let Some(output) = &cell.output else {
         return Vec::new();
     };
     let boundary = RawBoundary(cell.boundary.ordinal());
     let mut labels = trim
-        .and_then(|projection| projection.edit(boundary, call_id))
+        .and_then(|projection| projection.edit(boundary, &output.execution_ref))
         .cloned()
-        .map(ContextLabel::ToolOutput)
+        .map(ContextLabel::Output)
         .into_iter()
         .collect::<Vec<_>>();
     if spawn_enabled && let Some(succeeded) = spawn_call_outcomes.get(&boundary) {
@@ -252,64 +250,18 @@ fn spawn_call_outcomes(
     source: &SourceSnapshot,
     projection: &SpineProjection,
 ) -> BTreeMap<RawBoundary, bool> {
-    projection
-        .visible_context
+    let settled = projection
+        .settled_spawn_execution_refs
         .iter()
-        .filter_map(|item| match item {
-            ContextItem::SourceSpan { span } => Some(*span),
-            ContextItem::Message { .. }
-            | ContextItem::SyntheticNode { .. }
-            | ContextItem::MemorySlot(_)
-            | ContextItem::Native { .. } => None,
-        })
-        .flat_map(|span| {
-            let in_span = move |cell: &SourceCell| {
-                span.start.0 <= cell.boundary.ordinal() && cell.boundary.ordinal() <= span.end.0
-            };
-            let requests = source
-                .cells()
-                .iter()
-                .filter(move |cell| in_span(cell))
-                .filter_map(|cell| match &cell.payload {
-                    SourceCellPayload::ToolRequest { call_id, name, .. }
-                        if name == "spine.spawn" =>
-                    {
-                        Some(call_id.clone())
-                    }
-                    SourceCellPayload::Message(_)
-                    | SourceCellPayload::TurnAborted(_)
-                    | SourceCellPayload::ToolRequest { .. }
-                    | SourceCellPayload::ToolResponse { .. }
-                    | SourceCellPayload::Opaque
-                    | SourceCellPayload::Synthetic(_) => None,
-                })
-                .collect::<BTreeSet<_>>();
-            let conflicting = source.cells().iter().any(|cell| {
-                in_span(cell)
-                    && matches!(
-                        &cell.payload,
-                        SourceCellPayload::ToolRequest { name, .. }
-                            if matches!(name.as_str(), "spine.open" | "spine.close" | "spine.next")
-                    )
-            });
-            source
-                .cells()
-                .iter()
-                .filter(move |cell| in_span(cell))
-                .filter_map(move |cell| match &cell.payload {
-                    SourceCellPayload::ToolResponse {
-                        call_id, outcome, ..
-                    } if requests.contains(call_id) => Some((
-                        RawBoundary(cell.boundary.ordinal()),
-                        *outcome == crate::ToolOutcome::Succeeded && !conflicting,
-                    )),
-                    SourceCellPayload::Message(_)
-                    | SourceCellPayload::TurnAborted(_)
-                    | SourceCellPayload::ToolRequest { .. }
-                    | SourceCellPayload::ToolResponse { .. }
-                    | SourceCellPayload::Opaque
-                    | SourceCellPayload::Synthetic(_) => None,
-                })
+        .collect::<BTreeSet<_>>();
+    source
+        .cells()
+        .iter()
+        .filter_map(|cell| {
+            let output = cell.output.as_ref()?;
+            settled
+                .contains(&output.execution_ref)
+                .then_some((RawBoundary(cell.boundary.ordinal()), true))
         })
         .collect()
 }

@@ -7,9 +7,7 @@ use crate::RawBoundary;
 use crate::RecordDigest;
 use crate::SourceCellId;
 use crate::SpineChar;
-use crate::StableToolOutputId;
 use crate::ThreadNamespace;
-use crate::ToolOutcome;
 use crate::context_plan::ContextPlanSource;
 use serde::Serialize;
 use sha2::Digest as _;
@@ -42,24 +40,44 @@ pub struct SourceCell {
     pub id: SourceCellId,
     pub boundary: BoundaryId,
     pub payload: SourceCellPayload,
+    pub output: Option<ObservedOutput>,
     pub item: ContextItem,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ObservedOutput {
+    pub execution_ref: String,
+    pub body: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceObservation {
+    character: SpineChar,
+    output: Option<ObservedOutput>,
+}
+
+impl SourceObservation {
+    pub fn new(character: SpineChar) -> Self {
+        Self {
+            character,
+            output: None,
+        }
+    }
+
+    pub fn with_output(mut self, output: ObservedOutput) -> Self {
+        self.output = Some(output);
+        self
+    }
+
+    pub(crate) fn into_parts(self) -> (SpineChar, Option<ObservedOutput>) {
+        (self.character, self.output)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SourceCellPayload {
     Message(Message),
-    TurnAborted(Message),
-    ToolRequest {
-        call_id: String,
-        name: String,
-        arguments: String,
-    },
-    ToolResponse {
-        call_id: String,
-        outcome: ToolOutcome,
-        output: String,
-    },
     Opaque,
     Synthetic(ContextItem),
 }
@@ -133,10 +151,20 @@ impl SourceLedger {
     where
         I: IntoIterator<Item = SpineChar>,
     {
+        self.append_observations(characters.into_iter().map(SourceObservation::new))
+    }
+
+    pub fn append_observations<I>(
+        &mut self,
+        observations: I,
+    ) -> Result<Vec<SourceCellId>, SourceLedgerError>
+    where
+        I: IntoIterator<Item = SourceObservation>,
+    {
         let mut candidate = self.clone();
         let mut inserted = Vec::new();
-        for character in characters {
-            inserted.push(candidate.append_one(character)?);
+        for observation in observations {
+            inserted.push(candidate.append_one(observation)?);
         }
         candidate.digest = digest_cells(&candidate.cells)?;
         *self = candidate;
@@ -198,7 +226,11 @@ impl SourceLedger {
         )
     }
 
-    fn append_one(&mut self, character: SpineChar) -> Result<SourceCellId, SourceLedgerError> {
+    fn append_one(
+        &mut self,
+        observation: SourceObservation,
+    ) -> Result<SourceCellId, SourceLedgerError> {
+        let (character, output) = observation.into_parts();
         let raw_boundary = character.boundary();
         if let Some(previous) = self.last_raw_boundary
             && raw_boundary <= previous
@@ -223,6 +255,7 @@ impl SourceLedger {
             id: id.clone(),
             boundary,
             payload,
+            output,
             item,
         });
         self.last_raw_boundary = Some(raw_boundary);
@@ -260,34 +293,21 @@ impl SourceSnapshot {
             .find(|cell| cell.boundary.ordinal() == boundary.0)
     }
 
-    pub fn stable_tool_output(
+    pub fn stable_output(
         &self,
-        response_boundary: RawBoundary,
-        call_id: &str,
-    ) -> Option<StableToolOutputId> {
-        let response_index = self.cells.iter().position(|cell| {
-            cell.boundary.ordinal() == response_boundary.0
-                && matches!(
-                    &cell.payload,
-                    SourceCellPayload::ToolResponse {
-                        call_id: response_call_id,
-                        ..
-                    } if response_call_id == call_id
-                )
+        boundary: RawBoundary,
+        execution_ref: &str,
+    ) -> Option<crate::StableOutputId> {
+        let cell = self.cells.iter().find(|cell| {
+            cell.boundary.ordinal() == boundary.0
+                && cell
+                    .output
+                    .as_ref()
+                    .is_some_and(|output| output.execution_ref == execution_ref)
         })?;
-        let request = self.cells[..response_index].iter().rev().find(|cell| {
-            matches!(
-                &cell.payload,
-                SourceCellPayload::ToolRequest {
-                    call_id: request_call_id,
-                    ..
-                } if request_call_id == call_id
-            )
-        })?;
-        Some(StableToolOutputId {
-            request: request.id.clone(),
-            response: self.cells[response_index].id.clone(),
-            call_id: call_id.to_string(),
+        Some(crate::StableOutputId {
+            source: cell.id.clone(),
+            execution_ref: execution_ref.to_string(),
         })
     }
 }
@@ -297,32 +317,18 @@ impl SourceCell {
         let boundary = RawBoundary(self.boundary.ordinal());
         match &self.payload {
             SourceCellPayload::Message(message) => SpineChar::Message(message.clone()),
-            SourceCellPayload::TurnAborted(message) => SpineChar::TurnAborted(message.clone()),
-            SourceCellPayload::ToolRequest {
-                call_id,
-                name,
-                arguments,
-            } => SpineChar::ToolRequest(crate::ToolRequestChar {
-                boundary,
-                call_id: call_id.clone(),
-                name: name.clone(),
-                arguments: arguments.clone(),
-            }),
-            SourceCellPayload::ToolResponse {
-                call_id,
-                outcome,
-                output,
-            } => SpineChar::ToolResponse(crate::ToolResponseChar {
-                boundary,
-                call_id: call_id.clone(),
-                outcome: *outcome,
-                output: output.clone(),
-            }),
             SourceCellPayload::Opaque => SpineChar::Opaque { boundary },
             SourceCellPayload::Synthetic(item) => SpineChar::Synthetic {
                 boundary,
                 item: item.clone(),
             },
+        }
+    }
+
+    pub(crate) fn observation(&self) -> SourceObservation {
+        SourceObservation {
+            character: self.character(),
+            output: self.output.clone(),
         }
     }
 }
@@ -357,29 +363,6 @@ fn source_parts(character: SpineChar) -> (SourceCellPayload, ContextItem) {
                 user_anchor: None,
             },
         ),
-        SpineChar::TurnAborted(message) => (
-            SourceCellPayload::TurnAborted(message.clone()),
-            ContextItem::Message {
-                message,
-                user_anchor: None,
-            },
-        ),
-        SpineChar::ToolRequest(request) => (
-            SourceCellPayload::ToolRequest {
-                call_id: request.call_id,
-                name: request.name,
-                arguments: request.arguments,
-            },
-            native_item(request.boundary),
-        ),
-        SpineChar::ToolResponse(response) => (
-            SourceCellPayload::ToolResponse {
-                call_id: response.call_id,
-                outcome: response.outcome,
-                output: response.output,
-            },
-            native_item(response.boundary),
-        ),
         SpineChar::Opaque { boundary } => (SourceCellPayload::Opaque, native_item(boundary)),
         SpineChar::Synthetic { item, .. } => (SourceCellPayload::Synthetic(item.clone()), item),
     }
@@ -394,11 +377,8 @@ fn native_item(boundary: RawBoundary) -> ContextItem {
 fn digest_cells(cells: &[SourceCell]) -> Result<RecordDigest, SourceLedgerError> {
     let mut canonical = cells.to_vec();
     for cell in &mut canonical {
-        // Tool output text is host presentation state: live context may contain a bounded
-        // rendering while rollout replay sees the original output. Transition identity is
-        // carried by the call, boundary, and stable outcome instead.
-        if let SourceCellPayload::ToolResponse { output, .. } = &mut cell.payload {
-            output.clear();
+        if let Some(output) = &mut cell.output {
+            output.body.clear();
         }
     }
     let encoded = serde_json::to_vec(&canonical)

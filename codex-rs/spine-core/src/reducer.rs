@@ -18,14 +18,9 @@ use crate::SpawnResult;
 use crate::SpawnTask;
 use crate::SpineOperationFact;
 use crate::SpineProjection;
-use crate::ToolOutcome;
 use crate::TrimEdit;
-use crate::TrimOperation;
 use crate::TrimProjection;
-use crate::TrimRequest;
-use crate::context_char::CompletedCalls;
-const SPINE_TRIM: &str = "spine.trim";
-pub const TOOL_RESPONSE_TRIM_THRESHOLD_BYTES: usize = 10_000;
+pub const OUTPUT_TRIM_THRESHOLD_BYTES: usize = 10_000;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct TrimReducer {
@@ -56,24 +51,8 @@ impl TrimReducer {
         }
     }
 
-    pub(crate) fn apply_completed_calls(&mut self, completed: &CompletedCalls) {
-        for call in completed
-            .calls
-            .iter()
-            .filter(|call| call.name == SPINE_TRIM && call.outcome == Some(ToolOutcome::Succeeded))
-        {
-            let Ok(request) = TrimRequest::parse(&call.arguments) else {
-                continue;
-            };
-            apply_trim_request(&mut self.projection, &self.active, &request);
-        }
-        expire_trim_candidates(&mut self.projection, &mut self.active);
-        self.observe_trim_candidates(completed);
-    }
-
     pub(crate) fn apply_sampling(
         &mut self,
-        completed: &[CompletedCalls],
         trims: &[(RawBoundary, &ExecutedSpineFact)],
     ) -> Result<(), TypedTransitionError> {
         for (boundary, fact) in trims {
@@ -88,32 +67,24 @@ impl TrimReducer {
             if !self.active.contains(boundary) {
                 return Err(TypedTransitionError::InactiveTrimTarget(*boundary));
             }
-            let Some((call_id, edit)) = self.projection.edits.get_mut(boundary) else {
+            let Some((execution_ref, edit)) = self.projection.edits.get_mut(boundary) else {
                 return Err(TypedTransitionError::InactiveTrimTarget(*boundary));
             };
-            if call_id != &target.call_id {
+            if execution_ref != &target.execution_ref {
                 return Err(TypedTransitionError::TrimTargetMismatch);
             }
             *edit = validated_edit.clone();
         }
 
         expire_trim_candidates(&mut self.projection, &mut self.active);
-        for completed in completed {
-            self.observe_trim_candidates(completed);
-        }
         Ok(())
     }
 
-    fn observe_trim_candidates(&mut self, completed: &CompletedCalls) {
-        for call in completed
-            .calls
-            .iter()
-            .filter(|call| !call.name.starts_with("spine."))
-        {
-            let (Some(boundary), Some(body)) = (call.output_boundary, call.output.as_deref())
-            else {
-                continue;
-            };
+    pub(crate) fn observe_outputs(
+        &mut self,
+        outputs: impl IntoIterator<Item = (RawBoundary, String, String)>,
+    ) {
+        for (boundary, execution_ref, body) in outputs {
             if body.len() <= self.threshold_bytes {
                 continue;
             }
@@ -121,10 +92,10 @@ impl TrimReducer {
             self.projection.edits.insert(
                 boundary,
                 (
-                    call.call_id.clone(),
+                    execution_ref,
                     TrimEdit::Tagged {
                         trim_id,
-                        body: body.to_string(),
+                        body,
                         eligible: true,
                     },
                 ),
@@ -192,7 +163,7 @@ pub(crate) struct SpineReducer {
     baseline: Vec<ContextItem>,
     next_user_anchor: u64,
     last_boundary: Option<RawBoundary>,
-    settled_spawn_call_ids: Vec<String>,
+    settled_spawn_execution_refs: Vec<String>,
 }
 
 impl Default for SpineReducer {
@@ -221,14 +192,14 @@ impl SpineReducer {
             baseline: Vec::new(),
             next_user_anchor: 1,
             last_boundary: None,
-            settled_spawn_call_ids: Vec::new(),
+            settled_spawn_execution_refs: Vec::new(),
         }
     }
 
     pub(crate) fn apply(&mut self, event: RolloutEvent) -> ProjectionDelta {
         let before = self.render_current_epoch();
         self.last_boundary = Some(event.boundary());
-        self.settled_spawn_call_ids.clear();
+        self.settled_spawn_execution_refs.clear();
         match event {
             RolloutEvent::Message(message) => self.apply_message(message),
             RolloutEvent::SourceSpan { span, .. } => self.push_source_span(span),
@@ -252,12 +223,12 @@ impl SpineReducer {
         &mut self,
         span: RawSpan,
         facts: &[&ExecutedSpineFact],
-        settled_spawn_call_ids: &[String],
+        settled_spawn_execution_refs: &[String],
         open_input_tokens: Option<u64>,
     ) -> Result<ProjectionDelta, TypedTransitionError> {
         let before = self.render_current_epoch();
         self.last_boundary = Some(span.end);
-        self.settled_spawn_call_ids = settled_spawn_call_ids.to_vec();
+        self.settled_spawn_execution_refs = settled_spawn_execution_refs.to_vec();
 
         let structural = facts
             .iter()
@@ -340,7 +311,7 @@ impl SpineReducer {
             cursor: self.cursor.clone(),
             visible_context: self.render_current_epoch(),
             last_boundary: self.last_boundary,
-            settled_spawn_call_ids: self.settled_spawn_call_ids.clone(),
+            settled_spawn_execution_refs: self.settled_spawn_execution_refs.clone(),
         }
     }
 
@@ -658,36 +629,6 @@ fn expire_trim_candidates(projection: &mut TrimProjection, active: &mut Vec<RawB
     for boundary in active.drain(..) {
         if let Some((_, TrimEdit::Tagged { eligible, .. })) = projection.edits.get_mut(&boundary) {
             *eligible = false;
-        }
-    }
-}
-
-fn apply_trim_request(
-    projection: &mut TrimProjection,
-    active: &[RawBoundary],
-    request: &TrimRequest,
-) {
-    let Some(boundary) = active.iter().copied().find(|boundary| {
-        projection.edits.get(boundary).is_some_and(|(_, edit)| {
-            matches!(edit, TrimEdit::Tagged { trim_id, .. } if trim_id == &request.trim_id)
-        })
-    }) else {
-        return;
-    };
-    let Some((_, edit)) = projection.edits.get_mut(&boundary) else {
-        return;
-    };
-    match &request.operation {
-        TrimOperation::Snip => *edit = TrimEdit::Snipped,
-        TrimOperation::Slice(slice) => {
-            let body = match edit {
-                TrimEdit::Tagged { body, .. } | TrimEdit::Sliced(body) => body.as_str(),
-                TrimEdit::Snipped => return,
-            };
-            let Some(value) = crate::model::apply_trim_slice(body, slice) else {
-                return;
-            };
-            *edit = TrimEdit::Sliced(value);
         }
     }
 }

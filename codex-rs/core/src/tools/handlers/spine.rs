@@ -130,7 +130,7 @@ impl SpineHandler {
             ..
         } = invocation;
         let origin = spine_core::host::ExecutionOrigin::Direct {
-            call_id: call_id.clone(),
+            execution_ref: call_id.clone(),
         };
         if turn.collaboration_mode().mode == ModeKind::Plan {
             return Err(FunctionCallError::RespondToModel(
@@ -209,7 +209,7 @@ impl SpineHandler {
                             "Spine trim runtime is unavailable".to_string(),
                         )
                     })?
-                    .prepare_trim(&call_id, &request);
+                    .prepare_trim(&request);
                 match operation {
                     Ok(operation) => {
                         session.stage_spine_fact(&call_id, origin, operation);

@@ -1,3 +1,4 @@
+use super::super::context_handler::response_item_to_observation_and_source;
 use super::*;
 
 impl CodexSpineCoordinator {
@@ -12,7 +13,6 @@ impl CodexSpineCoordinator {
         let mut records = records.into_iter();
         let mut inputs = Vec::new();
         let mut epoch = ContextEpoch::ZERO;
-        let mut pending_calls = HashMap::new();
         let mut projected_source_items = Vec::new();
         let mut next_boundary = 0u64;
         let mut context_window_samples = Vec::new();
@@ -29,15 +29,11 @@ impl CodexSpineCoordinator {
             };
             if let Some(item) = source {
                 let boundary = RawBoundary(next_boundary);
-                let (character, projected) = response_item_to_char_and_source(
-                    &item,
-                    boundary,
-                    &mut pending_calls,
-                    self.spawn_enabled,
-                );
+                let (observation, projected) =
+                    response_item_to_observation_and_source(&item, boundary);
                 projected_source_items.push(projected);
                 next_boundary = boundary.0.saturating_add(1);
-                inputs.push(ReplayInput::Source(character));
+                inputs.push(ReplayInput::Source(observation));
                 continue;
             }
             match item {
@@ -90,7 +86,6 @@ impl CodexSpineCoordinator {
                     ));
                     epoch = next_epoch;
                     projected_source_items = replacement_items;
-                    pending_calls.clear();
                     next_boundary = replacement_boundaries.last().map_or_else(
                         || boundary.0.saturating_add(1),
                         |boundary| boundary.0.saturating_add(1),
@@ -169,7 +164,6 @@ impl CodexSpineCoordinator {
 
         self.runtime = runtime;
         self.next_boundary = next_boundary;
-        self.pending_calls = pending_calls;
         self.source_items = source_items;
         self.usage_samples = usage_samples;
         self.context_window_samples = context_window_samples;

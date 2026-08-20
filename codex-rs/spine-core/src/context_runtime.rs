@@ -395,9 +395,6 @@ where
                 .eat(event)
                 .map_err(SpineContextRuntimeError::Spine)?;
         }
-        for completed in step.completed_calls() {
-            compiler.observe_completed_calls(completed);
-        }
     }
     Ok(pending_boundaries)
 }
@@ -484,7 +481,3 @@ impl<E: fmt::Display> fmt::Display for SpineContextRuntimeError<E> {
 }
 
 impl<E: std::error::Error + 'static> std::error::Error for SpineContextRuntimeError<E> {}
-
-#[cfg(test)]
-#[path = "context_runtime_tests.rs"]
-mod tests;

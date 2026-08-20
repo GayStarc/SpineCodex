@@ -7,7 +7,6 @@ use crate::SpineConfig;
 use crate::SpineProjection;
 use crate::TrimProjection;
 use crate::bootstrap::InitError;
-use crate::context_char::CompletedCalls;
 use crate::reducer::SpineReducer;
 use crate::reducer::TrimReducer;
 use crate::reducer::TypedTransitionError;
@@ -65,17 +64,10 @@ impl SpineCompiler {
         self.eat(event).map_err(SamplingCompileError::Spine)
     }
 
-    pub(crate) fn observe_completed_calls(&mut self, completed: &CompletedCalls) {
-        if let Some(trim_reducer) = &mut self.trim_reducer {
-            trim_reducer.apply_completed_calls(completed);
-        }
-    }
-
     pub(crate) fn eat_sampling(
         &mut self,
         span: RawSpan,
         retained_bytes: usize,
-        completed: &[CompletedCalls],
         facts: &[&ExecutedSpineFact],
         trims: &[(RawBoundary, &ExecutedSpineFact)],
         open_input_tokens: Option<u64>,
@@ -92,22 +84,39 @@ impl SpineCompiler {
         .map_err(SamplingCompileError::Spine)?;
         if let Some(trim_reducer) = &mut self.trim_reducer {
             trim_reducer
-                .apply_sampling(completed, trims)
+                .apply_sampling(trims)
                 .map_err(SamplingCompileError::Transition)?;
         }
-        let settled_spawn_call_ids = completed
+        let settled_spawn_execution_refs = facts
             .iter()
-            .flat_map(|completed| completed.calls.iter())
-            .filter(|call| call.name == "spine.spawn")
-            .map(|call| call.call_id.clone())
+            .filter_map(|fact| match &fact.operation {
+                crate::SpineOperationFact::Spawn { .. } => match &fact.origin {
+                    crate::ExecutionOrigin::Direct { execution_ref } => Some(execution_ref.clone()),
+                },
+                _ => None,
+            })
             .collect::<Vec<_>>();
         let delta = self
             .reducer
-            .apply_sampling(span, facts, &settled_spawn_call_ids, open_input_tokens)
+            .apply_sampling(
+                span,
+                facts,
+                &settled_spawn_execution_refs,
+                open_input_tokens,
+            )
             .map_err(SamplingCompileError::Transition)?;
         validate_projection(&delta.projection).map_err(SamplingCompileError::Spine)?;
         self.projection = delta.projection.clone();
         Ok(delta)
+    }
+
+    pub(crate) fn observe_outputs(
+        &mut self,
+        outputs: impl IntoIterator<Item = (RawBoundary, String, String)>,
+    ) {
+        if let Some(trim_reducer) = &mut self.trim_reducer {
+            trim_reducer.observe_outputs(outputs);
+        }
     }
 
     pub(crate) fn reset(&mut self) {

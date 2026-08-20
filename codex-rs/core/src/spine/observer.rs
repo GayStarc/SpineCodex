@@ -154,7 +154,7 @@ pub(crate) fn tree_update_from_parts(
     projection: &spine_core::host::SpineProjection,
     usage_samples: &[spine_core::host::TokenUsageSample],
 ) -> SpineTreeUpdateEvent {
-    let settled_spawn_call_ids = projection.settled_spawn_call_ids.clone();
+    let settled_spawn_call_ids = projection.settled_spawn_execution_refs.clone();
     let snapshot = spine_core::host::tree_snapshot(projection, usage_samples);
     SpineTreeUpdateEvent {
         snapshot_seq: snapshot.last_boundary.map_or(0, |boundary| boundary.0),

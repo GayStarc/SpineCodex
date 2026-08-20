@@ -89,7 +89,7 @@ where
             }
             if matches!(
                 label,
-                ContextLabel::ToolOutput(_) | ContextLabel::SpawnOutput { .. }
+                ContextLabel::Output(_) | ContextLabel::SpawnOutput { .. }
             ) {
                 spine_owned = true;
             }

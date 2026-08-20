@@ -21,6 +21,7 @@ use pretty_assertions::assert_eq;
 use spine_core::host::ExecutionOrigin;
 use spine_core::host::Feature;
 use spine_core::host::SamplingTerminal;
+use spine_core::host::SpineChar;
 use spine_core::host::SpineConfig;
 use spine_core::host::SpineOperationFact;
 use spine_core::host::ThreadNamespace;
@@ -88,6 +89,27 @@ fn open_source() -> [ResponseItem; 2] {
             internal_chat_message_metadata_passthrough: None,
         },
     ]
+}
+
+#[test]
+fn native_tool_items_are_opaque_across_sampling_interruption() {
+    let mut coordinator = coordinator();
+    let source = open_source();
+    let items = [
+        source[0].clone(),
+        message("user", "interrupt"),
+        source[1].clone(),
+    ];
+
+    coordinator
+        .observe_response_items(&items)
+        .expect("native tool interruption must remain opaque to Spine");
+
+    let snapshot = coordinator.runtime.source_snapshot();
+    let cells = snapshot.cells();
+    assert!(matches!(cells[0].character(), SpineChar::Opaque { .. }));
+    assert!(matches!(cells[1].character(), SpineChar::Message(_)));
+    assert!(matches!(cells[2].character(), SpineChar::Opaque { .. }));
 }
 
 fn token_count(input_tokens: i64, model_context_window: i64) -> RolloutItem {
@@ -268,7 +290,7 @@ fn spine_canonical_equivalence_uses_explicit_fact_for_transition() {
         .stage_execution(
             "execution-open",
             ExecutionOrigin::Direct {
-                call_id: "open-call".to_string(),
+                execution_ref: "open-call".to_string(),
             },
             SpineOperationFact::Open {
                 summary: "scope".to_string(),
@@ -307,7 +329,7 @@ fn spine_sampling_commit_is_self_contained() {
         .stage_execution(
             "open-call",
             ExecutionOrigin::Direct {
-                call_id: "open-call".to_string(),
+                execution_ref: "open-call".to_string(),
             },
             SpineOperationFact::Open {
                 summary: "scope".to_string(),
@@ -385,7 +407,7 @@ fn spine_compatibility_release_replays_and_continues_canonical_rollout() {
     live.stage_execution(
         "open-call",
         ExecutionOrigin::Direct {
-            call_id: "open-call".to_string(),
+            execution_ref: "open-call".to_string(),
         },
         SpineOperationFact::Open {
             summary: "scope".to_string(),
@@ -464,7 +486,7 @@ fn ordinary_observation_and_token_accounting_preserve_the_model_context_prefix()
         .stage_execution(
             "open-call",
             ExecutionOrigin::Direct {
-                call_id: "open-call".to_string(),
+                execution_ref: "open-call".to_string(),
             },
             SpineOperationFact::Open {
                 summary: "scope".to_string(),
@@ -595,7 +617,7 @@ fn canonical_replay_accepts_persisted_reasoning_with_omitted_empty_content() {
     live.stage_execution(
         "open-call",
         ExecutionOrigin::Direct {
-            call_id: "open-call".to_string(),
+            execution_ref: "open-call".to_string(),
         },
         SpineOperationFact::Open {
             summary: "scope".to_string(),
@@ -710,7 +732,7 @@ fn canonical_fork_preserves_prefix_ids_and_uses_child_suffix_namespace() {
         .stage_execution(
             "open-call",
             ExecutionOrigin::Direct {
-                call_id: "open-call".to_string(),
+                execution_ref: "open-call".to_string(),
             },
             SpineOperationFact::Open {
                 summary: "scope".to_string(),
@@ -794,7 +816,7 @@ fn spine_sampling_atomic_prepare_is_not_visible_until_install() {
         .stage_execution(
             "open-call",
             ExecutionOrigin::Direct {
-                call_id: "open-call".to_string(),
+                execution_ref: "open-call".to_string(),
             },
             SpineOperationFact::Open {
                 summary: "scope".to_string(),
@@ -844,7 +866,7 @@ fn codex_context_materialization_failure_discards_sdk_candidate() {
         .stage_execution(
             "open-call",
             ExecutionOrigin::Direct {
-                call_id: "open-call".to_string(),
+                execution_ref: "open-call".to_string(),
             },
             SpineOperationFact::Open {
                 summary: "scope".to_string(),
@@ -867,7 +889,7 @@ fn codex_context_materialization_failure_discards_sdk_candidate() {
         .stage_execution(
             "close-call",
             ExecutionOrigin::Direct {
-                call_id: "close-call".to_string(),
+                execution_ref: "close-call".to_string(),
             },
             SpineOperationFact::Close {
                 memory: "\0".repeat(20_000),
@@ -1002,7 +1024,7 @@ fn spine_execution_fact_commits_only_after_lifecycle_success() {
         .stage_execution(
             "open-call",
             ExecutionOrigin::Direct {
-                call_id: "open-call".to_string(),
+                execution_ref: "open-call".to_string(),
             },
             SpineOperationFact::Open {
                 summary: "scope".to_string(),
@@ -1035,7 +1057,7 @@ fn spine_execution_fact_is_discarded_when_lifecycle_rejects_result() {
         .stage_execution(
             "open-call",
             ExecutionOrigin::Direct {
-                call_id: "open-call".to_string(),
+                execution_ref: "open-call".to_string(),
             },
             SpineOperationFact::Open {
                 summary: "scope".to_string(),

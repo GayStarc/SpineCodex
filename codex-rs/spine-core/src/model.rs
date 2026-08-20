@@ -62,13 +62,6 @@ pub struct Message {
     pub content: String,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ToolOutcome {
-    Succeeded,
-    Failed,
-    Unknown,
-}
-
 pub const SPINE_SPAWN_RESULT_SCHEMA: &str = "spine.spawn.result.v1";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -367,19 +360,6 @@ fn validate_spawn_field(
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ToolUse {
-    pub call_id: String,
-    pub name: String,
-    pub arguments: String,
-    #[serde(default)]
-    pub call_ordinal: Option<u64>,
-    pub outcome: Option<ToolOutcome>,
-    pub output: Option<String>,
-    #[serde(default)]
-    pub output_boundary: Option<RawBoundary>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TrimSlice {
     Head {
         head: usize,
@@ -502,10 +482,10 @@ pub struct TrimProjection {
 }
 
 impl TrimProjection {
-    pub fn edit(&self, boundary: RawBoundary, call_id: &str) -> Option<&TrimEdit> {
+    pub fn edit(&self, boundary: RawBoundary, execution_ref: &str) -> Option<&TrimEdit> {
         self.edits
             .get(&boundary)
-            .filter(|(expected_call_id, _)| expected_call_id == call_id)
+            .filter(|(expected_ref, _)| expected_ref == execution_ref)
             .map(|(_, edit)| edit)
     }
 
@@ -517,7 +497,7 @@ impl TrimProjection {
         &self,
         request: &TrimRequest,
     ) -> Result<(RawBoundary, String, TrimEdit), String> {
-        let Some((boundary, (call_id, edit))) = self.edits.iter().find(|(_, (_, edit))| {
+        let Some((boundary, (execution_ref, edit))) = self.edits.iter().find(|(_, (_, edit))| {
             matches!(
                 edit,
                 TrimEdit::Tagged {
@@ -528,7 +508,7 @@ impl TrimProjection {
             )
         }) else {
             return Err(format!(
-                "spine.trim failed: previous completed toolcall does not contain TRIM_ID {}; do not retry",
+                "spine.trim failed: observed sampling output does not contain TRIM_ID {}; do not retry",
                 request.trim_id
             ));
         };
@@ -544,7 +524,7 @@ impl TrimProjection {
                     })?)
                 }
             };
-        Ok((*boundary, call_id.clone(), validated_edit))
+        Ok((*boundary, execution_ref.clone(), validated_edit))
     }
 }
 
@@ -734,7 +714,7 @@ pub struct SpineProjection {
     ///
     /// This is transient reducer provenance for the host projection. It is
     /// empty unless the last event completed one or more `spine.spawn` calls.
-    pub settled_spawn_call_ids: Vec<String>,
+    pub settled_spawn_execution_refs: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

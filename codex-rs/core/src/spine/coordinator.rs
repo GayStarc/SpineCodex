@@ -1,4 +1,4 @@
-use super::context_handler::response_item_to_char_and_source;
+use super::context_handler::response_item_to_observation_and_source;
 use super::context_plan::CodexContextPlanError;
 use super::context_plan::PreparedCodexContextPlan;
 use super::context_plan::prepare_codex_context_plan;
@@ -26,9 +26,7 @@ use spine_core::host::SpineOperationFact;
 use spine_core::host::SpineProjection;
 use spine_core::host::ThreadNamespace;
 use spine_core::host::TokenUsageSample;
-use spine_core::host::ToolUse;
 use std::collections::BTreeMap;
-use std::collections::HashMap;
 use std::sync::Arc;
 
 mod archive;
@@ -79,9 +77,7 @@ pub(crate) struct CodexSpineCoordinator {
     pub(crate) runtime: SamplingRuntime,
     runtime_config: SpineConfig,
     next_boundary: u64,
-    pending_calls: HashMap<String, ToolUse>,
     source_items: BTreeMap<spine_core::host::SourceCellId, ResponseItem>,
-    spawn_enabled: bool,
     node_prompt: String,
     pub(crate) durability_fault: Option<String>,
     observer: CodexSpineObserverHandler,
@@ -117,16 +113,13 @@ impl CodexSpineCoordinator {
     ) -> Result<Self, CoordinatorError> {
         let thread = ThreadNamespace::parse(thread.into())
             .map_err(|error| CoordinatorError::Identity(error.to_string()))?;
-        let spawn_enabled = config.is_enabled(spine_core::host::Feature::Spawn);
         let node_prompt = config.node_prompt().unwrap_or_default().to_string();
         let runtime = SamplingRuntime::new(thread, ContextEpoch::ZERO, config.clone())?;
         Ok(Self {
             runtime,
             runtime_config: config,
             next_boundary: 0,
-            pending_calls: HashMap::new(),
             source_items: BTreeMap::new(),
-            spawn_enabled,
             node_prompt,
             durability_fault: None,
             observer,
@@ -141,21 +134,16 @@ impl CodexSpineCoordinator {
         items: &[ResponseItem],
     ) -> Result<PreparedCodexContextPlan, CoordinatorError> {
         self.require_healthy()?;
-        let mut characters = Vec::with_capacity(items.len());
+        let mut observations = Vec::with_capacity(items.len());
         let mut projected_items = Vec::with_capacity(items.len());
         for item in items {
             let boundary = RawBoundary(self.next_boundary);
             self.next_boundary = self.next_boundary.saturating_add(1);
-            let (character, projected) = response_item_to_char_and_source(
-                item,
-                boundary,
-                &mut self.pending_calls,
-                self.spawn_enabled,
-            );
-            characters.push(character);
+            let (observation, projected) = response_item_to_observation_and_source(item, boundary);
+            observations.push(observation);
             projected_items.push(projected);
         }
-        let source_ids = self.runtime.observe_source(characters)?;
+        let source_ids = self.runtime.observe_source_observations(observations)?;
         self.source_items
             .extend(source_ids.into_iter().zip(projected_items));
         self.prepare_live_context()
@@ -362,7 +350,6 @@ impl CodexSpineCoordinator {
             || boundary.0.saturating_add(1),
             |boundary| boundary.0.saturating_add(1),
         );
-        self.pending_calls.clear();
         self.source_items = self
             .runtime
             .source_snapshot()
@@ -441,18 +428,8 @@ impl CodexSpineCoordinator {
 
     pub(crate) fn prepare_trim(
         &self,
-        current_call_id: &str,
         request: &spine_core::host::TrimRequest,
     ) -> Result<SpineOperationFact, String> {
-        if self
-            .pending_calls
-            .get(current_call_id)
-            .is_none_or(|call| call.name != "spine.trim")
-        {
-            return Err(
-                "spine.trim failed: current toolcall is unavailable; do not retry".to_string(),
-            );
-        }
         self.require_healthy().map_err(|error| error.to_string())?;
         self.runtime
             .validated_trim_fact(request)

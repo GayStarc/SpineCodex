@@ -44,8 +44,6 @@ pub(crate) use context_char::SpineChar;
 pub(crate) use context_char::SpineCharParser;
 pub(crate) use context_char::SpineRecoveryInput;
 pub(crate) use context_char::SpineSignal;
-pub(crate) use context_char::ToolRequestChar;
-pub(crate) use context_char::ToolResponseChar;
 pub(crate) use context_event::ContextEvent;
 pub(crate) use context_event::ContextEventError;
 pub(crate) use context_event::ContextInsert;
@@ -61,7 +59,7 @@ pub(crate) use executed_fact::ExecutedFactError;
 pub(crate) use executed_fact::ExecutedSpineFact;
 pub(crate) use executed_fact::ExecutionOrigin;
 pub(crate) use executed_fact::SpineOperationFact;
-pub(crate) use executed_fact::StableToolOutputId;
+pub(crate) use executed_fact::StableOutputId;
 pub(crate) use identity::AdmissionOrdinal;
 pub(crate) use identity::BoundaryId;
 pub(crate) use identity::ContextEpoch;
@@ -99,10 +97,7 @@ pub(crate) use model::SpawnOutcome;
 pub(crate) use model::SpawnResult;
 pub(crate) use model::SpawnTask;
 pub(crate) use model::SpineProjection;
-pub(crate) use model::ToolOutcome;
-pub(crate) use model::ToolUse;
 pub(crate) use model::TrimEdit;
-pub(crate) use model::TrimOperation;
 pub(crate) use model::TrimProjection;
 pub(crate) use model::TrimRequest;
 pub(crate) use replay::SpineCompactBarrierV1;
@@ -111,15 +106,13 @@ pub(crate) use sampling::SamplingAttempt;
 pub(crate) use sampling::SamplingFactSink;
 pub(crate) use sampling::SamplingHandle;
 pub(crate) use sampling::SealedSampling;
-#[cfg(test)]
-pub(crate) use sampling::SpineFactKind;
-#[cfg(test)]
-pub(crate) use sampling::SpineFactReservation;
 pub(crate) use sampling_runtime::SamplingRuntime;
+pub(crate) use source_ledger::ObservedOutput;
 pub(crate) use source_ledger::SourceCell;
 pub(crate) use source_ledger::SourceCellPayload;
 pub(crate) use source_ledger::SourceLedger;
 pub(crate) use source_ledger::SourceLedgerError;
+pub(crate) use source_ledger::SourceObservation;
 pub(crate) use source_ledger::SourceSnapshot;
 pub(crate) use status::ContextWindowSample;
 pub(crate) use status::NodeContextCost;
@@ -161,8 +154,6 @@ pub mod host {
     pub use super::context_char::SpineChar;
     pub use super::context_char::SpineRecoveryInput;
     pub use super::context_char::SpineSignal;
-    pub use super::context_char::ToolRequestChar;
-    pub use super::context_char::ToolResponseChar;
     pub use super::context_event::ContextEvent;
     pub use super::context_event::ContextInsert;
     pub use super::context_event::ContextLabel;
@@ -177,6 +168,7 @@ pub mod host {
     pub use super::context_runtime::SpineContextRuntimeError;
     pub use super::executed_fact::ExecutionOrigin;
     pub use super::executed_fact::SpineOperationFact;
+    pub use super::executed_fact::StableOutputId;
     pub use super::identity::ContextEpoch;
     pub use super::identity::SamplingCommitId;
     pub use super::identity::SourceCellId;
@@ -198,8 +190,6 @@ pub mod host {
     pub use super::model::SpawnTask;
     pub use super::model::SpawnValidationError;
     pub use super::model::SpineProjection;
-    pub use super::model::ToolOutcome;
-    pub use super::model::ToolUse;
     pub use super::model::TrimEdit;
     pub use super::model::TrimOperation;
     pub use super::model::TrimProjection;
@@ -210,7 +200,7 @@ pub mod host {
     pub use super::observer::SpineObserverEffectKind;
     pub use super::planner::PlannerError;
     pub use super::planner::PreparedSamplingCommit;
-    pub use super::reducer::TOOL_RESPONSE_TRIM_THRESHOLD_BYTES;
+    pub use super::reducer::OUTPUT_TRIM_THRESHOLD_BYTES;
     pub use super::replay::CanonicalReplay;
     pub use super::replay::ReplayInput;
     pub use super::replay::SpineCompactBarrierV1;
@@ -219,7 +209,9 @@ pub mod host {
     pub use super::sampling_runtime::SamplingFinish;
     pub use super::sampling_runtime::SamplingRuntime;
     pub use super::sampling_runtime::SamplingTerminal;
+    pub use super::source_ledger::ObservedOutput;
     pub use super::source_ledger::SourceLedger;
+    pub use super::source_ledger::SourceObservation;
     pub use super::status::ContextPressureProblem;
     pub use super::status::ContextWindowSample;
     pub use super::status::NodeContextCost;
@@ -244,36 +236,71 @@ pub mod host {
 pub(crate) use host::*;
 
 #[cfg(test)]
-#[path = "archive_tests.rs"]
-mod archive_tests;
-
-#[cfg(test)]
-#[path = "executed_fact_tests.rs"]
-mod executed_fact_tests;
-
-#[cfg(test)]
 #[path = "context_plan_tests.rs"]
 mod context_plan_tests;
 
 #[cfg(test)]
-#[path = "sampling_tests.rs"]
-mod sampling_tests;
+mod sampling_only_tests {
+    use super::Message;
+    use super::MessageRole;
+    use super::RawBoundary;
+    use super::SourceCellPayload;
+    use super::SpineChar;
+    use super::SpineCharParser;
 
-#[cfg(test)]
-#[path = "sampling_runtime_tests.rs"]
-mod sampling_runtime_tests;
+    fn message(boundary: u64, role: MessageRole) -> SpineChar {
+        SpineChar::Message(Message {
+            boundary: RawBoundary(boundary),
+            role,
+            content: format!("message-{boundary}"),
+        })
+    }
 
-#[cfg(test)]
-#[path = "source_ledger_tests.rs"]
-mod source_ledger_tests;
+    #[test]
+    fn native_items_are_opaque_across_message_interleaving() {
+        let mut parser = SpineCharParser::default();
+        for character in [
+            SpineChar::Opaque {
+                boundary: RawBoundary(1),
+            },
+            message(2, MessageRole::User),
+            SpineChar::Opaque {
+                boundary: RawBoundary(3),
+            },
+        ] {
+            parser.eat(character).expect("sampling source is valid");
+        }
+        assert_eq!(parser.stack().len(), 3);
+        assert!(parser.pending_boundaries().is_empty());
+    }
 
-#[cfg(test)]
-#[path = "planner_tests.rs"]
-mod planner_tests;
+    #[test]
+    fn parser_has_no_native_tool_group_recovery_state() {
+        let mut parser = SpineCharParser::default();
+        let step = parser
+            .eat(SpineChar::Opaque {
+                boundary: RawBoundary(7),
+            })
+            .expect("opaque source is valid");
+        assert!(step.pending_boundaries().is_empty());
+        assert_eq!(step.stack_size(), 1);
+    }
 
-#[cfg(test)]
-#[path = "replay_tests.rs"]
-mod replay_tests;
-
-#[cfg(test)]
-mod tests;
+    #[test]
+    fn only_sampling_alphabet_reaches_the_source_ledger() {
+        let mut ledger = super::SourceLedger::new(
+            super::ThreadNamespace::parse("thread").unwrap(),
+            super::ContextEpoch::new(1),
+        )
+        .unwrap();
+        ledger
+            .append([SpineChar::Opaque {
+                boundary: RawBoundary(1),
+            }])
+            .unwrap();
+        assert!(matches!(
+            ledger.snapshot().cells()[0].payload,
+            SourceCellPayload::Opaque
+        ));
+    }
+}

@@ -16,6 +16,7 @@ use crate::SamplingStarted;
 use crate::SealedSampling;
 use crate::SourceCellId;
 use crate::SourceLedger;
+use crate::SourceObservation;
 use crate::SourceSnapshot;
 use crate::SpineChar;
 use crate::SpineCharParser;
@@ -99,6 +100,18 @@ impl SamplingPlanner {
         self.source.append(characters).map_err(PlannerError::Source)
     }
 
+    pub fn observe_source_observations<I>(
+        &mut self,
+        observations: I,
+    ) -> Result<Vec<SourceCellId>, PlannerError>
+    where
+        I: IntoIterator<Item = SourceObservation>,
+    {
+        self.source
+            .append_observations(observations)
+            .map_err(PlannerError::Source)
+    }
+
     pub fn source_snapshot(&self) -> SourceSnapshot {
         self.source.snapshot()
     }
@@ -156,17 +169,17 @@ impl SamplingPlanner {
             .compiler
             .trim_projection()
             .ok_or(PlannerError::TrimRuntimeUnavailable)?;
-        let (response_boundary, call_id, validated_edit) = projection
+        let (boundary, execution_ref, validated_edit) = projection
             .validated_edit(request)
             .map_err(PlannerError::InvalidTrim)?;
         let snapshot = self.source.snapshot();
         let target = snapshot
-            .stable_tool_output(response_boundary, &call_id)
-            .ok_or(PlannerError::MissingTrimBoundary(response_boundary))?;
+            .stable_output(boundary, &execution_ref)
+            .ok_or(PlannerError::MissingTrimBoundary(boundary))?;
         let ticket = TrimTicket::parse(
             self.source.thread().clone(),
             self.source.epoch(),
-            format!("trim-{}", target.response.ordinal()),
+            format!("trim-{}", target.source.ordinal()),
         )
         .map_err(|error| PlannerError::InvalidTrim(error.to_string()))?;
         Ok(SpineOperationFact::Trim {
@@ -593,7 +606,6 @@ fn map_sampling_delta_error(error: SamplingDeltaError) -> PlannerError {
         SamplingDeltaError::FactHasNoSourceGroup(execution) => {
             PlannerError::FactHasNoSourceGroup(execution)
         }
-        SamplingDeltaError::FactSourceAppliedMoreThanOnce
-        | SamplingDeltaError::FactSourceExecutionMismatch => PlannerError::InvalidBoundaryOrder,
+        SamplingDeltaError::FactSourceExecutionMismatch => PlannerError::InvalidBoundaryOrder,
     }
 }

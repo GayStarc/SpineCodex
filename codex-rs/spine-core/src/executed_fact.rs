@@ -29,7 +29,7 @@ pub struct ExecutedSpineFact {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ExecutionOrigin {
-    Direct { call_id: String },
+    Direct { execution_ref: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -51,7 +51,7 @@ pub enum SpineOperationFact {
     },
     Trim {
         ticket: TrimTicket,
-        target: StableToolOutputId,
+        target: StableOutputId,
         validated_edit: TrimEdit,
         source_digest: String,
     },
@@ -59,10 +59,9 @@ pub enum SpineOperationFact {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct StableToolOutputId {
-    pub request: SourceCellId,
-    pub response: SourceCellId,
-    pub call_id: String,
+pub struct StableOutputId {
+    pub source: SourceCellId,
+    pub execution_ref: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -117,7 +116,11 @@ impl ExecutedSpineFact {
                 validated_edit,
                 source_digest,
             } => {
-                validate_field("trim.call_id", &target.call_id, MAX_EXECUTION_ORIGIN_BYTES)?;
+                validate_field(
+                    "trim.execution_ref",
+                    &target.execution_ref,
+                    MAX_EXECUTION_ORIGIN_BYTES,
+                )?;
                 validate_field("trim.source_digest", source_digest, MAX_SOURCE_DIGEST_BYTES)?;
                 validate_trim_ticket(&self.execution_id, ticket, target)?;
                 match validated_edit {
@@ -146,38 +149,28 @@ impl ExecutedSpineFact {
 
 fn validate_origin(origin: &ExecutionOrigin) -> Result<(), ExecutedFactError> {
     match origin {
-        ExecutionOrigin::Direct { call_id } => {
-            validate_field("origin.call_id", call_id, MAX_EXECUTION_ORIGIN_BYTES)
-        }
+        ExecutionOrigin::Direct { execution_ref } => validate_field(
+            "origin.execution_ref",
+            execution_ref,
+            MAX_EXECUTION_ORIGIN_BYTES,
+        ),
     }
 }
 
 fn validate_trim_ticket(
     execution_id: &ExecutionId,
     ticket: &TrimTicket,
-    target: &StableToolOutputId,
+    target: &StableOutputId,
 ) -> Result<(), ExecutedFactError> {
-    if target.request.epoch() != target.response.epoch() {
-        return Err(ExecutedFactError::InvalidTrimTicket(
-            "request and response must belong to the same epoch",
-        ));
-    }
-    if target.request.epoch() != ticket.epoch() {
+    if target.source.epoch() != ticket.epoch() {
         return Err(ExecutedFactError::InvalidTrimTicket(
             "ticket and target must belong to the same epoch",
         ));
     }
-    if target.request.thread() != target.response.thread()
-        || target.request.thread() != ticket.thread()
-        || target.request.thread() != execution_id.thread()
+    if target.source.thread() != ticket.thread() || target.source.thread() != execution_id.thread()
     {
         return Err(ExecutedFactError::InvalidTrimTicket(
             "execution, ticket, and target must belong to the same thread",
-        ));
-    }
-    if target.request.ordinal() >= target.response.ordinal() {
-        return Err(ExecutedFactError::InvalidTrimTicket(
-            "tool request must precede its response",
         ));
     }
     Ok(())

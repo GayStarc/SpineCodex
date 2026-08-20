@@ -12,6 +12,7 @@ use crate::SamplingCommitId;
 use crate::SamplingStarted;
 use crate::SourceLedger;
 use crate::SourceLedgerError;
+use crate::SourceObservation;
 use crate::SpineChar;
 use crate::SpineCharParser;
 use crate::SpineCompiler;
@@ -46,7 +47,7 @@ pub use compact::SpineCompactBarrierV1;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ReplayInput {
-    Source(SpineChar),
+    Source(SourceObservation),
     Archive(SamplingArchiveRecord),
     Compact(SpineCompactBarrierV1),
     Usage(TokenUsageSample),
@@ -89,7 +90,6 @@ pub enum ReplayError {
     PostBoundaryIsNotSourceTail,
     SourceDigestMismatch,
     FactSourceMissing,
-    FactSourceAppliedMoreThanOnce,
     MemorySlotMismatch,
     InvalidCompactBarrier(&'static str),
     Serialize(String),
@@ -144,10 +144,10 @@ impl CanonicalReplay {
 
         for item in input {
             match item {
-                ReplayInput::Source(character) => {
+                ReplayInput::Source(observation) => {
                     state
                         .source
-                        .append([character])
+                        .append_observations([observation])
                         .map_err(ReplayError::Source)?;
                 }
                 ReplayInput::Archive(record) => state.apply_archive(record)?,
@@ -492,9 +492,6 @@ fn map_sampling_delta_error(error: SamplingDeltaError) -> ReplayError {
         | SamplingDeltaError::MissingTrimSource(_)
         | SamplingDeltaError::FactHasNoSourceGroup(_)
         | SamplingDeltaError::FactSourceExecutionMismatch => ReplayError::FactSourceMissing,
-        SamplingDeltaError::FactSourceAppliedMoreThanOnce => {
-            ReplayError::FactSourceAppliedMoreThanOnce
-        }
     }
 }
 
@@ -535,9 +532,6 @@ impl fmt::Display for ReplayError {
             }
             Self::FactSourceMissing => {
                 formatter.write_str("replay fact has no matching stable source span")
-            }
-            Self::FactSourceAppliedMoreThanOnce => {
-                formatter.write_str("replay fact source span was applied more than once")
             }
             Self::MemorySlotMismatch => {
                 formatter.write_str("replayed memory differs from the durable memory sequence")

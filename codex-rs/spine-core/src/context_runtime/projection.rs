@@ -87,7 +87,7 @@ where
             let cell = take_source_cell(source, used, |cell| {
                 matches!(
                     cell.character(),
-                    SpineChar::Message(source) | SpineChar::TurnAborted(source)
+                    SpineChar::Message(source)
                         if source.boundary == message.boundary
                 )
             })
@@ -128,7 +128,7 @@ where
             let cell = take_source_cell(source, used, |cell| {
                 matches!(
                     cell.character(),
-                    SpineChar::Message(source) | SpineChar::TurnAborted(source)
+                    SpineChar::Message(source)
                         if source.boundary == message.boundary
                 )
             })
@@ -177,15 +177,17 @@ pub(super) fn project_trim_stack(stack: &ParseStack, trim: Option<&TrimProjectio
             .iter()
             .cloned()
             .map(|cell| {
-                let labels = match cell.character() {
-                    SpineChar::ToolResponse(response) => trim
-                        .and_then(|trim| trim.edit(response.boundary, &response.call_id))
-                        .cloned()
-                        .map(ContextLabel::ToolOutput)
-                        .into_iter()
-                        .collect(),
-                    _ => Vec::new(),
-                };
+                let labels = cell
+                    .output()
+                    .and_then(|output| {
+                        trim.and_then(|trim| {
+                            trim.edit(cell.character().boundary(), &output.execution_ref)
+                        })
+                    })
+                    .cloned()
+                    .map(ContextLabel::Output)
+                    .into_iter()
+                    .collect();
                 cell.with_labels(labels)
             })
             .collect(),
@@ -211,16 +213,17 @@ fn source_cell_labels(
     spawn_enabled: bool,
     spawn_call_outcomes: &BTreeMap<RawBoundary, bool>,
 ) -> Vec<ContextLabel> {
-    let SpineChar::ToolResponse(response) = cell.character() else {
+    let Some(output) = cell.output() else {
         return Vec::new();
     };
+    let boundary = cell.character().boundary();
     let mut labels = trim
-        .and_then(|trim| trim.edit(response.boundary, &response.call_id))
+        .and_then(|trim| trim.edit(boundary, &output.execution_ref))
         .cloned()
-        .map(ContextLabel::ToolOutput)
+        .map(ContextLabel::Output)
         .into_iter()
         .collect::<Vec<_>>();
-    if spawn_enabled && let Some(succeeded) = spawn_call_outcomes.get(&response.boundary) {
+    if spawn_enabled && let Some(succeeded) = spawn_call_outcomes.get(&boundary) {
         labels.push(ContextLabel::SpawnOutput {
             succeeded: *succeeded,
         });
@@ -232,69 +235,17 @@ fn spawn_call_outcomes(
     source: &[ParseCell],
     projection: &SpineProjection,
 ) -> BTreeMap<RawBoundary, bool> {
-    let spans = projection
-        .visible_context
+    let settled = projection
+        .settled_spawn_execution_refs
         .iter()
-        .filter_map(|item| match item {
-            ContextItem::SourceSpan { span } => Some(*span),
-            ContextItem::Message { .. }
-            | ContextItem::SyntheticNode { .. }
-            | ContextItem::MemorySlot(_)
-            | ContextItem::Native { .. } => None,
-        })
-        .collect::<Vec<_>>();
-    if spans.is_empty() {
-        return BTreeMap::new();
-    }
-    spans
-        .into_iter()
-        .flat_map(|span| {
-            let in_span = move |cell: &ParseCell| {
-                span.start <= cell.character().boundary() && cell.character().boundary() <= span.end
-            };
-            let requests = source
-                .iter()
-                .filter(move |cell| in_span(cell))
-                .filter_map(|cell| match cell.character() {
-                    SpineChar::ToolRequest(request) if request.name == "spine.spawn" => {
-                        Some(request.call_id.clone())
-                    }
-                    SpineChar::Message(_)
-                    | SpineChar::TurnAborted(_)
-                    | SpineChar::ToolRequest(_)
-                    | SpineChar::ToolResponse(_)
-                    | SpineChar::Opaque { .. }
-                    | SpineChar::Synthetic { .. } => None,
-                })
-                .collect::<BTreeSet<_>>();
-            let conflicting = source.iter().any(|cell| {
-                in_span(cell)
-                    && matches!(
-                        cell.character(),
-                        SpineChar::ToolRequest(request)
-                            if matches!(
-                                request.name.as_str(),
-                                "spine.open" | "spine.close" | "spine.next"
-                            )
-                    )
-            });
-            source
-                .iter()
-                .filter(move |cell| in_span(cell))
-                .filter_map(move |cell| match cell.character() {
-                    SpineChar::ToolResponse(response) if requests.contains(&response.call_id) => {
-                        Some((
-                            response.boundary,
-                            response.outcome == crate::ToolOutcome::Succeeded && !conflicting,
-                        ))
-                    }
-                    SpineChar::Message(_)
-                    | SpineChar::TurnAborted(_)
-                    | SpineChar::ToolRequest(_)
-                    | SpineChar::ToolResponse(_)
-                    | SpineChar::Opaque { .. }
-                    | SpineChar::Synthetic { .. } => None,
-                })
+        .collect::<BTreeSet<_>>();
+    source
+        .iter()
+        .filter_map(|cell| {
+            let output = cell.output()?;
+            settled
+                .contains(&output.execution_ref)
+                .then_some((cell.character().boundary(), true))
         })
         .collect()
 }

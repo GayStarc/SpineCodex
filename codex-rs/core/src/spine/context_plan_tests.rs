@@ -155,7 +155,7 @@ fn canonical_context_truncates_oversized_tool_output_before_projection() {
         source_snapshot_digest: snapshot.digest().clone(),
         cells: vec![ContextPlanCell::Source {
             source_id: source_id.clone(),
-            labels: vec![ContextLabel::ToolOutput(TrimEdit::Tagged {
+            labels: vec![ContextLabel::Output(TrimEdit::Tagged {
                 trim_id: "trim-large-output".to_string(),
                 body: "x".repeat(50_000),
                 eligible: true,
@@ -219,9 +219,7 @@ fn canonical_context_accounts_for_json_escaping_when_truncating_tool_output() {
         source_snapshot_digest: snapshot.digest().clone(),
         cells: vec![ContextPlanCell::Source {
             source_id: source_id.clone(),
-            labels: vec![ContextLabel::ToolOutput(TrimEdit::Sliced(
-                escaped_json.clone(),
-            ))],
+            labels: vec![ContextLabel::Output(TrimEdit::Sliced(escaped_json.clone()))],
         }],
         memory_slots: Vec::new(),
         plan_digest: RecordDigest::parse("0".repeat(64)).expect("placeholder digest"),

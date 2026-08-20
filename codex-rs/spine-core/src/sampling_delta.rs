@@ -13,7 +13,6 @@ use crate::SpineCompiler;
 use crate::SpineOperationFact;
 use crate::archive::FactSourceBinding;
 use crate::compiler::SamplingCompileError;
-use crate::context_char::CompletedCalls;
 
 #[derive(Debug)]
 pub(crate) enum SamplingDeltaError {
@@ -22,7 +21,6 @@ pub(crate) enum SamplingDeltaError {
     MissingSourceBoundary(RawBoundary),
     MissingTrimSource(SourceCellId),
     FactHasNoSourceGroup(ExecutionId),
-    FactSourceAppliedMoreThanOnce,
     FactSourceExecutionMismatch,
 }
 
@@ -50,15 +48,12 @@ pub(crate) fn preview_source_delta(
 ) -> Result<(), SamplingDeltaError> {
     for cell in &snapshot.cells()[committed_source_cells..] {
         let step = parser
-            .eat(cell.character())
+            .eat_observation(cell.observation())
             .map_err(SamplingDeltaError::Parse)?;
         for event in step.events() {
             compiler
                 .eat_source(event.clone())
                 .map_err(SamplingDeltaError::Compile)?;
-        }
-        for completed in step.completed_calls() {
-            compiler.observe_completed_calls(completed);
         }
     }
     Ok(())
@@ -99,22 +94,18 @@ pub(crate) fn reduce_sampling_delta(
     let source_tail = &snapshot.cells()[committed_source_cells..];
     let mut applied = vec![false; facts.len()];
     let mut bindings = vec![None; facts.len()];
-    let mut completed_calls = Vec::new();
     let mut retained_bytes = 0usize;
 
     let sampling_start =
         source_tail.partition_point(|cell| cell.boundary.ordinal() <= pre_boundary.0);
     for cell in &source_tail[..sampling_start] {
         let step = parser
-            .eat(cell.character())
+            .eat_observation(cell.observation())
             .map_err(SamplingDeltaError::Parse)?;
         for event in step.events() {
             compiler
                 .eat_source(event.clone())
                 .map_err(SamplingDeltaError::Compile)?;
-        }
-        for completed in step.completed_calls() {
-            compiler.observe_completed_calls(completed);
         }
     }
     for event in parser
@@ -127,14 +118,35 @@ pub(crate) fn reduce_sampling_delta(
     }
 
     let sampling_source = &source_tail[sampling_start..];
+    let execution_refs = facts
+        .iter()
+        .map(|fact| match &fact.origin {
+            ExecutionOrigin::Direct { execution_ref } => execution_ref.as_str(),
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    let observed_outputs = sampling_source
+        .iter()
+        .filter_map(|cell| {
+            cell.output.as_ref().map(|output| {
+                if execution_refs.contains(output.execution_ref.as_str()) {
+                    return None;
+                }
+                Some((
+                    RawBoundary(cell.boundary.ordinal()),
+                    output.execution_ref.clone(),
+                    output.body.clone(),
+                ))
+            })
+        })
+        .flatten()
+        .collect::<Vec<_>>();
     for cell in sampling_source {
         let step = parser
-            .eat(cell.character())
+            .eat_observation(cell.observation())
             .map_err(SamplingDeltaError::Parse)?;
         for event in step.events() {
             retained_bytes = retained_bytes.saturating_add(event.retained_bytes());
         }
-        completed_calls.extend(step.completed_calls().iter().cloned());
     }
     for event in parser
         .finish_sampling(post_boundary)
@@ -143,22 +155,23 @@ pub(crate) fn reduce_sampling_delta(
         retained_bytes = retained_bytes.saturating_add(event.retained_bytes());
     }
 
-    for completed in &completed_calls {
-        let (start, end) = completed_source_span(snapshot, completed)?;
+    // Native tool items are opaque. Every explicit Spine fact is bound to the
+    // complete source block observed during this sampling.
+    if let Some(first) = sampling_source.first() {
+        let start = first.id.clone();
+        let end = snapshot
+            .source_at_raw_boundary(post_boundary)
+            .ok_or(SamplingDeltaError::MissingSourceBoundary(post_boundary))?
+            .id
+            .clone();
         for (index, fact) in facts.iter().enumerate() {
-            let matches = expected.map_or_else(
-                || completed_contains_origin(completed, &fact.origin),
-                |expected| {
-                    expected[index].start == start
-                        && expected[index].end == end
-                        && completed_contains_origin(completed, &fact.origin)
-                },
-            );
-            if !matches {
+            if applied[index] {
                 continue;
             }
-            if applied[index] {
-                return Err(SamplingDeltaError::FactSourceAppliedMoreThanOnce);
+            if let Some(expected) = expected
+                && (expected[index].start != start || expected[index].end != end)
+            {
+                return Err(SamplingDeltaError::FactSourceExecutionMismatch);
             }
             applied[index] = true;
             bindings[index] = Some(FactSourceBinding {
@@ -177,15 +190,9 @@ pub(crate) fn reduce_sampling_delta(
         let fact_refs = facts.iter().collect::<Vec<_>>();
         let trims = resolve_trim_boundaries(snapshot, &fact_refs)?;
         compiler
-            .eat_sampling(
-                span,
-                retained_bytes,
-                &completed_calls,
-                &fact_refs,
-                &trims,
-                open_input_tokens,
-            )
+            .eat_sampling(span, retained_bytes, &fact_refs, &trims, open_input_tokens)
             .map_err(SamplingDeltaError::Compile)?;
+        compiler.observe_outputs(observed_outputs);
     }
 
     facts
@@ -263,34 +270,6 @@ pub(crate) fn reduce_compact_delta(
     Ok(())
 }
 
-fn completed_contains_origin(completed: &CompletedCalls, origin: &ExecutionOrigin) -> bool {
-    let call_id = match origin {
-        ExecutionOrigin::Direct { call_id } => call_id,
-    };
-    completed.calls.iter().any(|call| call.call_id == *call_id)
-}
-
-fn completed_source_span(
-    snapshot: &SourceSnapshot,
-    completed: &CompletedCalls,
-) -> Result<(SourceCellId, SourceCellId), SamplingDeltaError> {
-    let start = snapshot
-        .source_at_raw_boundary(completed.span.start)
-        .ok_or(SamplingDeltaError::MissingSourceBoundary(
-            completed.span.start,
-        ))?
-        .id
-        .clone();
-    let end = snapshot
-        .source_at_raw_boundary(completed.span.end)
-        .ok_or(SamplingDeltaError::MissingSourceBoundary(
-            completed.span.end,
-        ))?
-        .id
-        .clone();
-    Ok((start, end))
-}
-
 fn resolve_trim_boundaries<'a>(
     source: &SourceSnapshot,
     facts: &[&'a ExecutedSpineFact],
@@ -300,9 +279,9 @@ fn resolve_trim_boundaries<'a>(
         .filter_map(|fact| match &fact.operation {
             SpineOperationFact::Trim { target, .. } => Some(
                 source
-                    .boundary(&target.response)
+                    .boundary(&target.source)
                     .map(|boundary| (RawBoundary(boundary.ordinal()), *fact))
-                    .ok_or_else(|| SamplingDeltaError::MissingTrimSource(target.response.clone())),
+                    .ok_or_else(|| SamplingDeltaError::MissingTrimSource(target.source.clone())),
             ),
             SpineOperationFact::Open { .. }
             | SpineOperationFact::Close { .. }

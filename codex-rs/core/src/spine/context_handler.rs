@@ -1,10 +1,5 @@
-use super::classify_tool_outcome;
 use super::materialize_context;
 use super::message_from_response_item;
-use super::normalized_tool_request;
-use super::normalized_tool_response;
-use crate::context::ContextualUserFragment;
-use crate::context::TurnAborted;
 use crate::context::validate_spine_model_item;
 use crate::context_manager::ContextManager;
 use codex_protocol::models::FunctionCallOutputBody;
@@ -13,23 +8,20 @@ use spine_core::host::CellId;
 use spine_core::host::ContextEvent;
 use spine_core::host::ContextInsert;
 use spine_core::host::ContextLabel;
+use spine_core::host::ObservedOutput;
 use spine_core::host::ParseCell;
 use spine_core::host::ParseStack;
 use spine_core::host::RawBoundary;
+use spine_core::host::SourceObservation;
 use spine_core::host::SpineChar;
 use spine_core::host::SpineConfig;
 use spine_core::host::SpineContextEventHandler;
-use spine_core::host::ToolRequestChar;
-use spine_core::host::ToolResponseChar;
-use spine_core::host::ToolUse;
 use spine_core::host::TrimEdit;
 use std::collections::BTreeMap;
-use std::collections::HashMap;
 use std::fmt;
 
 #[derive(Clone, Debug)]
 pub(crate) struct CodexContextHandler {
-    spawn_enabled: bool,
     node_prompt: String,
     raw_cells: BTreeMap<CellId, ResponseItem>,
     cell_order: Vec<CellId>,
@@ -59,7 +51,6 @@ impl std::error::Error for CodexContextError {}
 impl CodexContextHandler {
     pub(crate) fn new(config: &SpineConfig) -> Self {
         Self {
-            spawn_enabled: config.is_enabled(spine_core::host::Feature::Spawn),
             node_prompt: config.node_prompt().unwrap_or_default().to_string(),
             raw_cells: BTreeMap::new(),
             cell_order: Vec::new(),
@@ -80,10 +71,6 @@ impl CodexContextHandler {
         sources: impl IntoIterator<Item = (RawBoundary, ResponseItem)>,
     ) {
         self.staged_cells.extend(sources);
-    }
-
-    pub(crate) fn spawn_enabled(&self) -> bool {
-        self.spawn_enabled
     }
 
     pub(crate) fn latest_turn_id(&self) -> Option<&str> {
@@ -161,7 +148,7 @@ impl SpineContextEventHandler for CodexContextHandler {
                     apply_label(item, label);
                     if matches!(
                         label,
-                        ContextLabel::ToolOutput(_) | ContextLabel::SpawnOutput { .. }
+                        ContextLabel::Output(_) | ContextLabel::SpawnOutput { .. }
                     ) {
                         validate_spine_model_item(item).map_err(CodexContextError)?;
                     }
@@ -277,20 +264,13 @@ impl CodexContextHandler {
     }
 }
 
-pub(crate) fn response_item_to_char(
-    item: &ResponseItem,
-    boundary: RawBoundary,
-    pending_calls: &mut HashMap<String, ToolUse>,
-    spawn_enabled: bool,
-) -> SpineChar {
-    response_item_to_char_and_source(item, boundary, pending_calls, spawn_enabled).0
+pub(crate) fn response_item_to_char(item: &ResponseItem, boundary: RawBoundary) -> SpineChar {
+    response_item_to_char_and_source(item, boundary).0
 }
 
 pub(crate) fn response_item_to_char_and_source(
     item: &ResponseItem,
     boundary: RawBoundary,
-    pending_calls: &mut HashMap<String, ToolUse>,
-    spawn_enabled: bool,
 ) -> (SpineChar, ResponseItem) {
     let mut source_item = item.clone();
     if let ResponseItem::Reasoning { content, .. } = &mut source_item
@@ -299,39 +279,6 @@ pub(crate) fn response_item_to_char_and_source(
         // Request serialization omits an empty reasoning content list. Preserve that wire shape
         // after rollout replay, where an omitted field deserializes as `None`.
         *content = Some(Vec::new());
-    }
-    if is_turn_aborted_item(item) {
-        pending_calls.clear();
-        return (
-            SpineChar::TurnAborted(message_from_response_item(boundary.0 as usize, item)),
-            source_item,
-        );
-    }
-    if let Some(request) = normalized_tool_request(item) {
-        pending_calls.insert(request.call_id.clone(), request.clone());
-        return (
-            SpineChar::ToolRequest(ToolRequestChar {
-                boundary,
-                call_id: request.call_id,
-                name: request.name,
-                arguments: request.arguments,
-            }),
-            source_item,
-        );
-    }
-    if let Some(response) = normalized_tool_response(item) {
-        let Some(call) = pending_calls.remove(response.call_id) else {
-            return (SpineChar::Opaque { boundary }, source_item);
-        };
-        return (
-            SpineChar::ToolResponse(ToolResponseChar {
-                boundary,
-                call_id: response.call_id.to_string(),
-                outcome: classify_tool_outcome(&call, response.output, spawn_enabled),
-                output: response.output.body.to_text().unwrap_or_default(),
-            }),
-            source_item,
-        );
     }
     let character = match item {
         ResponseItem::Message { .. } | ResponseItem::Reasoning { .. } => {
@@ -342,23 +289,42 @@ pub(crate) fn response_item_to_char_and_source(
     (character, source_item)
 }
 
+pub(crate) fn response_item_to_observation_and_source(
+    item: &ResponseItem,
+    boundary: RawBoundary,
+) -> (SourceObservation, ResponseItem) {
+    let (character, source) = response_item_to_char_and_source(item, boundary);
+    let observation = match item {
+        ResponseItem::FunctionCallOutput {
+            call_id, output, ..
+        }
+        | ResponseItem::CustomToolCallOutput {
+            call_id, output, ..
+        } => {
+            let body = match &output.body {
+                FunctionCallOutputBody::Text(text) => text.clone(),
+                FunctionCallOutputBody::ContentItems(items) => {
+                    serde_json::to_string(items).unwrap_or_default()
+                }
+            };
+            SourceObservation::new(character).with_output(ObservedOutput {
+                execution_ref: call_id.clone(),
+                body,
+            })
+        }
+        _ => SourceObservation::new(character),
+    };
+    (observation, source)
+}
+
 fn response_item_matches_char(
     item: &ResponseItem,
     boundary: RawBoundary,
     character: &SpineChar,
 ) -> bool {
-    match response_item_to_char(item, boundary, &mut HashMap::new(), false) {
+    match response_item_to_char(item, boundary) {
         SpineChar::Message(message) => {
             matches!(character, SpineChar::Message(expected) if message == *expected)
-        }
-        SpineChar::TurnAborted(message) => {
-            matches!(character, SpineChar::TurnAborted(expected) if message == *expected)
-        }
-        SpineChar::ToolRequest(request) => {
-            matches!(character, SpineChar::ToolRequest(expected) if request == *expected)
-        }
-        SpineChar::ToolResponse(response) => {
-            matches!(character, SpineChar::ToolResponse(expected) if response == *expected)
         }
         SpineChar::Opaque { boundary: actual } => {
             matches!(character, SpineChar::Opaque { boundary: expected } if actual == *expected)
@@ -367,24 +333,12 @@ fn response_item_matches_char(
     }
 }
 
-fn is_turn_aborted_item(item: &ResponseItem) -> bool {
-    let ResponseItem::Message { content, .. } = item else {
-        return false;
-    };
-    content.iter().any(|content| {
-        let codex_protocol::models::ContentItem::InputText { text } = content else {
-            return false;
-        };
-        TurnAborted::matches_text(text)
-    })
-}
-
 pub(super) fn apply_label(item: &mut ResponseItem, label: &ContextLabel) {
     match label {
         ContextLabel::UserAnchor(anchor) => {
             crate::context::SpineUserAnchor::new(*anchor).prepend_to(item);
         }
-        ContextLabel::ToolOutput(edit) => apply_trim_edit(item, edit),
+        ContextLabel::Output(edit) => apply_trim_edit(item, edit),
         ContextLabel::SpawnOutput { succeeded } => {
             if let ResponseItem::FunctionCallOutput { output, .. }
             | ResponseItem::CustomToolCallOutput { output, .. } = item

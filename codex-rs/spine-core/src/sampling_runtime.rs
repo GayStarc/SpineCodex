@@ -13,6 +13,7 @@ use crate::SamplingFactSink;
 use crate::SamplingHandle;
 use crate::SamplingPlanner;
 use crate::SourceCellId;
+use crate::SourceObservation;
 use crate::SourceSnapshot;
 use crate::SpineChar;
 use crate::SpineCompactBarrierV1;
@@ -107,6 +108,19 @@ impl SamplingRuntime {
             return Err(PlannerError::SamplingCommitPendingInstall);
         }
         self.planner.observe_source(characters)
+    }
+
+    pub fn observe_source_observations<I>(
+        &mut self,
+        observations: I,
+    ) -> Result<Vec<SourceCellId>, PlannerError>
+    where
+        I: IntoIterator<Item = SourceObservation>,
+    {
+        if matches!(self.state, SamplingRuntimeState::Prepared { .. }) {
+            return Err(PlannerError::SamplingCommitPendingInstall);
+        }
+        self.planner.observe_source_observations(observations)
     }
 
     pub fn source_snapshot(&self) -> SourceSnapshot {

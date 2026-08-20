@@ -6318,7 +6318,7 @@ async fn record_closed_spine_memory(
     session.stage_spine_fact(
         "open-call",
         spine_core::host::ExecutionOrigin::Direct {
-            call_id: "open-call".to_string(),
+            execution_ref: "open-call".to_string(),
         },
         spine_core::host::SpineOperationFact::Open {
             summary: "task".to_string(),
@@ -6353,7 +6353,7 @@ async fn record_closed_spine_memory(
     session.stage_spine_fact(
         "close-call",
         spine_core::host::ExecutionOrigin::Direct {
-            call_id: "close-call".to_string(),
+            execution_ref: "close-call".to_string(),
         },
         spine_core::host::SpineOperationFact::Close {
             memory: "done".to_string(),
@@ -6538,7 +6538,7 @@ async fn spine_observer_publishes_after_install_even_when_memory_projection_fail
     session.stage_spine_fact(
         "observer-open",
         spine_core::host::ExecutionOrigin::Direct {
-            call_id: "observer-open".to_string(),
+            execution_ref: "observer-open".to_string(),
         },
         spine_core::host::SpineOperationFact::Open {
             summary: "observer scope".to_string(),

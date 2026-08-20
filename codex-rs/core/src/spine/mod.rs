@@ -20,8 +20,6 @@ use spine_core::host::NativeItemRef;
 use spine_core::host::RawBoundary;
 use spine_core::host::SpineOperationFact;
 use spine_core::host::SpineProjection;
-use spine_core::host::ToolOutcome;
-use spine_core::host::ToolUse;
 use spine_core::host::ToolValidation;
 use spine_core::host::TrimEdit;
 use spine_core::host::TrimProjection;
@@ -275,89 +273,6 @@ pub(crate) fn is_spine_source_item(item: &RolloutItem) -> bool {
             | RolloutItem::InterAgentCommunication(_)
             | RolloutItem::Compacted(_)
     )
-}
-
-fn normalized_tool_request(item: &ResponseItem) -> Option<ToolUse> {
-    let (name, namespace, arguments, call_id) = match item {
-        ResponseItem::FunctionCall {
-            name,
-            namespace,
-            arguments,
-            call_id,
-            ..
-        } => (name, namespace.as_deref(), arguments, call_id),
-        ResponseItem::CustomToolCall {
-            name,
-            namespace,
-            input,
-            call_id,
-            ..
-        } => (name, namespace.as_deref(), input, call_id),
-        _ => return None,
-    };
-    Some(ToolUse {
-        call_id: call_id.clone(),
-        name: match namespace {
-            Some(namespace) if !namespace.is_empty() => format!("{namespace}.{name}"),
-            _ => name.to_string(),
-        },
-        arguments: arguments.clone(),
-        call_ordinal: None,
-        outcome: None,
-        output: None,
-        output_boundary: None,
-    })
-}
-
-fn normalized_tool_response(item: &ResponseItem) -> Option<NormalizedToolResponse<'_>> {
-    match item {
-        ResponseItem::FunctionCallOutput {
-            call_id, output, ..
-        }
-        | ResponseItem::CustomToolCallOutput {
-            call_id, output, ..
-        } => Some(NormalizedToolResponse { call_id, output }),
-        _ => None,
-    }
-}
-
-struct NormalizedToolResponse<'a> {
-    call_id: &'a str,
-    output: &'a codex_protocol::models::FunctionCallOutputPayload,
-}
-
-fn classify_tool_outcome(
-    call: &ToolUse,
-    output: &codex_protocol::models::FunctionCallOutputPayload,
-    spawn_enabled: bool,
-) -> ToolOutcome {
-    if call.name == "spine.spawn" {
-        return if spawn_enabled && is_valid_spawn_success_carrier(call, &output.body) {
-            ToolOutcome::Succeeded
-        } else {
-            ToolOutcome::Unknown
-        };
-    }
-    tool_response::outcome(&call.name, output)
-}
-
-fn is_valid_spawn_success_carrier(call: &ToolUse, body: &FunctionCallOutputBody) -> bool {
-    let FunctionCallOutputBody::Text(body) = body else {
-        return false;
-    };
-    #[derive(serde::Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct SpawnArgs {
-        tasks: Vec<spine_core::host::SpawnTask>,
-    }
-
-    let Ok(SpawnArgs { tasks }) = serde_json::from_str(&call.arguments) else {
-        return false;
-    };
-    let Ok(receipt) = spine_core::host::SpawnReceipt::decode_json(body) else {
-        return false;
-    };
-    receipt.validate_for(&tasks).is_ok()
 }
 
 fn message_from_response_item(raw_index: usize, item: &ResponseItem) -> Message {

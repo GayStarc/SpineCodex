@@ -8,7 +8,7 @@ use serde::Serialize;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ContextLabel {
     UserAnchor(u64),
-    ToolOutput(TrimEdit),
+    Output(TrimEdit),
     SpawnOutput { succeeded: bool },
 }
 
