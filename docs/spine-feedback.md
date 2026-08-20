@@ -1,9 +1,8 @@
 # Spine feedback
 
 SpineCodex uses a separate `/feedback` flow when the current thread has
-SpineJIT, SpineTrim, or SpineSpawn enabled. If none of those features is
-enabled, `/feedback` keeps the Base Codex category, log-consent, and upload
-flow unchanged.
+SpineJIT or SpineSpawn enabled. If neither feature is enabled, `/feedback`
+keeps the Base Codex category, log-consent, and upload flow unchanged.
 
 The Spine feedback form accepts:
 
