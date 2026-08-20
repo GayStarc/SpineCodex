@@ -1417,7 +1417,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         key: "spinetree_memory_projection",
         stage: Stage::Experimental {
             name: "Spinetree memory projection",
-            menu_description: "Project closed-node memory to Markdown files under .codex/spinetree/ for local inspection.",
+            menu_description: "Project closed-node memory to Markdown files under .codex/spinetree/YYYY/MM/DD/<session-id>/ for local inspection.",
             announcement: "NEW: Spinetree memory projection is now available in /experimental.",
         },
         default_enabled: false,

@@ -6231,11 +6231,21 @@ async fn wait_for_spinetree_file(
 ) -> anyhow::Result<PathBuf> {
     timeout(Duration::from_secs(2), async {
         loop {
-            if let Ok(entries) = std::fs::read_dir(projection_root) {
+            let mut pending = vec![projection_root.to_path_buf()];
+            while let Some(directory) = pending.pop() {
+                let Ok(entries) = std::fs::read_dir(directory) else {
+                    continue;
+                };
                 for entry in entries.flatten() {
-                    let path = entry.path().join(file_name);
-                    if std::fs::read_to_string(path).is_ok_and(|body| body == expected) {
-                        return entry.path();
+                    let path = entry.path();
+                    if path.is_dir() {
+                        pending.push(path);
+                        continue;
+                    }
+                    if path.file_name().is_some_and(|name| name == file_name)
+                        && std::fs::read_to_string(&path).is_ok_and(|body| body == expected)
+                    {
+                        return path.parent().unwrap().to_path_buf();
                     }
                 }
             }

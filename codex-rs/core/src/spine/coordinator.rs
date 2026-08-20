@@ -277,6 +277,11 @@ impl CodexSpineCoordinator {
     }
 
     #[cfg(test)]
+    pub(crate) fn user_message_projection(&self) -> &[SpinetreeUserMessageProjectionEntry] {
+        &self.user_messages
+    }
+
+    #[cfg(test)]
     pub(crate) fn prepare_canonical_sampling(
         &mut self,
         attempt: SpineSamplingAttempt,
@@ -366,7 +371,9 @@ impl CodexSpineCoordinator {
             .map(|cell| cell.id.clone())
             .zip(replacement_items.iter().cloned())
             .collect();
-        self.user_messages.clear();
+        // User messages are a session-level projection. A compact replacement may
+        // omit older messages from the live prompt, but it must not erase them
+        // from the inspectable session history.
         Ok(())
     }
 

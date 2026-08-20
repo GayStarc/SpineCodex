@@ -44,13 +44,13 @@ impl SpinetreeMemoryProjection {
                 "feature `spinetree_memory_projection` requires `spine_jit` because only the Spine tree reducer produces closed node memories"
             );
         }
-        let session_dir_name = format!(
-            "{}_{}",
-            chrono::Local::now().format("%Y%m%d_%H%M%S"),
-            session_id
-        );
+        let session_date = chrono::Local::now().format("%Y/%m/%d").to_string();
         Ok(Some(Self {
-            root_dir: cwd.join(".codex").join("spinetree").join(session_dir_name),
+            root_dir: cwd
+                .join(".codex")
+                .join("spinetree")
+                .join(session_date)
+                .join(session_id),
         }))
     }
 
@@ -270,6 +270,25 @@ mod tests {
                 .is_none()
         );
         assert!(!temp.path().join(".codex").exists());
+    }
+
+    #[test]
+    fn uses_date_and_session_id_directory_layout() {
+        let temp = tempfile::tempdir().unwrap();
+        let today = chrono::Local::now().format("%Y/%m/%d").to_string();
+        let projection =
+            SpinetreeMemoryProjection::from_config(temp.path(), "session-id", true, true)
+                .unwrap()
+                .unwrap();
+
+        assert_eq!(
+            projection.root_dir,
+            temp.path()
+                .join(".codex")
+                .join("spinetree")
+                .join(today)
+                .join("session-id")
+        );
     }
 
     #[test]

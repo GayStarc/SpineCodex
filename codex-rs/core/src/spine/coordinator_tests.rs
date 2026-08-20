@@ -964,6 +964,31 @@ fn spine_compact_live_advances_the_epoch_atomically() {
 }
 
 #[test]
+fn spine_compact_live_preserves_session_user_message_projection() {
+    let mut coordinator = coordinator();
+    coordinator
+        .observe_response_items(&[message("user", "before compact")])
+        .expect("observe prompt source");
+    let attempt = begin_sampling_for_test(&mut coordinator).expect("begin sampling");
+    coordinator
+        .observe_response_items(&[message("assistant", "answer")])
+        .expect("observe response source");
+    let installed = install_sampling_for_test(&mut coordinator, attempt).expect("install");
+    coordinator.publish_canonical_sampling(&installed);
+    assert_eq!(coordinator.user_message_projection().len(), 1);
+
+    coordinator
+        .compact_live(&[message("assistant", "compact summary")])
+        .expect("compact live context");
+
+    assert_eq!(coordinator.user_message_projection().len(), 1);
+    assert_eq!(
+        coordinator.user_message_projection()[0].body,
+        "before compact"
+    );
+}
+
+#[test]
 fn spine_execution_fact_commits_only_after_lifecycle_success() {
     let mut coordinator = coordinator();
     coordinator
