@@ -12,22 +12,17 @@ use crate::RawBoundary;
 use crate::SpineChar;
 use crate::SpineCharParser;
 use crate::SpineProjection;
-use crate::TrimProjection;
-use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
 pub(super) fn project_jit_stack<E>(
     parser: &mut SpineCharParser,
     projection: &SpineProjection,
-    trim: Option<&TrimProjection>,
     pending_boundaries: &[RawBoundary],
-    spawn_enabled: bool,
 ) -> Result<ParseStack, SpineContextRuntimeError<E>>
 where
     E: std::error::Error,
 {
     let source = parser.stack().cells().to_vec();
-    let spawn_call_outcomes = spawn_call_outcomes(&source, projection);
     let mut used = BTreeSet::new();
     let mut cells = Vec::new();
     for item in &projection.visible_context {
@@ -37,9 +32,6 @@ where
             &mut used,
             &mut cells,
             item,
-            trim,
-            spawn_enabled,
-            &spawn_call_outcomes,
             projection.last_boundary.unwrap_or(RawBoundary(0)),
         )?;
     }
@@ -55,16 +47,12 @@ where
     Ok(ParseStack::from_cells(cells))
 }
 
-#[allow(clippy::too_many_arguments)]
 fn project_context_item<E>(
     parser: &mut SpineCharParser,
     source: &[ParseCell],
     used: &mut BTreeSet<CellId>,
     target: &mut Vec<ParseCell>,
     item: &ContextItem,
-    trim: Option<&TrimProjection>,
-    spawn_enabled: bool,
-    spawn_call_outcomes: &BTreeMap<RawBoundary, bool>,
     synthetic_boundary: RawBoundary,
 ) -> Result<(), SpineContextRuntimeError<E>>
 where
@@ -118,8 +106,7 @@ where
             }
             for cell in span_cells {
                 used.insert(cell.id());
-                let labels = source_cell_labels(&cell, trim, spawn_enabled, spawn_call_outcomes);
-                target.push(cell.with_labels(labels));
+                target.push(cell.with_labels(Vec::new()));
             }
         }
         ContextItem::MemorySlot(MemorySlot::User {
@@ -170,30 +157,6 @@ where
     Ok(())
 }
 
-pub(super) fn project_trim_stack(stack: &ParseStack, trim: Option<&TrimProjection>) -> ParseStack {
-    ParseStack::from_cells(
-        stack
-            .cells()
-            .iter()
-            .cloned()
-            .map(|cell| {
-                let labels = cell
-                    .output()
-                    .and_then(|output| {
-                        trim.and_then(|trim| {
-                            trim.edit(cell.character().boundary(), &output.execution_ref)
-                        })
-                    })
-                    .cloned()
-                    .map(ContextLabel::Output)
-                    .into_iter()
-                    .collect();
-                cell.with_labels(labels)
-            })
-            .collect(),
-    )
-}
-
 fn take_source_cell(
     source: &[ParseCell],
     used: &mut BTreeSet<CellId>,
@@ -205,49 +168,6 @@ fn take_source_cell(
         .clone();
     used.insert(cell.id());
     Some(cell)
-}
-
-fn source_cell_labels(
-    cell: &ParseCell,
-    trim: Option<&TrimProjection>,
-    spawn_enabled: bool,
-    spawn_call_outcomes: &BTreeMap<RawBoundary, bool>,
-) -> Vec<ContextLabel> {
-    let Some(output) = cell.output() else {
-        return Vec::new();
-    };
-    let boundary = cell.character().boundary();
-    let mut labels = trim
-        .and_then(|trim| trim.edit(boundary, &output.execution_ref))
-        .cloned()
-        .map(ContextLabel::Output)
-        .into_iter()
-        .collect::<Vec<_>>();
-    if spawn_enabled && let Some(succeeded) = spawn_call_outcomes.get(&boundary) {
-        labels.push(ContextLabel::SpawnOutput {
-            succeeded: *succeeded,
-        });
-    }
-    labels
-}
-
-fn spawn_call_outcomes(
-    source: &[ParseCell],
-    projection: &SpineProjection,
-) -> BTreeMap<RawBoundary, bool> {
-    let settled = projection
-        .settled_spawn_execution_refs
-        .iter()
-        .collect::<BTreeSet<_>>();
-    source
-        .iter()
-        .filter_map(|cell| {
-            let output = cell.output()?;
-            settled
-                .contains(&output.execution_ref)
-                .then_some((cell.character().boundary(), true))
-        })
-        .collect()
 }
 
 pub(super) fn context_events_between<E>(

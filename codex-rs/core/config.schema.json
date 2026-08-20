@@ -714,9 +714,6 @@
             "spine_status": {
               "type": "boolean"
             },
-            "spine_trim": {
-              "type": "boolean"
-            },
             "spinetree_memory_projection": {
               "type": "boolean"
             },
@@ -5370,9 +5367,6 @@
           "type": "boolean"
         },
         "spine_status": {
-          "type": "boolean"
-        },
-        "spine_trim": {
           "type": "boolean"
         },
         "spinetree_memory_projection": {

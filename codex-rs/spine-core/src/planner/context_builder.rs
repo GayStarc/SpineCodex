@@ -14,31 +14,23 @@ use crate::SourceCellId;
 use crate::SourceCellPayload;
 use crate::SourceSnapshot;
 use crate::SpineProjection;
-use crate::TrimProjection;
 use crate::context_plan::CONTEXT_PLAN_SCHEMA_V1;
-use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_context_plan(
     source: &SourceSnapshot,
     projection: &SpineProjection,
-    trim: Option<&TrimProjection>,
     pending_boundaries: &[RawBoundary],
     previous: Option<&ContextPlanRecipe>,
     next_projection_ordinal: &mut u64,
-    spawn_enabled: bool,
 ) -> Result<ContextPlanRecipe, PlannerError> {
     let mut builder = ContextPlanBuilder {
         source,
-        trim,
         previous,
         used_source: BTreeSet::new(),
         used_projection: BTreeSet::new(),
         next_projection_ordinal,
         cells: Vec::new(),
-        spawn_enabled,
-        spawn_call_outcomes: spawn_call_outcomes(source, projection),
     };
     for item in &projection.visible_context {
         builder.push_item(item)?;
@@ -70,14 +62,11 @@ pub(crate) fn build_context_plan(
 
 struct ContextPlanBuilder<'a> {
     source: &'a SourceSnapshot,
-    trim: Option<&'a TrimProjection>,
     previous: Option<&'a ContextPlanRecipe>,
     used_source: BTreeSet<SourceCellId>,
     used_projection: BTreeSet<ProjectionCellId>,
     next_projection_ordinal: &'a mut u64,
     cells: Vec<ContextPlanCell>,
-    spawn_enabled: bool,
-    spawn_call_outcomes: BTreeMap<RawBoundary, bool>,
 }
 
 impl ContextPlanBuilder<'_> {
@@ -162,13 +151,7 @@ impl ContextPlanBuilder<'_> {
             return Err(PlannerError::MissingSourceBoundary(span.start));
         }
         for cell in source_cells {
-            let labels = source_span_labels(
-                &cell,
-                self.trim,
-                self.spawn_enabled,
-                &self.spawn_call_outcomes,
-            );
-            self.push_source(&cell, labels);
+            self.push_source(&cell, Vec::new());
         }
         Ok(())
     }
@@ -220,48 +203,4 @@ impl ContextPlanBuilder<'_> {
             item,
         });
     }
-}
-
-fn source_span_labels(
-    cell: &SourceCell,
-    trim: Option<&TrimProjection>,
-    spawn_enabled: bool,
-    spawn_call_outcomes: &BTreeMap<RawBoundary, bool>,
-) -> Vec<ContextLabel> {
-    let Some(output) = &cell.output else {
-        return Vec::new();
-    };
-    let boundary = RawBoundary(cell.boundary.ordinal());
-    let mut labels = trim
-        .and_then(|projection| projection.edit(boundary, &output.execution_ref))
-        .cloned()
-        .map(ContextLabel::Output)
-        .into_iter()
-        .collect::<Vec<_>>();
-    if spawn_enabled && let Some(succeeded) = spawn_call_outcomes.get(&boundary) {
-        labels.push(ContextLabel::SpawnOutput {
-            succeeded: *succeeded,
-        });
-    }
-    labels
-}
-
-fn spawn_call_outcomes(
-    source: &SourceSnapshot,
-    projection: &SpineProjection,
-) -> BTreeMap<RawBoundary, bool> {
-    let settled = projection
-        .settled_spawn_execution_refs
-        .iter()
-        .collect::<BTreeSet<_>>();
-    source
-        .cells()
-        .iter()
-        .filter_map(|cell| {
-            let output = cell.output.as_ref()?;
-            settled
-                .contains(&output.execution_ref)
-                .then_some((RawBoundary(cell.boundary.ordinal()), true))
-        })
-        .collect()
 }

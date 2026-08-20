@@ -329,10 +329,6 @@ impl TestCodexBuilder {
         self
     }
 
-    pub fn with_spine_trim(self) -> Self {
-        self.with_spine_feature(Feature::SpineTrim)
-    }
-
     pub fn with_spine_spawn(self) -> Self {
         self.with_spine_feature(Feature::SpineSpawn)
     }
@@ -832,9 +828,6 @@ impl TestCodexBuilder {
         let mut spine_features = Vec::new();
         if config.features.enabled(Feature::SpineJit) {
             spine_features.push(spine_core::host::Feature::Jit);
-        }
-        if config.features.enabled(Feature::SpineTrim) {
-            spine_features.push(spine_core::host::Feature::Trim);
         }
         if config.features.enabled(Feature::SpineSpawn) {
             spine_features.push(spine_core::host::Feature::Spawn);

@@ -153,7 +153,7 @@ fn recipe() -> ContextPlanRecipe {
             },
             ContextPlanCell::Source {
                 source_id: source_id(2),
-                labels: vec![ContextLabel::Output(crate::TrimEdit::Snipped)],
+                labels: Vec::new(),
             },
         ],
         memory_slots: memory_slots(),
@@ -195,7 +195,7 @@ fn context_plan_roundtrips_and_resolves_complete_memory_slots() {
                             ordinal: RawBoundary(2),
                         },
                     },
-                    labels: vec![ContextLabel::Output(crate::TrimEdit::Snipped)],
+                    labels: Vec::new(),
                 },
             ],
             memory_slots: memory_slots(),
@@ -292,10 +292,7 @@ fn context_plan_rejects_duplicate_or_excess_source_labels() {
     let ContextPlanCell::Source { labels, .. } = &mut excess.cells[0] else {
         panic!("first recipe cell must be source-backed");
     };
-    labels.extend([
-        ContextLabel::Output(crate::TrimEdit::Snipped),
-        ContextLabel::SpawnOutput { succeeded: true },
-    ]);
+    labels.push(ContextLabel::UserAnchor(2));
     excess.plan_digest = digest('0');
     assert_eq!(
         excess.finalize_digest(),

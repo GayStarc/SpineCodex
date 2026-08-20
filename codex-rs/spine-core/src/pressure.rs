@@ -32,7 +32,7 @@ impl InputPressureState {
                     self.current = checkpoint;
                     self.open_checkpoints.push(self.current);
                 }
-                SpineOperationFact::Spawn { .. } | SpineOperationFact::Trim { .. } => {}
+                SpineOperationFact::Spawn { .. } => {}
             }
         }
     }

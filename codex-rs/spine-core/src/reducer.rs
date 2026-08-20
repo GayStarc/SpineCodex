@@ -18,97 +18,6 @@ use crate::SpawnResult;
 use crate::SpawnTask;
 use crate::SpineOperationFact;
 use crate::SpineProjection;
-use crate::TrimEdit;
-use crate::TrimProjection;
-pub const OUTPUT_TRIM_THRESHOLD_BYTES: usize = 10_000;
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct TrimReducer {
-    projection: TrimProjection,
-    active: Vec<RawBoundary>,
-    threshold_bytes: usize,
-}
-
-impl TrimReducer {
-    pub(crate) fn new(threshold_bytes: usize) -> Self {
-        Self {
-            projection: TrimProjection::default(),
-            active: Vec::new(),
-            threshold_bytes,
-        }
-    }
-
-    pub(crate) fn apply(&mut self, event: &RolloutEvent) {
-        match event {
-            RolloutEvent::Compact { .. } => {
-                self.projection = TrimProjection::default();
-                self.active.clear();
-            }
-            RolloutEvent::Message(_)
-            | RolloutEvent::SourceSpan { .. }
-            | RolloutEvent::Opaque { .. }
-            | RolloutEvent::Synthetic { .. } => {}
-        }
-    }
-
-    pub(crate) fn apply_sampling(
-        &mut self,
-        trims: &[(RawBoundary, &ExecutedSpineFact)],
-    ) -> Result<(), TypedTransitionError> {
-        for (boundary, fact) in trims {
-            let SpineOperationFact::Trim {
-                target,
-                validated_edit,
-                ..
-            } = &fact.operation
-            else {
-                return Err(TypedTransitionError::NonTrimFactInTrimSet);
-            };
-            if !self.active.contains(boundary) {
-                return Err(TypedTransitionError::InactiveTrimTarget(*boundary));
-            }
-            let Some((execution_ref, edit)) = self.projection.edits.get_mut(boundary) else {
-                return Err(TypedTransitionError::InactiveTrimTarget(*boundary));
-            };
-            if execution_ref != &target.execution_ref {
-                return Err(TypedTransitionError::TrimTargetMismatch);
-            }
-            *edit = validated_edit.clone();
-        }
-
-        expire_trim_candidates(&mut self.projection, &mut self.active);
-        Ok(())
-    }
-
-    pub(crate) fn observe_outputs(
-        &mut self,
-        outputs: impl IntoIterator<Item = (RawBoundary, String, String)>,
-    ) {
-        for (boundary, execution_ref, body) in outputs {
-            if body.len() <= self.threshold_bytes {
-                continue;
-            }
-            let trim_id = format!("trim_{}", boundary.0);
-            self.projection.edits.insert(
-                boundary,
-                (
-                    execution_ref,
-                    TrimEdit::Tagged {
-                        trim_id,
-                        body,
-                        eligible: true,
-                    },
-                ),
-            );
-            self.active.push(boundary);
-        }
-    }
-
-    pub(crate) fn projection(&self) -> &TrimProjection {
-        &self.projection
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum NodeEntry {
     Leaf(ContextItem),
@@ -163,7 +72,6 @@ pub(crate) struct SpineReducer {
     baseline: Vec<ContextItem>,
     next_user_anchor: u64,
     last_boundary: Option<RawBoundary>,
-    settled_spawn_execution_refs: Vec<String>,
 }
 
 impl Default for SpineReducer {
@@ -192,14 +100,12 @@ impl SpineReducer {
             baseline: Vec::new(),
             next_user_anchor: 1,
             last_boundary: None,
-            settled_spawn_execution_refs: Vec::new(),
         }
     }
 
     pub(crate) fn apply(&mut self, event: RolloutEvent) -> ProjectionDelta {
         let before = self.render_current_epoch();
         self.last_boundary = Some(event.boundary());
-        self.settled_spawn_execution_refs.clear();
         match event {
             RolloutEvent::Message(message) => self.apply_message(message),
             RolloutEvent::SourceSpan { span, .. } => self.push_source_span(span),
@@ -223,26 +129,11 @@ impl SpineReducer {
         &mut self,
         span: RawSpan,
         facts: &[&ExecutedSpineFact],
-        settled_spawn_execution_refs: &[String],
         open_input_tokens: Option<u64>,
     ) -> Result<ProjectionDelta, TypedTransitionError> {
         let before = self.render_current_epoch();
         self.last_boundary = Some(span.end);
-        self.settled_spawn_execution_refs = settled_spawn_execution_refs.to_vec();
-
-        let structural = facts
-            .iter()
-            .copied()
-            .filter(|fact| {
-                matches!(
-                    fact.operation,
-                    SpineOperationFact::Open { .. }
-                        | SpineOperationFact::Close { .. }
-                        | SpineOperationFact::Next { .. }
-                        | SpineOperationFact::Spawn { .. }
-                )
-            })
-            .collect::<Vec<_>>();
+        let structural = facts.to_vec();
         let all_spawn = structural
             .iter()
             .all(|fact| matches!(fact.operation, SpineOperationFact::Spawn { .. }));
@@ -260,8 +151,7 @@ impl SpineReducer {
                     } => Some((tasks.clone(), terminal_results.clone())),
                     SpineOperationFact::Open { .. }
                     | SpineOperationFact::Close { .. }
-                    | SpineOperationFact::Next { .. }
-                    | SpineOperationFact::Trim { .. } => None,
+                    | SpineOperationFact::Next { .. } => None,
                 })
                 .collect();
             self.spawn(span, batches);
@@ -296,7 +186,7 @@ impl SpineReducer {
                 }) => {
                     self.spawn(span, vec![(tasks.clone(), terminal_results.clone())]);
                 }
-                Some(SpineOperationFact::Trim { .. }) | None => {
+                None => {
                     self.push_source_span(span);
                 }
             }
@@ -311,7 +201,6 @@ impl SpineReducer {
             cursor: self.cursor.clone(),
             visible_context: self.render_current_epoch(),
             last_boundary: self.last_boundary,
-            settled_spawn_execution_refs: self.settled_spawn_execution_refs.clone(),
         }
     }
 
@@ -620,15 +509,4 @@ impl SpineReducer {
 pub(crate) enum TypedTransitionError {
     MultipleStructuralFacts,
     TaskCursorRequired(&'static str),
-    NonTrimFactInTrimSet,
-    InactiveTrimTarget(RawBoundary),
-    TrimTargetMismatch,
-}
-
-fn expire_trim_candidates(projection: &mut TrimProjection, active: &mut Vec<RawBoundary>) {
-    for boundary in active.drain(..) {
-        if let Some((_, TrimEdit::Tagged { eligible, .. })) = projection.edits.get_mut(&boundary) {
-            *eligible = false;
-        }
-    }
 }

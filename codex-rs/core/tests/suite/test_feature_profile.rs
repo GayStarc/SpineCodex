@@ -21,7 +21,7 @@ async fn native_codex_test_profile_disables_spine_features_and_model_surfaces() 
     .await;
     let test = test_codex().build(&server).await?;
 
-    for feature in [Feature::SpineJit, Feature::SpineTrim, Feature::SpineSpawn] {
+    for feature in [Feature::SpineJit, Feature::SpineSpawn] {
         assert!(!test.config.features.enabled(feature));
     }
     assert!(test.config.spine_config.is_feature_off());
@@ -40,13 +40,9 @@ async fn native_codex_test_profile_disables_spine_features_and_model_surfaces() 
 #[tokio::test]
 async fn spine_test_profile_rebuilds_tools_from_typed_feature_config() -> Result<()> {
     let server = start_mock_server().await;
-    let test = spine_test_codex()
-        .with_spine_trim()
-        .with_spine_spawn()
-        .build(&server)
-        .await?;
+    let test = spine_test_codex().with_spine_spawn().build(&server).await?;
 
-    for feature in [Feature::SpineJit, Feature::SpineTrim, Feature::SpineSpawn] {
+    for feature in [Feature::SpineJit, Feature::SpineSpawn] {
         assert!(test.config.features.enabled(feature));
     }
     assert!(!test.config.spine_config.is_feature_off());

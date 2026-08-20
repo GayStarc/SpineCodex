@@ -1,7 +1,6 @@
 use crate::Feature;
 use crate::SpawnTask;
 use crate::SpineConfig;
-use crate::TrimRequest;
 use crate::config::MAX_MODEL_VISIBLE_TEXT_BYTES;
 use serde::Deserialize;
 use serde_json::Value;
@@ -37,7 +36,6 @@ pub enum SpineTool {
     Open,
     Close,
     Next,
-    Trim,
     Spawn,
 }
 
@@ -47,7 +45,6 @@ impl SpineTool {
             Self::Open => "open",
             Self::Close => "close",
             Self::Next => "next",
-            Self::Trim => "trim",
             Self::Spawn => "spawn",
         }
     }
@@ -59,13 +56,12 @@ impl SpineTool {
     pub const fn feature(self) -> Feature {
         match self {
             Self::Open | Self::Close | Self::Next => Feature::Jit,
-            Self::Trim => Feature::Trim,
             Self::Spawn => Feature::Spawn,
         }
     }
 
-    pub const fn all() -> [Self; 5] {
-        [Self::Open, Self::Close, Self::Next, Self::Spawn, Self::Trim]
+    pub const fn all() -> [Self; 4] {
+        [Self::Open, Self::Close, Self::Next, Self::Spawn]
     }
 }
 
@@ -162,7 +158,6 @@ pub enum ValidatedTransition {
     Open { summary: String },
     Close { memory: String },
     Next { summary: String, memory: String },
-    Trim(TrimRequest),
     Spawn { tasks: Vec<SpawnTask> },
 }
 
@@ -175,7 +170,6 @@ pub enum ToolValidationError {
         field: &'static str,
         max_bytes: usize,
     },
-    InvalidTrim(String),
     InvalidSpawn(String),
 }
 
@@ -191,7 +185,6 @@ impl fmt::Display for ToolValidationError {
                     "Spine tool field {field} exceeds {max_bytes} bytes"
                 )
             }
-            Self::InvalidTrim(error) => write!(formatter, "invalid spine.trim arguments: {error}"),
             Self::InvalidSpawn(error) => {
                 write!(formatter, "invalid spine.spawn arguments: {error}")
             }
@@ -233,10 +226,6 @@ fn validate_tool_with_spawn_limit(
                 memory: bounded_non_empty(args.memory, "memory", MAX_MEMORY_BYTES)?,
             }))
         }
-        SpineTool::Trim => TrimRequest::parse(arguments)
-            .map(ValidatedTransition::Trim)
-            .map(ToolValidation::Transition)
-            .map_err(ToolValidationError::InvalidTrim),
         SpineTool::Spawn => {
             let args: SpawnArgs = parse_control(arguments)?;
             if args.tasks.len() < 2 {
@@ -275,7 +264,6 @@ pub const fn success_carrier(tool: SpineTool) -> Option<&'static str> {
         SpineTool::Open => Some("Spine open accepted."),
         SpineTool::Close => Some("Spine close accepted."),
         SpineTool::Next => Some("Spine next accepted."),
-        SpineTool::Trim => Some("Spine trim accepted."),
         SpineTool::Spawn => None,
     }
 }
@@ -350,20 +338,6 @@ fn parameters_for(tool: SpineTool) -> Value {
             "required": ["goal", "memory"],
             "additionalProperties": false
         }),
-        SpineTool::Trim => serde_json::json!({
-            "type": "object",
-            "properties": {
-                "TRIM_ID": { "type": "string", "description": "Trim id attached to a tool response in the immediately previous tool-result batch; it expires after your next assistant tool request." },
-                "op": { "type": "string", "enum": ["snip", "slice"], "description": "Use snip only when useful facts are preserved elsewhere; use slice to keep the needed head, tail, or anchor window." },
-                "head": { "type": "integer", "description": "For op=\"slice\", keep this many characters from the start of the current visible body. Mutually exclusive with tail and anchor." },
-                "tail": { "type": "integer", "description": "For op=\"slice\", keep this many characters from the end of the current visible body. Mutually exclusive with head and anchor." },
-                "anchor": { "type": "string", "description": "For op=\"slice\", locate this non-empty text in the current visible body and keep an anchor window. Mutually exclusive with head and tail." },
-                "preceding": { "type": "integer", "description": "For anchor slice, keep this many complete lines before the anchor line." },
-                "following": { "type": "integer", "description": "For anchor slice, keep this many complete lines after the anchor line." }
-            },
-            "required": ["TRIM_ID", "op"],
-            "additionalProperties": false
-        }),
         SpineTool::Spawn => serde_json::json!({
             "type": "object",
             "properties": {
@@ -397,7 +371,6 @@ mod tests {
         let config = SpineConfig::v1().with_feature(Feature::Jit).unwrap();
         let catalog = ToolCatalog::new(&config).unwrap();
         assert_eq!(catalog.names(), ["spine.open", "spine.close", "spine.next"]);
-        assert!(catalog.definition(SpineTool::Trim).is_none());
     }
 
     #[test]
@@ -447,7 +420,7 @@ mod tests {
         }
 
         let config = SpineConfig::v1()
-            .with_features([Feature::Jit, Feature::Trim, Feature::Spawn])
+            .with_features([Feature::Jit, Feature::Spawn])
             .unwrap();
         let catalog = ToolCatalog::new(&config).unwrap().with_spawn_max_items(16);
         assert_eq!(

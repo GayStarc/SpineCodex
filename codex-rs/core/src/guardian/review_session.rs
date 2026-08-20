@@ -1084,7 +1084,6 @@ pub(crate) fn build_guardian_review_session_config(
     let mut review_features = guardian_config.features.get().clone();
     for feature in [
         Feature::SpineJit,
-        Feature::SpineTrim,
         Feature::SpineSpawn,
         Feature::SpinetreeMemoryProjection,
     ] {
@@ -1454,7 +1453,6 @@ mod tests {
         let mut parent_features = parent_config.features.get().clone();
         for feature in [
             Feature::SpineJit,
-            Feature::SpineTrim,
             Feature::SpineSpawn,
             Feature::SpinetreeMemoryProjection,
         ] {
@@ -1466,7 +1464,6 @@ mod tests {
                 FeatureRequirementsToml {
                     entries: BTreeMap::from([
                         ("spine_jit".to_string(), true),
-                        ("spine_trim".to_string(), true),
                         ("spine_spawn".to_string(), true),
                         ("spinetree_memory_projection".to_string(), true),
                     ]),
@@ -1487,7 +1484,6 @@ mod tests {
 
         for feature in [
             Feature::SpineJit,
-            Feature::SpineTrim,
             Feature::SpineSpawn,
             Feature::SpinetreeMemoryProjection,
         ] {

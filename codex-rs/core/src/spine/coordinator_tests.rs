@@ -5,6 +5,7 @@ use super::coordinator::ReplayMode;
 use super::coordinator::SpineSamplingAttempt;
 use super::coordinator::decode_spine_rollout_item;
 use super::coordinator::replay_mode;
+use super::observer::CodexSpineObserverHandler;
 use codex_protocol::ResponseItemId;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputBody;
@@ -21,6 +22,9 @@ use pretty_assertions::assert_eq;
 use spine_core::host::ExecutionOrigin;
 use spine_core::host::Feature;
 use spine_core::host::SamplingTerminal;
+use spine_core::host::SpawnOutcome;
+use spine_core::host::SpawnResult;
+use spine_core::host::SpawnTask;
 use spine_core::host::SpineChar;
 use spine_core::host::SpineConfig;
 use spine_core::host::SpineOperationFact;
@@ -50,6 +54,74 @@ fn coordinator() -> CodexSpineCoordinator {
         .with_feature(Feature::Jit)
         .expect("JIT config");
     CodexSpineCoordinator::new("thread-shadow", config).expect("coordinator")
+}
+
+fn spawn_coordinator() -> CodexSpineCoordinator {
+    let config = SpineConfig::v1()
+        .with_feature(Feature::Jit)
+        .and_then(|config| config.with_feature(Feature::Spawn))
+        .expect("JIT and Spawn config");
+    CodexSpineCoordinator::new("thread-spawn", config).expect("spawn coordinator")
+}
+
+fn spawn_operation() -> SpineOperationFact {
+    SpineOperationFact::Spawn {
+        tasks: vec![
+            SpawnTask {
+                summary: "first".to_string(),
+                prompt: "first task".to_string(),
+            },
+            SpawnTask {
+                summary: "second".to_string(),
+                prompt: "second task".to_string(),
+            },
+        ],
+        terminal_results: vec![
+            SpawnResult {
+                ordinal: 0,
+                outcome: SpawnOutcome::Completed,
+                memory_body: "first memory".to_string(),
+                diagnostic: None,
+                execution_ref: Some("child-0".to_string()),
+            },
+            SpawnResult {
+                ordinal: 1,
+                outcome: SpawnOutcome::Completed,
+                memory_body: "second memory".to_string(),
+                diagnostic: None,
+                execution_ref: Some("child-1".to_string()),
+            },
+        ],
+    }
+}
+
+fn install_spawn_sampling(
+    coordinator: &mut CodexSpineCoordinator,
+    call_id: &str,
+) -> InstalledCanonicalCommit {
+    coordinator
+        .observe_response_items(&[message("user", "spawn request")])
+        .expect("observe spawn prompt source");
+    let attempt = begin_sampling_for_test(coordinator).expect("begin spawn sampling");
+    coordinator
+        .register_execution(call_id)
+        .expect("register spawn execution");
+    coordinator
+        .stage_execution(
+            call_id,
+            ExecutionOrigin::Direct {
+                execution_ref: call_id.to_string(),
+            },
+            spawn_operation(),
+        )
+        .expect("stage spawn fact");
+    coordinator
+        .observe_response_items(&[message("assistant", "spawn completed")])
+        .expect("observe spawn sampling source");
+    coordinator
+        .finish_execution(call_id, true)
+        .expect("finish spawn execution");
+    install_sampling_for_test(coordinator, attempt).expect("install spawn sampling")
 }
 
 fn install_sampling_for_test(
@@ -312,6 +384,135 @@ fn spine_canonical_equivalence_uses_explicit_fact_for_transition() {
         .expect("install");
     assert_eq!(installed.projection.cursor.to_string(), "1.1");
     assert_eq!(installed.projection.nodes.len(), 2);
+}
+
+#[test]
+fn spawn_settlement_is_local_to_the_live_sampling_commit() {
+    let (tx_event, rx_event) = async_channel::unbounded();
+    let config = SpineConfig::v1()
+        .with_feature(Feature::Jit)
+        .and_then(|config| config.with_feature(Feature::Spawn))
+        .expect("JIT and Spawn config");
+    let observer = CodexSpineObserverHandler::new(
+        tx_event,
+        "fallback-event".to_string(),
+        None,
+        /*jit_enabled*/ true,
+    );
+    let mut coordinator =
+        CodexSpineCoordinator::new_with_observer("thread-spawn-events", config, observer)
+            .expect("spawn coordinator with observer");
+
+    let spawn = install_spawn_sampling(&mut coordinator, "reused-call");
+    assert_eq!(spawn.settled_spawn_call_ids, ["reused-call"]);
+    coordinator.publish_canonical_sampling(&spawn);
+    let EventMsg::SpineTreeUpdate(spawn_update) = rx_event.try_recv().expect("spawn update").msg
+    else {
+        panic!("spawn commit must publish a tree update");
+    };
+    assert_eq!(spawn_update.settled_spawn_call_ids, ["reused-call"]);
+
+    let open = begin_sampling_for_test(&mut coordinator).expect("begin open sampling");
+    coordinator
+        .register_execution("open-execution")
+        .expect("register open execution");
+    coordinator
+        .stage_execution(
+            "open-execution",
+            ExecutionOrigin::Direct {
+                execution_ref: "reused-call".to_string(),
+            },
+            SpineOperationFact::Open {
+                summary: "scope".to_string(),
+            },
+        )
+        .expect("stage open fact");
+    coordinator
+        .observe_response_items(&open_source())
+        .expect("observe open source");
+    coordinator
+        .finish_execution("open-execution", true)
+        .expect("finish open execution");
+    let open = install_sampling_for_test(&mut coordinator, open).expect("install open sampling");
+    assert_eq!(open.settled_spawn_call_ids, Vec::<String>::new());
+    coordinator.publish_canonical_sampling(&open);
+    let EventMsg::SpineTreeUpdate(open_update) = rx_event.try_recv().expect("open update").msg
+    else {
+        panic!("open commit must publish a tree update");
+    };
+    assert_eq!(open_update.settled_spawn_call_ids, Vec::<String>::new());
+
+    coordinator.publish_canonical_compact();
+    let EventMsg::SpineTreeUpdate(compact_update) =
+        rx_event.try_recv().expect("compact update").msg
+    else {
+        panic!("compact publication must emit a tree update");
+    };
+    assert_eq!(compact_update.settled_spawn_call_ids, Vec::<String>::new());
+
+    let RolloutItem::EventMsg(EventMsg::TokenCount(usage)) = token_count(10_001, 80_000) else {
+        panic!("token count helper must produce a token event");
+    };
+    coordinator.observe_token_count(&usage);
+    let EventMsg::SpineTreeUpdate(usage_update) = rx_event.try_recv().expect("usage update").msg
+    else {
+        panic!("usage publication must emit a tree update");
+    };
+    assert_eq!(usage_update.settled_spawn_call_ids, Vec::<String>::new());
+}
+
+#[test]
+fn canonical_replay_does_not_resettle_historical_spawn_calls() {
+    let user = message("user", "question");
+    let response = message("assistant", "spawn completed");
+    let mut live = spawn_coordinator();
+    live.observe_response_items(std::slice::from_ref(&user))
+        .expect("observe prompt source");
+    let attempt = live.begin_sampling().expect("begin spawn sampling");
+    let started = live
+        .sampling_started_rollout_item(&attempt, std::slice::from_ref(&user))
+        .expect("sampling started");
+    live.register_execution("spawn-call")
+        .expect("register spawn execution");
+    live.stage_execution(
+        "spawn-call",
+        ExecutionOrigin::Direct {
+            execution_ref: "spawn-call".to_string(),
+        },
+        spawn_operation(),
+    )
+    .expect("stage spawn fact");
+    live.observe_response_items(std::slice::from_ref(&response))
+        .expect("observe spawn source");
+    live.finish_execution("spawn-call", true)
+        .expect("finish spawn execution");
+    let prepared = live
+        .prepare_canonical_sampling(attempt)
+        .expect("prepare spawn commit");
+    let rollout = [
+        RolloutItem::ResponseItem(user),
+        started,
+        RolloutItem::ResponseItem(response),
+        prepared.rollout_item(),
+    ];
+    let live_commit = live
+        .install_canonical_sampling(prepared)
+        .expect("install live spawn commit");
+    assert_eq!(live_commit.settled_spawn_call_ids, ["spawn-call"]);
+
+    let effective = rollout.iter().enumerate().collect::<Vec<_>>();
+    let ReplayMode::Canonical { thread, records } =
+        replay_mode(&effective).expect("canonical replay mode")
+    else {
+        panic!("rollout must be canonical");
+    };
+    let mut resumed = spawn_coordinator();
+    let replayed = resumed
+        .replay_canonical(&effective, &live_commit.context.items, thread, records)
+        .expect("replay spawn commit");
+
+    assert_eq!(replayed.projection, live_commit.projection);
+    assert_eq!(replayed.settled_spawn_call_ids, Vec::<String>::new());
 }
 
 #[test]

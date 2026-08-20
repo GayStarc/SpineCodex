@@ -9,14 +9,10 @@ pub(crate) struct SpineSessionConfig {
 impl SpineSessionConfig {
     pub(crate) fn from_config(config: &Config) -> Self {
         let jit_enabled = config.features.enabled(CodexFeature::SpineJit);
-        let trim_enabled = config.features.enabled(CodexFeature::SpineTrim);
         let spawn_enabled = config.features.enabled(CodexFeature::SpineSpawn);
         let mut features = Vec::new();
         if jit_enabled {
             features.push(spine_core::host::Feature::Jit);
-        }
-        if trim_enabled {
-            features.push(spine_core::host::Feature::Trim);
         }
         if spawn_enabled {
             features.push(spine_core::host::Feature::Spawn);
@@ -36,7 +32,7 @@ impl SpineSessionConfig {
     }
 
     pub(crate) fn enabled(&self) -> bool {
-        self.jit_enabled() || self.sdk.is_enabled(spine_core::host::Feature::Trim)
+        self.jit_enabled()
     }
 
     pub(crate) fn jit_enabled(&self) -> bool {

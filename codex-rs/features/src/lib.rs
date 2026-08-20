@@ -258,8 +258,6 @@ pub enum Feature {
     SpineStatus,
     /// Enable the native-child `spine.spawn` transaction tool.
     SpineSpawn,
-    /// Enable Spine tool-response trimming as an independent projection.
-    SpineTrim,
     /// Project committed Spine node memories into the workspace as readonly files.
     SpinetreeMemoryProjection,
     /// Route MCP tool approval prompts through the MCP elicitation request path.
@@ -1403,12 +1401,6 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::SpineSpawn,
         key: "spine_spawn",
-        stage: Stage::Stable,
-        default_enabled: true,
-    },
-    FeatureSpec {
-        id: Feature::SpineTrim,
-        key: "spine_trim",
         stage: Stage::Stable,
         default_enabled: true,
     },

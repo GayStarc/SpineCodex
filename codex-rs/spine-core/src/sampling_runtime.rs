@@ -13,7 +13,6 @@ use crate::SamplingFactSink;
 use crate::SamplingHandle;
 use crate::SamplingPlanner;
 use crate::SourceCellId;
-use crate::SourceObservation;
 use crate::SourceSnapshot;
 use crate::SpineChar;
 use crate::SpineCompactBarrierV1;
@@ -21,7 +20,6 @@ use crate::SpineConfig;
 use crate::SpineOperationFact;
 use crate::SpineProjection;
 use crate::ThreadNamespace;
-use crate::TrimRequest;
 use crate::planner::SamplingCommitOutput;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -108,19 +106,6 @@ impl SamplingRuntime {
             return Err(PlannerError::SamplingCommitPendingInstall);
         }
         self.planner.observe_source(characters)
-    }
-
-    pub fn observe_source_observations<I>(
-        &mut self,
-        observations: I,
-    ) -> Result<Vec<SourceCellId>, PlannerError>
-    where
-        I: IntoIterator<Item = SourceObservation>,
-    {
-        if matches!(self.state, SamplingRuntimeState::Prepared { .. }) {
-            return Err(PlannerError::SamplingCommitPendingInstall);
-        }
-        self.planner.observe_source_observations(observations)
     }
 
     pub fn source_snapshot(&self) -> SourceSnapshot {
@@ -405,13 +390,6 @@ impl SamplingRuntime {
         }
         self.state = SamplingRuntimeState::Idle;
         Ok(())
-    }
-
-    pub fn validated_trim_fact(
-        &self,
-        request: &TrimRequest,
-    ) -> Result<SpineOperationFact, PlannerError> {
-        self.planner.validated_trim_fact(request)
     }
 
     pub fn compact(

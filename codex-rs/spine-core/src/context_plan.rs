@@ -18,7 +18,7 @@ use std::fmt;
 pub const CONTEXT_PLAN_SCHEMA_V1: &str = "spine.context.plan.v1";
 pub const MAX_CONTEXT_PLAN_BYTES: usize = 2 * 1024 * 1024;
 pub const MAX_CONTEXT_PLAN_MEMORY_SLOTS: usize = MAX_VISIBLE_CONTEXT_ITEMS;
-pub const MAX_CONTEXT_LABELS_PER_SOURCE: usize = 2;
+pub const MAX_CONTEXT_LABELS_PER_SOURCE: usize = 1;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

@@ -1,4 +1,4 @@
-use super::super::context_handler::response_item_to_observation_and_source;
+use super::super::context_handler::response_item_to_char_and_source;
 use super::*;
 
 impl CodexSpineCoordinator {
@@ -29,11 +29,10 @@ impl CodexSpineCoordinator {
             };
             if let Some(item) = source {
                 let boundary = RawBoundary(next_boundary);
-                let (observation, projected) =
-                    response_item_to_observation_and_source(&item, boundary);
+                let (character, projected) = response_item_to_char_and_source(&item, boundary);
                 projected_source_items.push(projected);
                 next_boundary = boundary.0.saturating_add(1);
-                inputs.push(ReplayInput::Source(observation));
+                inputs.push(ReplayInput::Source(character));
                 continue;
             }
             match item {
@@ -171,6 +170,7 @@ impl CodexSpineCoordinator {
         Ok(InstalledCanonicalCommit {
             context,
             projection,
+            settled_spawn_call_ids: Vec::new(),
         })
     }
 }

@@ -94,7 +94,6 @@ pub(crate) enum SpineFactKind {
     Close,
     Next,
     Spawn,
-    Trim,
 }
 
 impl SpineFactKind {
@@ -108,7 +107,6 @@ impl SpineFactKind {
             SpineOperationFact::Close { .. } => Self::Close,
             SpineOperationFact::Next { .. } => Self::Next,
             SpineOperationFact::Spawn { .. } => Self::Spawn,
-            SpineOperationFact::Trim { .. } => Self::Trim,
         }
     }
 }
@@ -341,19 +339,6 @@ impl SamplingFactSink {
         {
             return Err(SamplingError::FactReservationMismatch("kind"));
         }
-        if let SpineOperationFact::Trim { target, .. } = &fact.operation
-            && state.completed.values().any(|completed| {
-                matches!(
-                    &completed.operation,
-                    SpineOperationFact::Trim {
-                        target: completed_target,
-                        ..
-                    } if completed_target == target
-                )
-            })
-        {
-            return Err(SamplingError::ConflictingTrimTarget);
-        }
         Ok(())
     }
 
@@ -522,8 +507,6 @@ pub enum SamplingError {
     PermitNotActive,
     #[error("completed fact does not match reserved {0}")]
     FactReservationMismatch(&'static str),
-    #[error("multiple trim facts target the same source output")]
-    ConflictingTrimTarget,
     #[error("invalid completed fact: {0}")]
     InvalidFact(ExecutedFactError),
     #[error("sampling has {} non-terminal fact permits", .0.len())]

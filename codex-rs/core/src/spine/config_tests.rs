@@ -10,45 +10,56 @@ fn trusted_workspace_layers_override_home_configuration() -> std::io::Result<()>
     std::fs::create_dir_all(home.path().join(".spine"))?;
     std::fs::write(
         home.path().join(".spine/spine.toml"),
-        "[limits]\ntrim_threshold_bytes = 2048\n",
+        "[prompt]\nnode = \"home\"\n",
     )?;
     std::fs::write(
         working.path().join("spine.toml"),
-        "[limits]\ntrim_threshold_bytes = 4096\n",
+        "[prompt]\nnode = \"workspace\"\n",
     )?;
 
+    let mut host_features = Features::default();
+    host_features.enable(Feature::SpineJit);
+    let managed = ManagedFeatures::from(host_features);
     let (config, _) = load(
         /*path*/ None,
         working.path(),
         Some(home.path()),
-        &ManagedFeatures::default(),
+        &managed,
         /*project_config_trusted*/ true,
     )?;
 
-    assert_eq!(config.trim_threshold_bytes(), 4096);
+    assert_eq!(config.node_prompt(), Some("workspace"));
     Ok(())
 }
 
 #[test]
 fn untrusted_workspace_layers_are_not_loaded() -> std::io::Result<()> {
     let working = tempfile::tempdir()?;
+    let baseline_working = tempfile::tempdir()?;
     std::fs::write(
         working.path().join("spine.toml"),
-        "[limits]\ntrim_threshold_bytes = 2048\n",
+        "[prompt]\nnode = \"workspace\"\n",
     )?;
 
+    let mut host_features = Features::default();
+    host_features.enable(Feature::SpineJit);
+    let managed = ManagedFeatures::from(host_features);
     let (config, _) = load(
         /*path*/ None,
         working.path(),
         /*home_directory*/ None,
-        &ManagedFeatures::default(),
+        &managed,
+        /*project_config_trusted*/ false,
+    )?;
+    let (baseline, _) = load(
+        /*path*/ None,
+        baseline_working.path(),
+        /*home_directory*/ None,
+        &managed,
         /*project_config_trusted*/ false,
     )?;
 
-    assert_eq!(
-        config.trim_threshold_bytes(),
-        SpineConfig::v1().trim_threshold_bytes()
-    );
+    assert_eq!(config.node_prompt(), baseline.node_prompt());
     Ok(())
 }
 
@@ -75,7 +86,6 @@ fn managed_host_features_select_sdk_features() {
     let mut host_features = Features::default();
     host_features.enable(Feature::SpineJit);
     host_features.enable(Feature::SpineSpawn);
-    host_features.disable(Feature::SpineTrim);
     let managed = ManagedFeatures::from(host_features);
 
     let (config, _) = load(
@@ -90,9 +100,8 @@ fn managed_host_features_select_sdk_features() {
     assert_eq!(
         (
             config.is_enabled(spine_core::host::Feature::Jit),
-            config.is_enabled(spine_core::host::Feature::Trim),
             config.is_enabled(spine_core::host::Feature::Spawn),
         ),
-        (true, false, true),
+        (true, true),
     );
 }

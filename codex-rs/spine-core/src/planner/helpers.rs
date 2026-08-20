@@ -13,13 +13,6 @@ pub(super) fn map_compile_error(error: SamplingCompileError) -> PlannerError {
             TypedTransitionError::TaskCursorRequired(operation) => {
                 PlannerTransitionError::TaskCursorRequired(operation)
             }
-            TypedTransitionError::NonTrimFactInTrimSet => {
-                PlannerTransitionError::NonTrimFactInTrimSet
-            }
-            TypedTransitionError::InactiveTrimTarget(boundary) => {
-                PlannerTransitionError::InactiveTrimTarget(boundary)
-            }
-            TypedTransitionError::TrimTargetMismatch => PlannerTransitionError::TrimTargetMismatch,
         }),
     }
 }

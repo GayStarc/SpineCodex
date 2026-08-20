@@ -963,7 +963,8 @@ impl AgentControl {
                             "parent thread `{parent_thread_id}` has no canonical Spine rollout for sampling-boundary fork"
                         )));
                     }
-                    if !crate::spine::trim_to_current_sampling_start(&mut forked_rollout_items) {
+                    if !crate::spine::truncate_to_current_sampling_start(&mut forked_rollout_items)
+                    {
                         return Err(CodexErr::Fatal(format!(
                             "parent thread `{parent_thread_id}` has no uncommitted sampling boundary for full-history fork"
                         )));

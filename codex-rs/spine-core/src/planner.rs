@@ -16,7 +16,6 @@ use crate::SamplingStarted;
 use crate::SealedSampling;
 use crate::SourceCellId;
 use crate::SourceLedger;
-use crate::SourceObservation;
 use crate::SourceSnapshot;
 use crate::SpineChar;
 use crate::SpineCharParser;
@@ -26,8 +25,6 @@ use crate::SpineConfig;
 use crate::SpineOperationFact;
 use crate::SpineProjection;
 use crate::ThreadNamespace;
-use crate::TrimRequest;
-use crate::TrimTicket;
 use crate::archive::SAMPLING_STARTED_SCHEMA;
 use crate::pressure::InputPressureState;
 use crate::sampling_delta::FactBindingMode;
@@ -63,7 +60,6 @@ pub(crate) struct SamplingPlanner {
     next_projection_ordinal: u64,
     active_attempt: Option<SamplingAttemptId>,
     jit_enabled: bool,
-    trim_enabled: bool,
     spawn_enabled: bool,
 }
 
@@ -74,7 +70,6 @@ impl SamplingPlanner {
         config: SpineConfig,
     ) -> Result<Self, PlannerError> {
         let jit_enabled = config.is_enabled(Feature::Jit);
-        let trim_enabled = config.is_enabled(Feature::Trim);
         let spawn_enabled = config.is_enabled(Feature::Spawn);
         Ok(Self {
             source: SourceLedger::new(thread, epoch).map_err(PlannerError::Source)?,
@@ -88,7 +83,6 @@ impl SamplingPlanner {
             next_projection_ordinal: 0,
             active_attempt: None,
             jit_enabled,
-            trim_enabled,
             spawn_enabled,
         })
     }
@@ -98,18 +92,6 @@ impl SamplingPlanner {
         I: IntoIterator<Item = SpineChar>,
     {
         self.source.append(characters).map_err(PlannerError::Source)
-    }
-
-    pub fn observe_source_observations<I>(
-        &mut self,
-        observations: I,
-    ) -> Result<Vec<SourceCellId>, PlannerError>
-    where
-        I: IntoIterator<Item = SourceObservation>,
-    {
-        self.source
-            .append_observations(observations)
-            .map_err(PlannerError::Source)
     }
 
     pub fn source_snapshot(&self) -> SourceSnapshot {
@@ -138,11 +120,9 @@ impl SamplingPlanner {
         build_context_plan(
             &snapshot,
             compiler.projection(),
-            compiler.trim_projection(),
             &parser.pending_boundaries(),
             self.committed_plan.as_ref(),
             &mut projection_ordinal,
-            self.spawn_enabled,
         )
     }
 
@@ -156,38 +136,6 @@ impl SamplingPlanner {
         self.previous_pre_boundary = None;
         self.next_projection_ordinal = 0;
         Ok(())
-    }
-
-    pub fn validated_trim_fact(
-        &self,
-        request: &TrimRequest,
-    ) -> Result<SpineOperationFact, PlannerError> {
-        if !self.trim_enabled {
-            return Err(PlannerError::FeatureDisabled(Feature::Trim));
-        }
-        let projection = self
-            .compiler
-            .trim_projection()
-            .ok_or(PlannerError::TrimRuntimeUnavailable)?;
-        let (boundary, execution_ref, validated_edit) = projection
-            .validated_edit(request)
-            .map_err(PlannerError::InvalidTrim)?;
-        let snapshot = self.source.snapshot();
-        let target = snapshot
-            .stable_output(boundary, &execution_ref)
-            .ok_or(PlannerError::MissingTrimBoundary(boundary))?;
-        let ticket = TrimTicket::parse(
-            self.source.thread().clone(),
-            self.source.epoch(),
-            format!("trim-{}", target.source.ordinal()),
-        )
-        .map_err(|error| PlannerError::InvalidTrim(error.to_string()))?;
-        Ok(SpineOperationFact::Trim {
-            ticket,
-            target,
-            validated_edit,
-            source_digest: snapshot.digest().as_str().to_string(),
-        })
     }
 
     pub fn begin_sampling(
@@ -311,11 +259,9 @@ impl SamplingPlanner {
         let plan = build_context_plan(
             &snapshot,
             compiler.projection(),
-            compiler.trim_projection(),
             &parser.pending_boundaries(),
             self.committed_plan.as_ref(),
             &mut projection_ordinal,
-            self.spawn_enabled,
         )?;
         let pre_boundary = sealed.attempt().pre_boundary().clone();
         let executions = ordered_facts
@@ -491,11 +437,9 @@ impl SamplingPlanner {
         candidate.committed_plan = Some(build_context_plan(
             &snapshot,
             candidate.compiler.projection(),
-            candidate.compiler.trim_projection(),
             &candidate.parser.pending_boundaries(),
             None,
             &mut candidate.next_projection_ordinal,
-            candidate.spawn_enabled,
         )?);
         *self = candidate;
         Ok(self.compiler.projection().clone())
@@ -506,7 +450,6 @@ impl SamplingPlanner {
         runtime_config: SpineConfig,
     ) -> Result<Self, PlannerError> {
         let jit_enabled = runtime_config.is_enabled(Feature::Jit);
-        let trim_enabled = runtime_config.is_enabled(Feature::Trim);
         let spawn_enabled = runtime_config.is_enabled(Feature::Spawn);
         let mut compiler = state.compiler;
         compiler
@@ -537,7 +480,6 @@ impl SamplingPlanner {
             next_projection_ordinal,
             active_attempt: None,
             jit_enabled,
-            trim_enabled,
             spawn_enabled,
         })
     }
@@ -578,17 +520,13 @@ impl SamplingPlanner {
             }
             fact.validate().map_err(PlannerError::InvalidFact)?;
             match fact.operation {
-                SpineOperationFact::Trim { .. } if !self.trim_enabled => {
-                    return Err(PlannerError::FeatureDisabled(Feature::Trim));
-                }
                 SpineOperationFact::Spawn { .. } if !self.spawn_enabled => {
                     return Err(PlannerError::FeatureDisabled(Feature::Spawn));
                 }
                 SpineOperationFact::Open { .. }
                 | SpineOperationFact::Close { .. }
                 | SpineOperationFact::Next { .. }
-                | SpineOperationFact::Spawn { .. }
-                | SpineOperationFact::Trim { .. } => {}
+                | SpineOperationFact::Spawn { .. } => {}
             }
         }
         Ok(())
@@ -602,7 +540,6 @@ fn map_sampling_delta_error(error: SamplingDeltaError) -> PlannerError {
         SamplingDeltaError::MissingSourceBoundary(boundary) => {
             PlannerError::MissingSourceBoundary(boundary)
         }
-        SamplingDeltaError::MissingTrimSource(source) => PlannerError::MissingTrimSource(source),
         SamplingDeltaError::FactHasNoSourceGroup(execution) => {
             PlannerError::FactHasNoSourceGroup(execution)
         }

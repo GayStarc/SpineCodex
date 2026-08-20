@@ -20,7 +20,7 @@ pub(crate) fn extend(mut base: String, config: &SpineConfig) -> String {
         }
     }
 
-    let segments = [Feature::Jit, Feature::Trim, Feature::Spawn]
+    let segments = [Feature::Jit, Feature::Spawn]
         .into_iter()
         .filter(|feature| config.is_enabled(*feature))
         .map(|feature| config.prompt(feature))
@@ -51,8 +51,6 @@ mod tests {
     fn configured_segment_is_idempotent() {
         let config = SpineConfig::parse_toml(
             r#"schema_version = 1
-[limits]
-trim_threshold_bytes = 100
 [prompt]
 jit = "<spine_instruction>jit</spine_instruction>"
 node = "node prompt"
@@ -74,8 +72,6 @@ description = "next"
     fn configured_segment_replaces_the_legacy_wrapper_once() {
         let config = SpineConfig::parse_toml(
             r#"schema_version = 1
-[limits]
-trim_threshold_bytes = 100
 [prompt]
 jit = "<spine_instruction>jit</spine_instruction>"
 node = "node prompt"

@@ -20,11 +20,6 @@ use spine_core::host::SpineOperationFact;
 use spine_core::host::SpineTool;
 use spine_core::host::ToolCatalog;
 use spine_core::host::ToolDefinition;
-#[cfg(test)]
-use spine_core::host::TrimOperation;
-use spine_core::host::TrimRequest;
-#[cfg(test)]
-use spine_core::host::TrimSlice;
 
 pub(crate) struct SpineHandler {
     definition: ToolDefinition,
@@ -198,28 +193,6 @@ impl SpineHandler {
                     Some(true),
                 )));
             }
-            SpineTool::Trim => {
-                let request =
-                    TrimRequest::parse(&arguments).map_err(FunctionCallError::RespondToModel)?;
-                let operation = session
-                    .lock_spine_coordinator()
-                    .as_ref()
-                    .ok_or_else(|| {
-                        FunctionCallError::RespondToModel(
-                            "Spine trim runtime is unavailable".to_string(),
-                        )
-                    })?
-                    .prepare_trim(&request);
-                match operation {
-                    Ok(operation) => {
-                        session.stage_spine_fact(&call_id, origin, operation);
-                        SpineTool::Trim
-                    }
-                    Err(error) => {
-                        return Err(FunctionCallError::RespondToModel(error));
-                    }
-                }
-            }
         };
 
         Ok(boxed_tool_output(tool_response::success(response_tool)))
@@ -245,7 +218,6 @@ mod tests {
         let config = spine_core::host::SpineConfig::v1()
             .with_features([
                 spine_core::host::Feature::Jit,
-                spine_core::host::Feature::Trim,
                 spine_core::host::Feature::Spawn,
             ])
             .unwrap();
@@ -319,13 +291,8 @@ mod tests {
                 .iter()
                 .map(codex_tools::ToolExecutor::tool_name)
                 .collect::<Vec<_>>(),
-            [
-                SpineTool::Open,
-                SpineTool::Close,
-                SpineTool::Next,
-                SpineTool::Trim,
-            ]
-            .map(|tool| ToolName::namespaced(spine_core::host::SPINE_NAMESPACE, tool.name()))
+            [SpineTool::Open, SpineTool::Close, SpineTool::Next]
+                .map(|tool| ToolName::namespaced(spine_core::host::SPINE_NAMESPACE, tool.name()))
         );
     }
 
@@ -336,18 +303,5 @@ mod tests {
                 .iter()
                 .all(|handler| handler.exposure() == ToolExposure::DirectModelOnly)
         );
-    }
-
-    #[test]
-    fn trim_arguments_cover_snip_and_slice_shapes() {
-        let snip = TrimRequest::parse(r#"{"TRIM_ID":"trim_4","op":"snip"}"#).unwrap();
-        assert_eq!(snip.trim_id, "trim_4");
-        assert_eq!(snip.operation, TrimOperation::Snip);
-        let slice = TrimRequest::parse(r#"{"TRIM_ID":"trim_4","op":"slice","tail":3}"#).unwrap();
-        assert_eq!(
-            slice.operation,
-            TrimOperation::Slice(TrimSlice::Tail { tail: 3 })
-        );
-        assert!(TrimRequest::parse(r#"{"TRIM_ID":"trim_4","op":"slice"}"#).is_err());
     }
 }

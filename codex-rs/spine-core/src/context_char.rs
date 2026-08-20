@@ -1,10 +1,8 @@
 use crate::ContextItem;
 use crate::ContextLabel;
 use crate::Message;
-use crate::ObservedOutput;
 use crate::RawBoundary;
 use crate::RolloutEvent;
-use crate::SourceObservation;
 use crate::TokenUsageSample;
 use std::fmt;
 
@@ -82,7 +80,6 @@ impl ParseStack {
 pub struct ParseCell {
     id: CellId,
     character: SpineChar,
-    output: Option<ObservedOutput>,
     labels: Vec<ContextLabel>,
 }
 
@@ -91,7 +88,6 @@ impl ParseCell {
         Self {
             id,
             character,
-            output: None,
             labels: Vec::new(),
         }
     }
@@ -106,15 +102,6 @@ impl ParseCell {
 
     pub fn labels(&self) -> &[ContextLabel] {
         &self.labels
-    }
-
-    pub fn output(&self) -> Option<&ObservedOutput> {
-        self.output.as_ref()
-    }
-
-    fn with_output(mut self, output: Option<ObservedOutput>) -> Self {
-        self.output = output;
-        self
     }
 
     pub(crate) fn with_labels(mut self, labels: Vec<ContextLabel>) -> Self {
@@ -150,14 +137,7 @@ impl SpineCharParser {
     }
 
     pub fn eat(&mut self, character: SpineChar) -> Result<CharParseStep, CharParseError> {
-        self.eat_observation(SourceObservation::new(character))
-    }
-
-    pub fn eat_observation(
-        &mut self,
-        observation: SourceObservation,
-    ) -> Result<CharParseStep, CharParseError> {
-        let boundary = observation.clone().into_parts().0.boundary();
+        let boundary = character.boundary();
         if let Some(previous) = self.last_boundary
             && boundary < previous
         {
@@ -168,7 +148,7 @@ impl SpineCharParser {
         }
 
         let mut candidate = self.clone();
-        let step = candidate.apply(observation)?;
+        let step = candidate.apply(character)?;
         *self = candidate;
         Ok(step)
     }
@@ -204,14 +184,13 @@ impl SpineCharParser {
         self.new_cell(SpineChar::Synthetic { boundary, item })
     }
 
-    fn apply(&mut self, observation: SourceObservation) -> Result<CharParseStep, CharParseError> {
-        let (character, output) = observation.into_parts();
+    fn apply(&mut self, character: SpineChar) -> Result<CharParseStep, CharParseError> {
         let mut events = Vec::new();
         self.last_boundary = Some(character.boundary());
 
         match character {
             SpineChar::Message(message) => {
-                self.push_cell(SpineChar::Message(message.clone()), output);
+                self.push_cell(SpineChar::Message(message.clone()));
                 if message.role == crate::MessageRole::Assistant {
                     self.trailing_assistant.push(message);
                 } else {
@@ -221,18 +200,15 @@ impl SpineCharParser {
             }
             SpineChar::Opaque { boundary } => {
                 self.flush_trailing_assistant(&mut events);
-                self.push_cell(SpineChar::Opaque { boundary }, output);
+                self.push_cell(SpineChar::Opaque { boundary });
                 events.push(RolloutEvent::Opaque { boundary });
             }
             SpineChar::Synthetic { boundary, item } => {
                 self.flush_trailing_assistant(&mut events);
-                self.push_cell(
-                    SpineChar::Synthetic {
-                        boundary,
-                        item: item.clone(),
-                    },
-                    output,
-                );
+                self.push_cell(SpineChar::Synthetic {
+                    boundary,
+                    item: item.clone(),
+                });
                 events.push(RolloutEvent::Synthetic { boundary, item });
             }
         }
@@ -244,8 +220,8 @@ impl SpineCharParser {
         })
     }
 
-    fn push_cell(&mut self, character: SpineChar, output: Option<ObservedOutput>) {
-        let cell = self.new_cell(character).with_output(output);
+    fn push_cell(&mut self, character: SpineChar) {
+        let cell = self.new_cell(character);
         self.stack.cells.push(cell);
     }
 

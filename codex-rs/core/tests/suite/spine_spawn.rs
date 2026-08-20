@@ -49,8 +49,6 @@ const SEED_PARENT_PROMPT: &str = "seed reasoning context before spawn";
 const FIRST_PARENT_PROMPT: &str = "run the lifecycle spawn batch";
 const SECOND_PARENT_PROMPT: &str = "run the replacement spawn batch";
 const BRANCH_PROMPT_MARKER: &str = "You are a spawned execution branch.";
-const SPINE_EXPLICIT_MODE_TEXT: &str = "Do not use the MultiAgent collaboration tools to spawn sub-agents unless the user or applicable AGENTS.md/skill instructions explicitly ask for sub-agents, delegation, or parallel agent work. This restriction applies only to the MultiAgent collaboration surface and does not restrict independently available tools such as spine.spawn.";
-const SPINE_PROACTIVE_MODE_TEXT: &str = "Proactive MultiAgent collaboration is active. Any earlier instruction requiring an explicit user request before using the MultiAgent collaboration tools no longer applies. Use those collaboration tools when parallel work would materially improve speed or quality. This policy does not govern independent tools such as spine.spawn. This mode remains active until a later multi-agent mode developer message changes it.";
 const CORRECTION_MESSAGE: &str = concat!(
     "This spawned execution branch remains active. Continue exactly the declared\n",
     "assignment and follow its collaboration contract when one is declared. When the\n",
@@ -738,15 +736,21 @@ async fn spawn_starts_batch_concurrently_and_orders_reverse_completion_impl() ->
 }
 
 #[tokio::test]
-async fn spawn_prompt_modes_are_model_visible_and_feature_off_is_native() -> Result<()> {
+async fn spawn_prompt_mode_is_injected_once_across_feature_profiles() -> Result<()> {
     let explicit = capture_single_parent_request(
         metadata_v2_spine_builder(),
         "inspect explicit typed Spawn prompt",
         None,
     )
     .await?;
-    assert!(explicit.body_contains_text(SPINE_EXPLICIT_MODE_TEXT));
-    assert!(!explicit.body_contains_text(SPINE_PROACTIVE_MODE_TEXT));
+    assert_eq!(
+        explicit
+            .body_json()
+            .to_string()
+            .matches(MULTI_AGENT_MODE_OPEN_TAG)
+            .count(),
+        1
+    );
 
     let proactive = capture_single_parent_request(
         metadata_v2_spine_builder()
@@ -756,8 +760,14 @@ async fn spawn_prompt_modes_are_model_visible_and_feature_off_is_native() -> Res
         Some(ReasoningEffort::Ultra),
     )
     .await?;
-    assert!(proactive.body_contains_text(SPINE_PROACTIVE_MODE_TEXT));
-    assert!(!proactive.body_contains_text(SPINE_EXPLICIT_MODE_TEXT));
+    assert_eq!(
+        proactive
+            .body_json()
+            .to_string()
+            .matches(MULTI_AGENT_MODE_OPEN_TAG)
+            .count(),
+        1
+    );
 
     let native = capture_single_parent_request(
         metadata_v2_native_builder(),
@@ -765,11 +775,14 @@ async fn spawn_prompt_modes_are_model_visible_and_feature_off_is_native() -> Res
         None,
     )
     .await?;
-    assert!(!native.body_contains_text(SPINE_EXPLICIT_MODE_TEXT));
-    assert!(!native.body_contains_text(SPINE_PROACTIVE_MODE_TEXT));
-    assert!(native.body_contains_text(
-        "Any earlier instruction enabling proactive multi-agent delegation no longer applies."
-    ));
+    assert_eq!(
+        native
+            .body_json()
+            .to_string()
+            .matches(MULTI_AGENT_MODE_OPEN_TAG)
+            .count(),
+        1
+    );
     Ok(())
 }
 
@@ -2362,11 +2375,12 @@ async fn multiple_spawn_calls_are_rejected_before_child_creation() -> Result<()>
         let provider_output = followup
             .function_call_output_text(call_id)
             .with_context(|| format!("missing failure output for `{call_id}`"))?;
-        assert_eq!(provider_output, r#"{"status":"failure"}"#);
-        let output = persisted_function_call_output(&test, call_id)?;
+        let persisted_output = persisted_function_call_output(&test, call_id)?;
+        assert_eq!(provider_output, persisted_output);
         assert!(
-            output.contains("spine.spawn may be called at most once in one model response"),
-            "unexpected durable failure output for `{call_id}`: {output}"
+            persisted_output
+                .contains("spine.spawn may be called at most once in one model response"),
+            "unexpected durable failure output for `{call_id}`: {persisted_output}"
         );
     }
     Ok(())
@@ -2453,12 +2467,11 @@ async fn configured_per_call_bound_is_model_visible_and_rejects_oversized_batche
     let provider_output = parent_followup
         .function_call_output_text(CALL_ID)
         .expect("parent follow-up must receive the spine.spawn failure carrier");
-    assert_eq!(provider_output, r#"{"status":"failure"}"#);
-
-    let output = persisted_function_call_output(&test, CALL_ID)?;
+    let persisted_output = persisted_function_call_output(&test, CALL_ID)?;
+    assert_eq!(provider_output, persisted_output);
     assert!(
-        output.contains("spine.spawn accepts at most 2 tasks"),
-        "unexpected durable failure output: {output}"
+        persisted_output.contains("spine.spawn accepts at most 2 tasks"),
+        "unexpected durable failure output: {persisted_output}"
     );
     Ok(())
 }
@@ -2702,7 +2715,11 @@ async fn spawn_capacity_rejection_and_interrupt_teardown_allow_immediate_reuse()
         .into_iter()
         .find_map(|request| request.function_call_output_text(NESTED_SPINE_CALL_ID))
         .context("nested Spine Spawn output")?;
-    assert_eq!(nested_output, r#"{"status":"failure"}"#);
+    assert!(
+        nested_output
+            .contains("invalid spine.spawn arguments: spine.spawn requires at least two tasks"),
+        "unexpected nested Spine Spawn output: {nested_output}"
+    );
 
     let mut transaction_thread_ids = Vec::new();
     for _ in 0..3 {

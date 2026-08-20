@@ -40,38 +40,7 @@ pub struct SourceCell {
     pub id: SourceCellId,
     pub boundary: BoundaryId,
     pub payload: SourceCellPayload,
-    pub output: Option<ObservedOutput>,
     pub item: ContextItem,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct ObservedOutput {
-    pub execution_ref: String,
-    pub body: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SourceObservation {
-    character: SpineChar,
-    output: Option<ObservedOutput>,
-}
-
-impl SourceObservation {
-    pub fn new(character: SpineChar) -> Self {
-        Self {
-            character,
-            output: None,
-        }
-    }
-
-    pub fn with_output(mut self, output: ObservedOutput) -> Self {
-        self.output = Some(output);
-        self
-    }
-
-    pub(crate) fn into_parts(self) -> (SpineChar, Option<ObservedOutput>) {
-        (self.character, self.output)
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -151,20 +120,10 @@ impl SourceLedger {
     where
         I: IntoIterator<Item = SpineChar>,
     {
-        self.append_observations(characters.into_iter().map(SourceObservation::new))
-    }
-
-    pub fn append_observations<I>(
-        &mut self,
-        observations: I,
-    ) -> Result<Vec<SourceCellId>, SourceLedgerError>
-    where
-        I: IntoIterator<Item = SourceObservation>,
-    {
         let mut candidate = self.clone();
         let mut inserted = Vec::new();
-        for observation in observations {
-            inserted.push(candidate.append_one(observation)?);
+        for character in characters {
+            inserted.push(candidate.append_one(character)?);
         }
         candidate.digest = digest_cells(&candidate.cells)?;
         *self = candidate;
@@ -226,11 +185,7 @@ impl SourceLedger {
         )
     }
 
-    fn append_one(
-        &mut self,
-        observation: SourceObservation,
-    ) -> Result<SourceCellId, SourceLedgerError> {
-        let (character, output) = observation.into_parts();
+    fn append_one(&mut self, character: SpineChar) -> Result<SourceCellId, SourceLedgerError> {
         let raw_boundary = character.boundary();
         if let Some(previous) = self.last_raw_boundary
             && raw_boundary <= previous
@@ -255,7 +210,6 @@ impl SourceLedger {
             id: id.clone(),
             boundary,
             payload,
-            output,
             item,
         });
         self.last_raw_boundary = Some(raw_boundary);
@@ -292,24 +246,6 @@ impl SourceSnapshot {
             .iter()
             .find(|cell| cell.boundary.ordinal() == boundary.0)
     }
-
-    pub fn stable_output(
-        &self,
-        boundary: RawBoundary,
-        execution_ref: &str,
-    ) -> Option<crate::StableOutputId> {
-        let cell = self.cells.iter().find(|cell| {
-            cell.boundary.ordinal() == boundary.0
-                && cell
-                    .output
-                    .as_ref()
-                    .is_some_and(|output| output.execution_ref == execution_ref)
-        })?;
-        Some(crate::StableOutputId {
-            source: cell.id.clone(),
-            execution_ref: execution_ref.to_string(),
-        })
-    }
 }
 
 impl SourceCell {
@@ -325,11 +261,8 @@ impl SourceCell {
         }
     }
 
-    pub(crate) fn observation(&self) -> SourceObservation {
-        SourceObservation {
-            character: self.character(),
-            output: self.output.clone(),
-        }
+    pub(crate) fn observation(&self) -> SpineChar {
+        self.character()
     }
 }
 
@@ -375,13 +308,7 @@ fn native_item(boundary: RawBoundary) -> ContextItem {
 }
 
 fn digest_cells(cells: &[SourceCell]) -> Result<RecordDigest, SourceLedgerError> {
-    let mut canonical = cells.to_vec();
-    for cell in &mut canonical {
-        if let Some(output) = &mut cell.output {
-            output.body.clear();
-        }
-    }
-    let encoded = serde_json::to_vec(&canonical)
+    let encoded = serde_json::to_vec(cells)
         .map_err(|error| SourceLedgerError::Serialize(error.to_string()))?;
     if encoded.len() > MAX_SOURCE_SNAPSHOT_BYTES {
         return Err(SourceLedgerError::SnapshotTooLarge {

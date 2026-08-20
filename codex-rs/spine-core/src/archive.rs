@@ -287,7 +287,6 @@ fn validate_sampling_commit(
     let mut previous_ordinal = None;
     let mut seen_executions: BTreeSet<ExecutionId> = BTreeSet::new();
     let mut structural_count = 0usize;
-    let mut trim_targets = Vec::new();
     for execution in executions {
         let fact = crate::executed_fact::ExecutedSpineFact {
             execution_id: execution.execution_id.clone(),
@@ -315,18 +314,12 @@ fn validate_sampling_commit(
         if !seen_executions.insert(fact.execution_id.clone()) {
             return Err(ArchiveError::ConflictingFacts);
         }
-        match &fact.operation {
+        match fact.operation {
             SpineOperationFact::Open { .. }
             | SpineOperationFact::Close { .. }
             | SpineOperationFact::Next { .. }
             | SpineOperationFact::Spawn { .. } => {
                 structural_count = structural_count.saturating_add(1);
-            }
-            SpineOperationFact::Trim { target, .. } => {
-                if trim_targets.contains(target) {
-                    return Err(ArchiveError::ConflictingFacts);
-                }
-                trim_targets.push(target.clone());
             }
         }
     }

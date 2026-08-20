@@ -168,7 +168,7 @@ pub(super) fn spine_feedback_enabled(thread: &codex_core::CodexThread) -> bool {
 }
 
 fn spine_feedback_enabled_by(mut enabled: impl FnMut(Feature) -> bool) -> bool {
-    [Feature::SpineJit, Feature::SpineTrim, Feature::SpineSpawn]
+    [Feature::SpineJit, Feature::SpineSpawn]
         .into_iter()
         .any(&mut enabled)
 }

@@ -3,7 +3,6 @@ use crate::ContextPlanError;
 use crate::ExecutedFactError;
 use crate::Feature;
 use crate::RawBoundary;
-use crate::SourceCellId;
 use crate::SourceLedgerError;
 use crate::archive::ArchiveError;
 use crate::sampling::SamplingError;
@@ -30,10 +29,6 @@ pub enum PlannerError {
     PostBoundaryIsNotSourceTail,
     CommittedSourcePrefixMissing,
     FactHasNoSourceGroup(crate::ExecutionId),
-    MissingTrimSource(SourceCellId),
-    MissingTrimBoundary(RawBoundary),
-    TrimRuntimeUnavailable,
-    InvalidTrim(String),
     MissingSourceBoundary(RawBoundary),
     ArchivedSourceInLivePlan,
     UncommittedSourceAtCompact,
@@ -95,18 +90,6 @@ impl fmt::Display for PlannerError {
                 "executed fact {} has no matching source group",
                 execution.as_str()
             ),
-            Self::MissingTrimSource(source_id) => {
-                write!(formatter, "trim source {source_id:?} is missing")
-            }
-            Self::MissingTrimBoundary(boundary) => {
-                write!(
-                    formatter,
-                    "trim target at source boundary {} is missing",
-                    boundary.0
-                )
-            }
-            Self::TrimRuntimeUnavailable => formatter.write_str("trim runtime is unavailable"),
-            Self::InvalidTrim(error) => write!(formatter, "invalid trim fact: {error}"),
             Self::MissingSourceBoundary(boundary) => {
                 write!(formatter, "source boundary {} is missing", boundary.0)
             }
@@ -158,9 +141,6 @@ impl std::error::Error for PlannerError {}
 pub enum PlannerTransitionError {
     MultipleStructuralFacts,
     TaskCursorRequired(&'static str),
-    NonTrimFactInTrimSet,
-    InactiveTrimTarget(RawBoundary),
-    TrimTargetMismatch,
 }
 
 impl fmt::Display for PlannerTransitionError {
@@ -171,15 +151,6 @@ impl fmt::Display for PlannerTransitionError {
             }
             Self::TaskCursorRequired(operation) => {
                 write!(formatter, "{operation} requires an active task cursor")
-            }
-            Self::NonTrimFactInTrimSet => {
-                formatter.write_str("trim set contains a structural fact")
-            }
-            Self::InactiveTrimTarget(boundary) => {
-                write!(formatter, "trim target {} is not active", boundary.0)
-            }
-            Self::TrimTargetMismatch => {
-                formatter.write_str("trim target identity does not match its source")
             }
         }
     }

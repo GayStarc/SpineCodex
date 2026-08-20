@@ -601,18 +601,18 @@ sandbox_private_desktop = false
         std::fs::create_dir_all(&working)?;
         let home_source = home.join(".spine/spine.toml");
         let cwd_source = working.join("spine.toml");
-        std::fs::write(&home_source, "[limits]\ntrim_threshold_bytes = 2048\n")?;
+        std::fs::write(&home_source, "[prompt]\nnode = \"home-v1\"\n")?;
         let lock = config_lock_for_sdk_layers(&working, Some(&home), None, true)?;
         let lock_path = temp.path().join("config-lock.toml");
 
-        std::fs::write(&home_source, "[limits]\ntrim_threshold_bytes = 4096\n")?;
+        std::fs::write(&home_source, "[prompt]\nnode = \"home-v2\"\n")?;
         let error = write_and_read_lock(&lock_path, &lock)
             .await
             .expect_err("implicit home mutation must fail closed");
         assert!(error.to_string().contains("digest mismatch"), "{error}");
 
-        std::fs::write(&home_source, "[limits]\ntrim_threshold_bytes = 2048\n")?;
-        std::fs::write(&cwd_source, "[limits]\ntrim_threshold_bytes = 8192\n")?;
+        std::fs::write(&home_source, "[prompt]\nnode = \"home-v1\"\n")?;
+        std::fs::write(&cwd_source, "[prompt]\nnode = \"cwd\"\n")?;
         let error = write_and_read_lock(&lock_path, &lock)
             .await
             .expect_err("an optional CWD layer appearing must fail closed");
@@ -637,12 +637,12 @@ sandbox_private_desktop = false
         std::fs::create_dir_all(&working)?;
         let home_source = home.join(".spine/spine.toml");
         let explicit_source = temp.path().join("explicit.toml");
-        std::fs::write(&home_source, "[limits]\ntrim_threshold_bytes = 2048\n")?;
+        std::fs::write(&home_source, "[prompt]\nnode = \"home-v1\"\n")?;
         std::fs::write(&explicit_source, "[prompt]\nnode = \"explicit node\"\n")?;
         let lock = config_lock_for_sdk_layers(&working, Some(&home), Some(&explicit_source), true)?;
         let lock_path = temp.path().join("config-lock.toml");
 
-        std::fs::write(&home_source, "[limits]\ntrim_threshold_bytes = 4096\n")?;
+        std::fs::write(&home_source, "[prompt]\nnode = \"home-v2\"\n")?;
         let error = write_and_read_lock(&lock_path, &lock)
             .await
             .expect_err("a partially overlaid inherited layer must remain pinned");
@@ -656,7 +656,7 @@ sandbox_private_desktop = false
         let working = temp.path().join("work");
         std::fs::create_dir_all(&working)?;
         let cwd_source = working.join("spine.toml");
-        std::fs::write(&cwd_source, "[limits]\ntrim_threshold_bytes = 2048\n")?;
+        std::fs::write(&cwd_source, "[prompt]\nnode = \"cwd-v1\"\n")?;
         let lock = config_lock_for_sdk_layers(&working, None, None, false)?;
         assert_eq!(
             lock.spine_config
@@ -666,7 +666,7 @@ sandbox_private_desktop = false
             Vec::new()
         );
 
-        std::fs::write(&cwd_source, "[limits]\ntrim_threshold_bytes = 4096\n")?;
+        std::fs::write(&cwd_source, "[prompt]\nnode = \"cwd-v2\"\n")?;
         write_and_read_lock(&temp.path().join("config-lock.toml"), &lock)
             .await
             .expect("suppressed untrusted CWD layers must not affect replay");

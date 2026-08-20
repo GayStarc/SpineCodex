@@ -8,15 +8,12 @@ use spine_core::host::CellId;
 use spine_core::host::ContextEvent;
 use spine_core::host::ContextInsert;
 use spine_core::host::ContextLabel;
-use spine_core::host::ObservedOutput;
 use spine_core::host::ParseCell;
 use spine_core::host::ParseStack;
 use spine_core::host::RawBoundary;
-use spine_core::host::SourceObservation;
 use spine_core::host::SpineChar;
 use spine_core::host::SpineConfig;
 use spine_core::host::SpineContextEventHandler;
-use spine_core::host::TrimEdit;
 use std::collections::BTreeMap;
 use std::fmt;
 
@@ -92,16 +89,12 @@ impl CodexContextHandler {
                 let SpineChar::Message(message) = cell.character() else {
                     return None;
                 };
-                cell.labels().iter().find_map(|label| {
-                    let ContextLabel::UserAnchor(anchor) = label else {
-                        return None;
-                    };
-                    Some(
-                        super::memory_projection::SpinetreeUserMessageProjectionEntry {
-                            anchor: *anchor,
-                            body: message.content.clone(),
-                        },
-                    )
+                cell.labels().first().map(|label| {
+                    let ContextLabel::UserAnchor(anchor) = label;
+                    super::memory_projection::SpinetreeUserMessageProjectionEntry {
+                        anchor: *anchor,
+                        body: message.content.clone(),
+                    }
                 })
             })
             .collect()
@@ -146,12 +139,6 @@ impl SpineContextEventHandler for CodexContextHandler {
                         CodexContextError(format!("context tag index {index} is out of bounds"))
                     })?;
                     apply_label(item, label);
-                    if matches!(
-                        label,
-                        ContextLabel::Output(_) | ContextLabel::SpawnOutput { .. }
-                    ) {
-                        validate_spine_model_item(item).map_err(CodexContextError)?;
-                    }
                 }
                 ContextEvent::Splice {
                     start,
@@ -235,7 +222,6 @@ impl CodexContextHandler {
                 std::slice::from_ref(item),
                 &[],
                 None,
-                None,
                 &BTreeMap::new(),
                 &self.node_prompt,
             )
@@ -289,34 +275,6 @@ pub(crate) fn response_item_to_char_and_source(
     (character, source_item)
 }
 
-pub(crate) fn response_item_to_observation_and_source(
-    item: &ResponseItem,
-    boundary: RawBoundary,
-) -> (SourceObservation, ResponseItem) {
-    let (character, source) = response_item_to_char_and_source(item, boundary);
-    let observation = match item {
-        ResponseItem::FunctionCallOutput {
-            call_id, output, ..
-        }
-        | ResponseItem::CustomToolCallOutput {
-            call_id, output, ..
-        } => {
-            let body = match &output.body {
-                FunctionCallOutputBody::Text(text) => text.clone(),
-                FunctionCallOutputBody::ContentItems(items) => {
-                    serde_json::to_string(items).unwrap_or_default()
-                }
-            };
-            SourceObservation::new(character).with_output(ObservedOutput {
-                execution_ref: call_id.clone(),
-                body,
-            })
-        }
-        _ => SourceObservation::new(character),
-    };
-    (observation, source)
-}
-
 fn response_item_matches_char(
     item: &ResponseItem,
     boundary: RawBoundary,
@@ -338,37 +296,7 @@ pub(super) fn apply_label(item: &mut ResponseItem, label: &ContextLabel) {
         ContextLabel::UserAnchor(anchor) => {
             crate::context::SpineUserAnchor::new(*anchor).prepend_to(item);
         }
-        ContextLabel::Output(edit) => apply_trim_edit(item, edit),
-        ContextLabel::SpawnOutput { succeeded } => {
-            if let ResponseItem::FunctionCallOutput { output, .. }
-            | ResponseItem::CustomToolCallOutput { output, .. } = item
-            {
-                output.body = FunctionCallOutputBody::Text(
-                    serde_json::json!({"status": if *succeeded {
-                        "success"
-                    } else {
-                        "failure"
-                    }})
-                    .to_string(),
-                );
-                output.success = Some(*succeeded);
-            }
-        }
     }
-}
-
-fn apply_trim_edit(item: &mut ResponseItem, edit: &TrimEdit) {
-    let output = match item {
-        ResponseItem::FunctionCallOutput { output, .. }
-        | ResponseItem::CustomToolCallOutput { output, .. } => output,
-        _ => return,
-    };
-    let body = match edit {
-        TrimEdit::Tagged { trim_id, body, .. } => format!("[TRIM_ID: {trim_id}]\n{body}"),
-        TrimEdit::Snipped => super::TOOL_RESULT_CLEARED_MESSAGE.to_string(),
-        TrimEdit::Sliced(value) => value.clone(),
-    };
-    output.body = FunctionCallOutputBody::Text(body);
 }
 
 fn replace_images(item: &mut ResponseItem, placeholder: &str) -> bool {

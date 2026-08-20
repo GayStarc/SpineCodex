@@ -24,7 +24,6 @@ use serde::de::Visitor;
 use serde_json::Map;
 use serde_json::Value;
 use spine_core::host::SpawnTask;
-use spine_core::host::TrimRequest;
 use thiserror::Error;
 
 use crate::tools::code_mode::is_exec_tool_name;
@@ -268,7 +267,6 @@ pub(crate) enum DebugToolKind {
     SpineOpen,
     SpineClose,
     SpineNext,
-    SpineTrim,
     SpineSpawn,
     CodeMode,
     Shell,
@@ -283,11 +281,7 @@ impl DebugToolKind {
     fn is_spine(self) -> bool {
         matches!(
             self,
-            Self::SpineOpen
-                | Self::SpineClose
-                | Self::SpineNext
-                | Self::SpineTrim
-                | Self::SpineSpawn
+            Self::SpineOpen | Self::SpineClose | Self::SpineNext | Self::SpineSpawn
         )
     }
 }
@@ -321,18 +315,6 @@ pub(crate) enum DebugToolArguments {
         object: DebugObjectState,
         summary: DebugStringShape,
         memory: DebugStringShape,
-        unknown_fields: bool,
-        valid: bool,
-    },
-    Trim {
-        object: DebugObjectState,
-        trim_id: DebugMappedString,
-        op: DebugTrimOpShape,
-        head: DebugUnsignedShape,
-        tail: DebugUnsignedShape,
-        anchor: DebugStringShape,
-        preceding: DebugUnsignedShape,
-        following: DebugUnsignedShape,
         unknown_fields: bool,
         valid: bool,
     },
@@ -381,19 +363,6 @@ impl DebugStringShape {
 pub(crate) struct DebugMappedString {
     shape: DebugStringShape,
     local_id: Option<u64>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum DebugTrimOpShape {
-    Missing,
-    Null,
-    WrongType,
-    Empty,
-    Whitespace,
-    Snip,
-    Slice,
-    Other,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -546,7 +515,6 @@ enum IdNamespace {
     Session,
     Agent,
     Execution,
-    Trim,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1325,29 +1293,6 @@ impl RolloutDebugRedactor {
                         && !has_unknown_fields(fields, &["summary", "memory"]),
                 }
             }
-            DebugToolKind::SpineTrim => DebugToolArguments::Trim {
-                object,
-                trim_id: self.mapped_string(IdNamespace::Trim, field(fields, "TRIM_ID")),
-                op: trim_op_shape(field(fields, "op")),
-                head: unsigned_shape(field(fields, "head")),
-                tail: unsigned_shape(field(fields, "tail")),
-                anchor: string_shape(field(fields, "anchor")),
-                preceding: unsigned_shape(field(fields, "preceding")),
-                following: unsigned_shape(field(fields, "following")),
-                unknown_fields: has_unknown_fields(
-                    fields,
-                    &[
-                        "TRIM_ID",
-                        "op",
-                        "head",
-                        "tail",
-                        "anchor",
-                        "preceding",
-                        "following",
-                    ],
-                ),
-                valid: valid_json && TrimRequest::parse(arguments).is_ok(),
-            },
             DebugToolKind::SpineSpawn => DebugToolArguments::Spawn {
                 object,
                 tasks: inspect_spawn_tasks(field(fields, "tasks")),
@@ -1374,8 +1319,7 @@ impl RolloutDebugRedactor {
             Some(
                 tool @ (DebugToolKind::SpineOpen
                 | DebugToolKind::SpineClose
-                | DebugToolKind::SpineNext
-                | DebugToolKind::SpineTrim),
+                | DebugToolKind::SpineNext),
             ) => DebugToolOutput::Control {
                 exact_success_carrier: is_exact_control_success(tool, body),
                 body: debug_output_body(body),
@@ -1701,7 +1645,6 @@ fn classify_tool(namespace: Option<&str>, name: &str) -> DebugToolKind {
         (Some("spine"), "open") | (None, "spine.open") => DebugToolKind::SpineOpen,
         (Some("spine"), "close") | (None, "spine.close") => DebugToolKind::SpineClose,
         (Some("spine"), "next") | (None, "spine.next") => DebugToolKind::SpineNext,
-        (Some("spine"), "trim") | (None, "spine.trim") => DebugToolKind::SpineTrim,
         (Some("spine"), "spawn") | (None, "spine.spawn") => DebugToolKind::SpineSpawn,
         _ if is_exec_tool_name(&codex_tools::ToolName {
             namespace: namespace.map(str::to_string),
@@ -1819,9 +1762,6 @@ fn is_exact_control_success(tool: DebugToolKind, body: &FunctionCallOutputBody) 
         DebugToolKind::SpineNext => {
             body == super::tool_response::success_carrier(spine_core::host::SpineTool::Next)
         }
-        DebugToolKind::SpineTrim => {
-            body == super::tool_response::success_carrier(spine_core::host::SpineTool::Trim)
-        }
         DebugToolKind::SpineSpawn
         | DebugToolKind::CodeMode
         | DebugToolKind::Shell
@@ -1907,19 +1847,6 @@ fn string_shape(value: Option<&Value>) -> DebugStringShape {
         Some(Value::String(value)) if value.trim().is_empty() => DebugStringShape::Whitespace,
         Some(Value::String(_)) => DebugStringShape::NonEmpty,
         Some(_) => DebugStringShape::WrongType,
-    }
-}
-
-fn trim_op_shape(value: Option<&Value>) -> DebugTrimOpShape {
-    match value {
-        None => DebugTrimOpShape::Missing,
-        Some(Value::Null) => DebugTrimOpShape::Null,
-        Some(Value::String(value)) if value.is_empty() => DebugTrimOpShape::Empty,
-        Some(Value::String(value)) if value.trim().is_empty() => DebugTrimOpShape::Whitespace,
-        Some(Value::String(value)) if value == "snip" => DebugTrimOpShape::Snip,
-        Some(Value::String(value)) if value == "slice" => DebugTrimOpShape::Slice,
-        Some(Value::String(_)) => DebugTrimOpShape::Other,
-        Some(_) => DebugTrimOpShape::WrongType,
     }
 }
 

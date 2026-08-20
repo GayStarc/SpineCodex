@@ -1,16 +1,13 @@
 use crate::CharParseError;
 use crate::ExecutedSpineFact;
 use crate::ExecutionId;
-use crate::ExecutionOrigin;
 use crate::RawBoundary;
 use crate::RawSpan;
 use crate::RolloutEvent;
-use crate::SourceCellId;
 use crate::SourceSnapshot;
 use crate::SpineCharParser;
 use crate::SpineCompactBarrierV1;
 use crate::SpineCompiler;
-use crate::SpineOperationFact;
 use crate::archive::FactSourceBinding;
 use crate::compiler::SamplingCompileError;
 
@@ -19,7 +16,6 @@ pub(crate) enum SamplingDeltaError {
     Parse(CharParseError),
     Compile(SamplingCompileError),
     MissingSourceBoundary(RawBoundary),
-    MissingTrimSource(SourceCellId),
     FactHasNoSourceGroup(ExecutionId),
     FactSourceExecutionMismatch,
 }
@@ -48,7 +44,7 @@ pub(crate) fn preview_source_delta(
 ) -> Result<(), SamplingDeltaError> {
     for cell in &snapshot.cells()[committed_source_cells..] {
         let step = parser
-            .eat_observation(cell.observation())
+            .eat(cell.observation())
             .map_err(SamplingDeltaError::Parse)?;
         for event in step.events() {
             compiler
@@ -100,7 +96,7 @@ pub(crate) fn reduce_sampling_delta(
         source_tail.partition_point(|cell| cell.boundary.ordinal() <= pre_boundary.0);
     for cell in &source_tail[..sampling_start] {
         let step = parser
-            .eat_observation(cell.observation())
+            .eat(cell.observation())
             .map_err(SamplingDeltaError::Parse)?;
         for event in step.events() {
             compiler
@@ -118,31 +114,9 @@ pub(crate) fn reduce_sampling_delta(
     }
 
     let sampling_source = &source_tail[sampling_start..];
-    let execution_refs = facts
-        .iter()
-        .map(|fact| match &fact.origin {
-            ExecutionOrigin::Direct { execution_ref } => execution_ref.as_str(),
-        })
-        .collect::<std::collections::BTreeSet<_>>();
-    let observed_outputs = sampling_source
-        .iter()
-        .filter_map(|cell| {
-            cell.output.as_ref().map(|output| {
-                if execution_refs.contains(output.execution_ref.as_str()) {
-                    return None;
-                }
-                Some((
-                    RawBoundary(cell.boundary.ordinal()),
-                    output.execution_ref.clone(),
-                    output.body.clone(),
-                ))
-            })
-        })
-        .flatten()
-        .collect::<Vec<_>>();
     for cell in sampling_source {
         let step = parser
-            .eat_observation(cell.observation())
+            .eat(cell.observation())
             .map_err(SamplingDeltaError::Parse)?;
         for event in step.events() {
             retained_bytes = retained_bytes.saturating_add(event.retained_bytes());
@@ -188,11 +162,9 @@ pub(crate) fn reduce_sampling_delta(
             end: post_boundary,
         };
         let fact_refs = facts.iter().collect::<Vec<_>>();
-        let trims = resolve_trim_boundaries(snapshot, &fact_refs)?;
         compiler
-            .eat_sampling(span, retained_bytes, &fact_refs, &trims, open_input_tokens)
+            .eat_sampling(span, retained_bytes, &fact_refs, open_input_tokens)
             .map_err(SamplingDeltaError::Compile)?;
-        compiler.observe_outputs(observed_outputs);
     }
 
     facts
@@ -268,25 +240,4 @@ pub(crate) fn reduce_compact_delta(
         }
     }
     Ok(())
-}
-
-fn resolve_trim_boundaries<'a>(
-    source: &SourceSnapshot,
-    facts: &[&'a ExecutedSpineFact],
-) -> Result<Vec<(RawBoundary, &'a ExecutedSpineFact)>, SamplingDeltaError> {
-    facts
-        .iter()
-        .filter_map(|fact| match &fact.operation {
-            SpineOperationFact::Trim { target, .. } => Some(
-                source
-                    .boundary(&target.source)
-                    .map(|boundary| (RawBoundary(boundary.ordinal()), *fact))
-                    .ok_or_else(|| SamplingDeltaError::MissingTrimSource(target.source.clone())),
-            ),
-            SpineOperationFact::Open { .. }
-            | SpineOperationFact::Close { .. }
-            | SpineOperationFact::Next { .. }
-            | SpineOperationFact::Spawn { .. } => None,
-        })
-        .collect()
 }

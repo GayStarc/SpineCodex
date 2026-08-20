@@ -227,12 +227,7 @@ pub enum TestFeatureProfile {
 
 impl TestFeatureProfile {
     pub fn apply(self, config: &mut Config) -> anyhow::Result<()> {
-        for feature in [
-            Feature::SpineJit,
-            Feature::SpineTrim,
-            Feature::SpineSpawn,
-            Feature::SpineStatus,
-        ] {
+        for feature in [Feature::SpineJit, Feature::SpineSpawn, Feature::SpineStatus] {
             config.features.disable(feature)?;
         }
         if matches!(self, Self::SpineJit) {

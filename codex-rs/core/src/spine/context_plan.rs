@@ -1,4 +1,3 @@
-use super::context_handler::apply_label;
 use super::materialize_context;
 use super::memory_projection::SpinetreeUserMessageProjectionEntry;
 use super::message_from_response_item;
@@ -42,7 +41,7 @@ where
     let mut items = Vec::with_capacity(resolved.cells.len());
     let mut user_messages = Vec::new();
     for cell in resolved.cells {
-        let mut spine_owned = matches!(&cell.provenance, ContextCellProvenance::Projection(_));
+        let spine_owned = matches!(&cell.provenance, ContextCellProvenance::Projection(_));
         let mut anchor_items = Vec::new();
         let mut item = match cell.provenance {
             ContextCellProvenance::Source(source_id) => {
@@ -55,7 +54,6 @@ where
             ContextCellProvenance::Projection(_) => materialize_context(
                 std::slice::from_ref(&cell.item),
                 &[],
-                None,
                 None,
                 node_context_costs,
                 node_prompt,
@@ -70,30 +68,21 @@ where
             })?,
         };
         for label in &cell.labels {
-            if let ContextLabel::UserAnchor(anchor) = label {
-                user_messages.push(SpinetreeUserMessageProjectionEntry {
-                    anchor: *anchor,
-                    body: message_from_response_item(/*raw_index*/ 0, &item).content,
-                });
-                let mut anchored = item.clone();
-                SpineUserAnchor::new(*anchor).prepend_to(&mut anchored);
-                if validate_spine_model_item(&anchored).is_ok() {
-                    item = anchored;
-                } else {
-                    let anchor_item: ResponseItem =
-                        ContextualUserFragment::into(SpineUserAnchor::new(*anchor));
-                    validate_spine_model_item(&anchor_item).map_err(CodexContextPlanError)?;
-                    anchor_items.push(anchor_item);
-                }
-                continue;
+            let ContextLabel::UserAnchor(anchor) = label;
+            user_messages.push(SpinetreeUserMessageProjectionEntry {
+                anchor: *anchor,
+                body: message_from_response_item(/*raw_index*/ 0, &item).content,
+            });
+            let mut anchored = item.clone();
+            SpineUserAnchor::new(*anchor).prepend_to(&mut anchored);
+            if validate_spine_model_item(&anchored).is_ok() {
+                item = anchored;
+            } else {
+                let anchor_item: ResponseItem =
+                    ContextualUserFragment::into(SpineUserAnchor::new(*anchor));
+                validate_spine_model_item(&anchor_item).map_err(CodexContextPlanError)?;
+                anchor_items.push(anchor_item);
             }
-            if matches!(
-                label,
-                ContextLabel::Output(_) | ContextLabel::SpawnOutput { .. }
-            ) {
-                spine_owned = true;
-            }
-            apply_label(&mut item, label);
         }
         if spine_owned {
             let mut wire_bytes = projected_item_wire_bytes(&item)?;

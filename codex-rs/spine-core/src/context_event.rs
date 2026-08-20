@@ -1,15 +1,12 @@
 use crate::CellId;
 use crate::ContextItem;
 use crate::ParseStack;
-use crate::TrimEdit;
 use serde::Deserialize;
 use serde::Serialize;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ContextLabel {
     UserAnchor(u64),
-    Output(TrimEdit),
-    SpawnOutput { succeeded: bool },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

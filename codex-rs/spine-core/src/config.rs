@@ -7,7 +7,6 @@ mod loader;
 pub use loader::ConfigLoadError;
 pub use loader::SpineConfigLoader;
 
-const MAX_TRIM_THRESHOLD_BYTES: u64 = 64 * 1024 * 1024;
 const MULTI_AGENT_MODE_OPEN_TAG: &str = "<multi_agent_mode>";
 const MULTI_AGENT_MODE_CLOSE_TAG: &str = "</multi_agent_mode>";
 /// Maximum serialized bytes owned by one Spine model-visible provider value.
@@ -32,7 +31,6 @@ pub const DEFAULT_CONFIG_TOML: &str = include_str!("../config/spine.toml");
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Feature {
     Jit,
-    Trim,
     Spawn,
 }
 
@@ -44,10 +42,8 @@ pub enum SpawnPromptMode {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SpineConfig {
-    trim_threshold_bytes: usize,
     jit_prompt: String,
     node_prompt: String,
-    trim_prompt: String,
     spawn_prompt: String,
     spawn_explicit_request_only_prompt: String,
     spawn_proactive_prompt: String,
@@ -66,7 +62,6 @@ struct ToolDescriptions {
     open: Option<String>,
     close: Option<String>,
     next: Option<String>,
-    trim: Option<String>,
     spawn: Option<String>,
 }
 
@@ -75,18 +70,9 @@ struct ToolDescriptions {
 struct FileConfig {
     schema_version: u32,
     #[serde(default)]
-    limits: FileLimits,
-    #[serde(default)]
     prompt: FilePrompt,
     #[serde(default)]
     tools: FileTools,
-}
-
-#[derive(Debug, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
-struct FileLimits {
-    #[serde(default = "default_trim_threshold")]
-    trim_threshold_bytes: u64,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -96,8 +82,6 @@ struct FilePrompt {
     jit: Option<String>,
     #[serde(default)]
     node: Option<String>,
-    #[serde(default)]
-    trim: Option<String>,
     #[serde(default)]
     spawn: Option<String>,
     #[serde(default)]
@@ -116,8 +100,6 @@ struct FileTools {
     #[serde(default)]
     next: Option<FileToolDescription>,
     #[serde(default)]
-    trim: Option<FileToolDescription>,
-    #[serde(default)]
     spawn: Option<FileToolDescription>,
 }
 
@@ -125,10 +107,6 @@ struct FileTools {
 #[serde(deny_unknown_fields)]
 struct FileToolDescription {
     description: String,
-}
-
-const fn default_trim_threshold() -> u64 {
-    10_000
 }
 
 impl SpineConfig {
@@ -149,13 +127,6 @@ impl SpineConfig {
         if parsed.schema_version != 1 {
             return Err(ConfigError::UnsupportedSchemaVersion(parsed.schema_version));
         }
-        if parsed.limits.trim_threshold_bytes == 0
-            || parsed.limits.trim_threshold_bytes > MAX_TRIM_THRESHOLD_BYTES
-        {
-            return Err(ConfigError::InvalidTrimThreshold(
-                parsed.limits.trim_threshold_bytes,
-            ));
-        }
         for (name, value, max_bytes) in [
             (
                 "prompt.jit",
@@ -165,11 +136,6 @@ impl SpineConfig {
             (
                 "prompt.node",
                 parsed.prompt.node.as_deref(),
-                MAX_MODEL_VISIBLE_TEXT_BYTES,
-            ),
-            (
-                "prompt.trim",
-                parsed.prompt.trim.as_deref(),
                 MAX_MODEL_VISIBLE_TEXT_BYTES,
             ),
             (
@@ -215,15 +181,6 @@ impl SpineConfig {
                 MAX_TOOL_DESCRIPTION_BYTES,
             ),
             (
-                "tools.trim.description",
-                parsed
-                    .tools
-                    .trim
-                    .as_ref()
-                    .map(|tool| tool.description.as_str()),
-                MAX_TOOL_DESCRIPTION_BYTES,
-            ),
-            (
                 "tools.spawn.description",
                 parsed
                     .tools
@@ -248,10 +205,8 @@ impl SpineConfig {
             validate_multi_agent_mode_prompt(name, value)?;
         }
         Ok(Self {
-            trim_threshold_bytes: parsed.limits.trim_threshold_bytes as usize,
             jit_prompt: parsed.prompt.jit.unwrap_or_default(),
             node_prompt: parsed.prompt.node.unwrap_or_default(),
-            trim_prompt: parsed.prompt.trim.unwrap_or_default(),
             spawn_prompt: parsed.prompt.spawn.unwrap_or_default(),
             spawn_explicit_request_only_prompt: parsed
                 .prompt
@@ -262,7 +217,6 @@ impl SpineConfig {
                 open: parsed.tools.open.map(|tool| tool.description),
                 close: parsed.tools.close.map(|tool| tool.description),
                 next: parsed.tools.next.map(|tool| tool.description),
-                trim: parsed.tools.trim.map(|tool| tool.description),
                 spawn: parsed.tools.spawn.map(|tool| tool.description),
             },
             features: BTreeSet::new(),
@@ -296,10 +250,6 @@ impl SpineConfig {
         1
     }
 
-    pub const fn trim_threshold_bytes(&self) -> usize {
-        self.trim_threshold_bytes
-    }
-
     pub fn extend_system_prompt(&self, base: &str) -> String {
         crate::prompt::extend(base.to_owned(), self)
     }
@@ -325,7 +275,6 @@ impl SpineConfig {
     pub(crate) fn prompt(&self, feature: crate::Feature) -> &str {
         match feature {
             crate::Feature::Jit => &self.jit_prompt,
-            crate::Feature::Trim => &self.trim_prompt,
             crate::Feature::Spawn => &self.spawn_prompt,
         }
     }
@@ -335,7 +284,6 @@ impl SpineConfig {
             "open" => self.tool_descriptions.open.as_deref(),
             "close" => self.tool_descriptions.close.as_deref(),
             "next" => self.tool_descriptions.next.as_deref(),
-            "trim" => self.tool_descriptions.trim.as_deref(),
             "spawn" => self.tool_descriptions.spawn.as_deref(),
             _ => None,
         }
@@ -353,9 +301,6 @@ impl SpineConfig {
                 require_tool(self.tool_description(name), name)?;
             }
         }
-        if self.is_enabled(Feature::Trim) {
-            require_tool(self.tool_description("trim"), "trim")?;
-        }
         if self.is_enabled(Feature::Spawn) {
             if !self.is_enabled(Feature::Jit) {
                 return Err(crate::InitError::SpawnRequiresJit);
@@ -370,7 +315,7 @@ impl SpineConfig {
             )?;
             require_tool(self.tool_description("spawn"), "spawn")?;
         }
-        let prompt_segments = [Feature::Jit, Feature::Trim, Feature::Spawn]
+        let prompt_segments = [Feature::Jit, Feature::Spawn]
             .into_iter()
             .filter(|feature| self.is_enabled(*feature))
             .map(|feature| self.prompt(feature))
@@ -503,7 +448,6 @@ fn require_tool(value: Option<&str>, name: &'static str) -> Result<(), crate::In
 pub enum ConfigError {
     InvalidToml(String),
     UnsupportedSchemaVersion(u32),
-    InvalidTrimThreshold(u64),
     PromptTooLong {
         name: &'static str,
         max: usize,
@@ -525,9 +469,6 @@ impl fmt::Display for ConfigError {
                     formatter,
                     "unsupported Spine config schema version {version}"
                 )
-            }
-            Self::InvalidTrimThreshold(value) => {
-                write!(formatter, "invalid Spine trim threshold {value}")
             }
             Self::PromptTooLong { name, max, actual } => {
                 write!(
@@ -555,12 +496,9 @@ mod tests {
 
     const VALID: &str = r#"
 schema_version = 1
-[limits]
-trim_threshold_bytes = 2048
 [prompt]
 jit = "jit prompt"
 node = "node prompt"
-trim = "trim prompt"
 spawn = "spawn prompt"
 spawn_explicit_request_only = "spawn explicit request only prompt"
 spawn_proactive = "spawn proactive prompt"
@@ -570,8 +508,6 @@ description = "open description"
 description = "close description"
 [tools.next]
 description = "next description"
-[tools.trim]
-description = "trim description"
 [tools.spawn]
 description = "spawn description"
 "#;
@@ -580,7 +516,6 @@ description = "spawn description"
     fn parses_and_exposes_typed_config() {
         let config = SpineConfig::parse_toml(VALID).unwrap();
         assert_eq!(config.schema_version(), 1);
-        assert_eq!(config.trim_threshold_bytes(), 2048);
         assert_eq!(config.prompt(crate::Feature::Jit), "jit prompt");
         assert_eq!(config.node_prompt(), None);
         assert_eq!(
@@ -603,19 +538,14 @@ description = "spawn description"
     }
 
     #[test]
-    fn rejects_unknown_fields_and_invalid_limits() {
+    fn rejects_unknown_fields_and_bounds_model_visible_text() {
         assert!(matches!(
             SpineConfig::parse_toml("schema_version = 1\nunknown = true"),
             Err(ConfigError::InvalidToml(_))
         ));
-        assert!(matches!(
-            SpineConfig::parse_toml("schema_version = 1\n[limits]\ntrim_threshold_bytes = 0"),
-            Err(ConfigError::InvalidTrimThreshold(0))
-        ));
         for (name, marker, max_bytes) in [
             ("prompt.jit", "jit prompt", MAX_MODEL_VISIBLE_TEXT_BYTES),
             ("prompt.node", "node prompt", MAX_MODEL_VISIBLE_TEXT_BYTES),
-            ("prompt.trim", "trim prompt", MAX_MODEL_VISIBLE_TEXT_BYTES),
             ("prompt.spawn", "spawn prompt", MAX_MODEL_VISIBLE_TEXT_BYTES),
             (
                 "prompt.spawn_explicit_request_only",
@@ -640,11 +570,6 @@ description = "spawn description"
             (
                 "tools.next.description",
                 "next description",
-                MAX_TOOL_DESCRIPTION_BYTES,
-            ),
-            (
-                "tools.trim.description",
-                "trim description",
                 MAX_TOOL_DESCRIPTION_BYTES,
             ),
             (
@@ -707,7 +632,6 @@ description = "spawn description"
         let config = SpineConfig::v1();
         let configured = [
             config.prompt(Feature::Jit),
-            config.prompt(Feature::Trim),
             config.prompt(Feature::Spawn),
             config.node_prompt().unwrap_or_default(),
             config
@@ -719,7 +643,6 @@ description = "spawn description"
             config.tool_description("open").unwrap_or_default(),
             config.tool_description("close").unwrap_or_default(),
             config.tool_description("next").unwrap_or_default(),
-            config.tool_description("trim").unwrap_or_default(),
             config.tool_description("spawn").unwrap_or_default(),
         ];
 
@@ -739,10 +662,13 @@ description = "spawn description"
     fn enabled_prompt_segments_share_one_hard_boundary() {
         let source = VALID
             .replace("jit prompt", &"j".repeat(MAX_MODEL_VISIBLE_TEXT_BYTES / 2))
-            .replace("trim prompt", &"t".repeat(MAX_MODEL_VISIBLE_TEXT_BYTES / 2));
+            .replace(
+                "spawn prompt",
+                &"s".repeat(MAX_MODEL_VISIBLE_TEXT_BYTES / 2),
+            );
         let config = SpineConfig::parse_toml(&source).unwrap();
         assert!(matches!(
-            config.with_features([Feature::Jit, Feature::Trim]),
+            config.with_features([Feature::Jit, Feature::Spawn]),
             Err(crate::InitError::ModelVisiblePromptTooLong { .. })
         ));
     }
@@ -752,11 +678,11 @@ description = "spawn description"
         let escaped = "\\u0000".repeat(900);
         let source = VALID
             .replace("jit prompt", &escaped)
-            .replace("trim prompt", &escaped);
+            .replace("spawn prompt", &escaped);
         let config = SpineConfig::parse_toml(&source).unwrap();
 
         assert!(matches!(
-            config.with_features([Feature::Jit, Feature::Trim]),
+            config.with_features([Feature::Jit, Feature::Spawn]),
             Err(crate::InitError::ModelVisiblePromptTooLong {
                 max_bytes: MAX_MODEL_VISIBLE_PROVIDER_VALUE_BYTES,
                 ..

@@ -118,7 +118,6 @@ async fn spine_feedback_capability_is_present_for_opted_in_lifecycle_responses()
     let codex_home = TempDir::new()?;
     MockResponsesConfig::new(&server.uri())
         .enable_feature(Feature::SpineJit)
-        .disable_feature(Feature::SpineTrim)
         .disable_feature(Feature::SpineSpawn)
         .write(codex_home.path())?;
 
@@ -131,7 +130,6 @@ async fn spine_feedback_capability_is_omitted_for_stable_lifecycle_responses() -
     let codex_home = TempDir::new()?;
     MockResponsesConfig::new(&server.uri())
         .enable_feature(Feature::SpineJit)
-        .disable_feature(Feature::SpineTrim)
         .disable_feature(Feature::SpineSpawn)
         .write(codex_home.path())?;
 
@@ -144,7 +142,6 @@ async fn spine_feedback_upload_rejects_a_non_spine_thread_over_json_rpc() -> Res
     let codex_home = TempDir::new()?;
     MockResponsesConfig::new(&server.uri())
         .disable_feature(Feature::SpineJit)
-        .disable_feature(Feature::SpineTrim)
         .disable_feature(Feature::SpineSpawn)
         .write(codex_home.path())?;
     let mut app_server = TestAppServer::builder()
@@ -200,7 +197,6 @@ async fn spine_feedback_upload_enforces_bounds_after_spine_capability_is_adverti
     let codex_home = TempDir::new()?;
     MockResponsesConfig::new(&server.uri())
         .enable_feature(Feature::SpineJit)
-        .disable_feature(Feature::SpineTrim)
         .disable_feature(Feature::SpineSpawn)
         .write(codex_home.path())?;
     let mut app_server = TestAppServer::builder()

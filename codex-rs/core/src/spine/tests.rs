@@ -171,7 +171,6 @@ fn source_span_materializes_native_request_and_output_in_order() {
             }],
             &effective,
             None,
-            None,
             &BTreeMap::new(),
             "node prompt",
         )
@@ -205,7 +204,6 @@ fn multimodal_user_item_is_preserved_while_text_is_anchored() {
             user_anchor: Some(1),
         }],
         &effective,
-        None,
         None,
         &BTreeMap::new(),
         "node prompt",
@@ -254,7 +252,6 @@ fn contextual_user_message_does_not_consume_an_anchor() {
         ],
         &effective,
         None,
-        None,
         &BTreeMap::new(),
         "node prompt",
     )
@@ -301,7 +298,6 @@ fn compact_replacement_history_is_materialized_exactly_once() {
             }],
             &effective,
             None,
-            None,
             &BTreeMap::new(),
             "node prompt",
         )
@@ -347,7 +343,6 @@ fn closed_memory_user_slot_preserves_the_complete_native_message() {
             }),
         ],
         &effective,
-        None,
         None,
         &BTreeMap::new(),
         "node prompt",

@@ -55,11 +55,12 @@ impl CodexSpineObserverHandler {
         usage_samples: &[spine_core::host::TokenUsageSample],
         event_id: Option<&str>,
         user_messages: Vec<SpinetreeUserMessageProjectionEntry>,
+        settled_spawn_call_ids: &[String],
     ) {
         if !self.jit_enabled {
             return;
         }
-        self.publish_tree(projection, usage_samples, event_id);
+        self.publish_tree(projection, usage_samples, event_id, settled_spawn_call_ids);
         self.publish_memory(projection, user_messages);
     }
 
@@ -70,7 +71,7 @@ impl CodexSpineObserverHandler {
         event_id: Option<&str>,
     ) {
         if self.jit_enabled {
-            self.publish_tree(projection, usage_samples, event_id);
+            self.publish_tree(projection, usage_samples, event_id, &[]);
         }
     }
 
@@ -79,13 +80,18 @@ impl CodexSpineObserverHandler {
         projection: &spine_core::host::SpineProjection,
         usage_samples: &[spine_core::host::TokenUsageSample],
         event_id: Option<&str>,
+        settled_spawn_call_ids: &[String],
     ) {
         let Some(tx_event) = &self.tx_event else {
             return;
         };
         let event = Event {
             id: event_id.unwrap_or(&self.fallback_event_id).to_string(),
-            msg: EventMsg::SpineTreeUpdate(tree_update_from_parts(projection, usage_samples)),
+            msg: EventMsg::SpineTreeUpdate(tree_update_from_parts(
+                projection,
+                usage_samples,
+                settled_spawn_call_ids,
+            )),
         };
         if let Err(err) = tx_event.try_send(event) {
             warn!("failed to publish Spine tree update: {err}");
@@ -115,6 +121,7 @@ impl SpineObserverEffectHandler<CodexContextHandler> for CodexSpineObserverHandl
             effect.projection().spine(),
             effect.projection().usage_samples(),
             context_handler.latest_turn_id(),
+            &[],
         );
         if effect.kind() != SpineObserverEffectKind::ContextCommitted {
             return;
@@ -153,8 +160,8 @@ fn start_memory_projection_worker(
 pub(crate) fn tree_update_from_parts(
     projection: &spine_core::host::SpineProjection,
     usage_samples: &[spine_core::host::TokenUsageSample],
+    settled_spawn_call_ids: &[String],
 ) -> SpineTreeUpdateEvent {
-    let settled_spawn_call_ids = projection.settled_spawn_execution_refs.clone();
     let snapshot = spine_core::host::tree_snapshot(projection, usage_samples);
     SpineTreeUpdateEvent {
         snapshot_seq: snapshot.last_boundary.map_or(0, |boundary| boundary.0),
@@ -210,6 +217,6 @@ pub(crate) fn tree_update_from_parts(
                     }),
             })
             .collect(),
-        settled_spawn_call_ids,
+        settled_spawn_call_ids: settled_spawn_call_ids.to_vec(),
     }
 }

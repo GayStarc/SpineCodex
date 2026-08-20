@@ -27,9 +27,6 @@ pub(crate) fn load(
     if enabled_features.enabled(CodexFeature::SpineJit) {
         features.push(spine_core::host::Feature::Jit);
     }
-    if enabled_features.enabled(CodexFeature::SpineTrim) {
-        features.push(spine_core::host::Feature::Trim);
-    }
     if enabled_features.enabled(CodexFeature::SpineSpawn) {
         features.push(spine_core::host::Feature::Spawn);
     }

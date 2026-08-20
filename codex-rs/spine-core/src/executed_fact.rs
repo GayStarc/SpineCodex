@@ -2,20 +2,16 @@ use crate::MAX_MEMORY_BYTES;
 use crate::MAX_SUMMARY_BYTES;
 use crate::identity::AdmissionOrdinal;
 use crate::identity::ExecutionId;
-use crate::identity::SourceCellId;
-use crate::identity::TrimTicket;
 use crate::model::SpawnReceipt;
 use crate::model::SpawnResult;
 use crate::model::SpawnTask;
 use crate::model::SpawnValidationError;
-use crate::model::TrimEdit;
 use serde::Deserialize;
 use serde::Serialize;
 use std::fmt;
 
 pub const MAX_EXECUTION_ORIGIN_BYTES: usize = 1024;
 pub const MAX_EXECUTED_FACT_PAYLOAD_BYTES: usize = 160 * 1024;
-pub const MAX_SOURCE_DIGEST_BYTES: usize = 128;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -49,19 +45,6 @@ pub enum SpineOperationFact {
         tasks: Vec<SpawnTask>,
         terminal_results: Vec<SpawnResult>,
     },
-    Trim {
-        ticket: TrimTicket,
-        target: StableOutputId,
-        validated_edit: TrimEdit,
-        source_digest: String,
-    },
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct StableOutputId {
-    pub source: SourceCellId,
-    pub execution_ref: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -77,8 +60,6 @@ pub enum ExecutedFactError {
         actual_bytes: usize,
     },
     InvalidSpawn(SpawnValidationError),
-    InvalidTrimTicket(&'static str),
-    InvalidTrimEdit(&'static str),
     Serialize(String),
 }
 
@@ -110,28 +91,6 @@ impl ExecutedSpineFact {
                 .validate_for(tasks)
                 .map_err(ExecutedFactError::InvalidSpawn)?;
             }
-            SpineOperationFact::Trim {
-                ticket,
-                target,
-                validated_edit,
-                source_digest,
-            } => {
-                validate_field(
-                    "trim.execution_ref",
-                    &target.execution_ref,
-                    MAX_EXECUTION_ORIGIN_BYTES,
-                )?;
-                validate_field("trim.source_digest", source_digest, MAX_SOURCE_DIGEST_BYTES)?;
-                validate_trim_ticket(&self.execution_id, ticket, target)?;
-                match validated_edit {
-                    TrimEdit::Tagged { .. } => {
-                        return Err(ExecutedFactError::InvalidTrimEdit(
-                            "candidate markers are not validated replacement edits",
-                        ));
-                    }
-                    TrimEdit::Snipped | TrimEdit::Sliced(_) => {}
-                }
-            }
         }
 
         let actual_bytes = serde_json::to_vec(self)
@@ -155,25 +114,6 @@ fn validate_origin(origin: &ExecutionOrigin) -> Result<(), ExecutedFactError> {
             MAX_EXECUTION_ORIGIN_BYTES,
         ),
     }
-}
-
-fn validate_trim_ticket(
-    execution_id: &ExecutionId,
-    ticket: &TrimTicket,
-    target: &StableOutputId,
-) -> Result<(), ExecutedFactError> {
-    if target.source.epoch() != ticket.epoch() {
-        return Err(ExecutedFactError::InvalidTrimTicket(
-            "ticket and target must belong to the same epoch",
-        ));
-    }
-    if target.source.thread() != ticket.thread() || target.source.thread() != execution_id.thread()
-    {
-        return Err(ExecutedFactError::InvalidTrimTicket(
-            "execution, ticket, and target must belong to the same thread",
-        ));
-    }
-    Ok(())
 }
 
 fn validate_field(
@@ -214,8 +154,6 @@ impl fmt::Display for ExecutedFactError {
                 "executed Spine fact is {actual_bytes} bytes; maximum is {max_bytes} bytes"
             ),
             Self::InvalidSpawn(error) => write!(f, "{error}"),
-            Self::InvalidTrimTicket(reason) => write!(f, "invalid trim ticket: {reason}"),
-            Self::InvalidTrimEdit(reason) => write!(f, "invalid trim edit: {reason}"),
             Self::Serialize(error) => write!(f, "failed to serialize executed Spine fact: {error}"),
         }
     }

@@ -11,7 +11,7 @@ use super::*;
 fn feedback_capability_requires_a_spine_feature() {
     assert!(!spine_feedback_enabled_by(|_| false));
     assert!(spine_feedback_enabled_by(|feature| {
-        matches!(feature, Feature::SpineTrim)
+        matches!(feature, Feature::SpineSpawn)
     }));
 }
 

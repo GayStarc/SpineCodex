@@ -8,8 +8,6 @@ fn recursively_merges_tables_and_replaces_leaf_values() {
         r#"
 schema_version = 1
 names = ["base"]
-[limits]
-trim_threshold_bytes = 10000
 [prompt]
 jit = "base jit"
 node = "base node"
@@ -31,8 +29,6 @@ node = "overlay node"
         r#"
 schema_version = 1
 names = ["overlay"]
-[limits]
-trim_threshold_bytes = 10000
 [prompt]
 jit = "base jit"
 node = "overlay node"
@@ -47,8 +43,8 @@ fn merged_partial_layer_uses_bundled_defaults() {
     let mut merged: TomlValue = toml::from_str(DEFAULT_CONFIG_TOML).unwrap();
     let overlay: TomlValue = toml::from_str(
         r#"
-[limits]
-trim_threshold_bytes = 2048
+[prompt]
+node = "overlay node"
 "#,
     )
     .unwrap();
@@ -57,7 +53,7 @@ trim_threshold_bytes = 2048
     let config = parse_merged_config(merged).unwrap();
 
     let mut expected = SpineConfig::v1();
-    expected.trim_threshold_bytes = 2048;
+    expected.node_prompt = "overlay node".to_string();
     assert_eq!(config, expected);
 }
 

@@ -5,10 +5,8 @@ use crate::RawSpan;
 use crate::RolloutEvent;
 use crate::SpineConfig;
 use crate::SpineProjection;
-use crate::TrimProjection;
 use crate::bootstrap::InitError;
 use crate::reducer::SpineReducer;
-use crate::reducer::TrimReducer;
 use crate::reducer::TypedTransitionError;
 use std::fmt;
 
@@ -22,7 +20,6 @@ pub const MAX_TREE_NODES: usize = 4096;
 pub(crate) struct SpineCompiler {
     config: SpineConfig,
     reducer: SpineReducer,
-    trim_reducer: Option<TrimReducer>,
     projection: SpineProjection,
 }
 
@@ -30,14 +27,10 @@ impl SpineCompiler {
     pub(crate) fn new(config: SpineConfig) -> Result<Self, InitError> {
         config.validate()?;
         let reducer = SpineReducer::new();
-        let trim_reducer = config
-            .is_enabled(crate::Feature::Trim)
-            .then(|| TrimReducer::new(config.trim_threshold_bytes()));
         let projection = reducer.projection();
         Ok(Self {
             config,
             reducer,
-            trim_reducer,
             projection,
         })
     }
@@ -48,9 +41,6 @@ impl SpineCompiler {
             event.boundary(),
             event.retained_bytes(),
         )?;
-        if let Some(trim_reducer) = &mut self.trim_reducer {
-            trim_reducer.apply(&event);
-        }
         let delta = self.reducer.apply(event);
         validate_projection(&delta.projection)?;
         self.projection = delta.projection.clone();
@@ -69,7 +59,6 @@ impl SpineCompiler {
         span: RawSpan,
         retained_bytes: usize,
         facts: &[&ExecutedSpineFact],
-        trims: &[(RawBoundary, &ExecutedSpineFact)],
         open_input_tokens: Option<u64>,
     ) -> Result<ProjectionDelta, SamplingCompileError> {
         let event = RolloutEvent::SourceSpan {
@@ -82,49 +71,17 @@ impl SpineCompiler {
             event.retained_bytes(),
         )
         .map_err(SamplingCompileError::Spine)?;
-        if let Some(trim_reducer) = &mut self.trim_reducer {
-            trim_reducer
-                .apply_sampling(trims)
-                .map_err(SamplingCompileError::Transition)?;
-        }
-        let settled_spawn_execution_refs = facts
-            .iter()
-            .filter_map(|fact| match &fact.operation {
-                crate::SpineOperationFact::Spawn { .. } => match &fact.origin {
-                    crate::ExecutionOrigin::Direct { execution_ref } => Some(execution_ref.clone()),
-                },
-                _ => None,
-            })
-            .collect::<Vec<_>>();
         let delta = self
             .reducer
-            .apply_sampling(
-                span,
-                facts,
-                &settled_spawn_execution_refs,
-                open_input_tokens,
-            )
+            .apply_sampling(span, facts, open_input_tokens)
             .map_err(SamplingCompileError::Transition)?;
         validate_projection(&delta.projection).map_err(SamplingCompileError::Spine)?;
         self.projection = delta.projection.clone();
         Ok(delta)
     }
 
-    pub(crate) fn observe_outputs(
-        &mut self,
-        outputs: impl IntoIterator<Item = (RawBoundary, String, String)>,
-    ) {
-        if let Some(trim_reducer) = &mut self.trim_reducer {
-            trim_reducer.observe_outputs(outputs);
-        }
-    }
-
     pub(crate) fn reset(&mut self) {
         self.reducer = SpineReducer::new();
-        self.trim_reducer = self
-            .config
-            .is_enabled(crate::Feature::Trim)
-            .then(|| TrimReducer::new(self.config.trim_threshold_bytes()));
         self.projection = self.reducer.projection();
     }
 
@@ -139,18 +96,8 @@ impl SpineCompiler {
         self.reducer.node_context_costs(context_window_samples)
     }
 
-    pub(crate) fn trim_projection(&self) -> Option<&TrimProjection> {
-        self.trim_reducer.as_ref().map(TrimReducer::projection)
-    }
-
     pub(crate) fn set_runtime_config(&mut self, config: SpineConfig) -> Result<(), InitError> {
         config.validate()?;
-        if config.is_enabled(crate::Feature::Trim) {
-            self.trim_reducer
-                .get_or_insert_with(|| TrimReducer::new(config.trim_threshold_bytes()));
-        } else {
-            self.trim_reducer = None;
-        }
         self.config = config;
         Ok(())
     }

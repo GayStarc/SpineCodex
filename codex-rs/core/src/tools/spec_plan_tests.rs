@@ -250,9 +250,6 @@ fn set_feature(turn: &mut TurnContext, feature: Feature, enabled: bool) {
     if config.features.enabled(Feature::SpineJit) {
         spine_features.push(spine_core::host::Feature::Jit);
     }
-    if config.features.enabled(Feature::SpineTrim) {
-        spine_features.push(spine_core::host::Feature::Trim);
-    }
     if config.features.enabled(Feature::SpineSpawn) && config.features.enabled(Feature::SpineJit) {
         spine_features.push(spine_core::host::Feature::Spawn);
     }
@@ -273,7 +270,7 @@ fn set_features(turn: &mut TurnContext, features: &[Feature]) {
 }
 
 fn set_spine_features(turn: &mut TurnContext, features: &[Feature]) {
-    for feature in [Feature::SpineJit, Feature::SpineTrim, Feature::SpineSpawn] {
+    for feature in [Feature::SpineJit, Feature::SpineSpawn] {
         set_feature(turn, feature, features.contains(&feature));
     }
 }
@@ -310,15 +307,12 @@ async fn spine_tools_follow_feature_mode_and_source_boundaries() {
     assert_eq!(feature_off_same_name.spine_owned_spec, None);
 
     let enabled = probe(|turn| {
-        set_spine_features(
-            turn,
-            &[Feature::SpineJit, Feature::SpineTrim, Feature::SpineSpawn],
-        );
+        set_spine_features(turn, &[Feature::SpineJit, Feature::SpineSpawn]);
     })
     .await;
     assert_eq!(
         enabled.namespace_function_names(spine_core::host::SPINE_NAMESPACE),
-        ["close", "next", "open", "spawn", "trim"]
+        ["close", "next", "open", "spawn"]
     );
     assert!(enabled.spine_owned_spec.is_some());
     for name in enabled.namespace_function_names(spine_core::host::SPINE_NAMESPACE) {
@@ -331,23 +325,17 @@ async fn spine_tools_follow_feature_mode_and_source_boundaries() {
     }
 
     let plan = probe(|turn| {
-        set_spine_features(
-            turn,
-            &[Feature::SpineJit, Feature::SpineTrim, Feature::SpineSpawn],
-        );
+        set_spine_features(turn, &[Feature::SpineJit, Feature::SpineSpawn]);
         turn.mode = ModeKind::Plan;
     })
     .await;
     assert_eq!(
         plan.namespace_function_names(spine_core::host::SPINE_NAMESPACE),
-        ["close", "next", "open", "trim"]
+        ["close", "next", "open"]
     );
 
     let guardian = probe(|turn| {
-        set_spine_features(
-            turn,
-            &[Feature::SpineJit, Feature::SpineTrim, Feature::SpineSpawn],
-        );
+        set_spine_features(turn, &[Feature::SpineJit, Feature::SpineSpawn]);
         turn.session_source = SessionSource::SubAgent(SubAgentSource::Other(
             crate::guardian::GUARDIAN_REVIEWER_NAME.to_string(),
         ));
@@ -367,12 +355,9 @@ async fn oversized_spine_namespace_is_not_rejected_by_a_runtime_byte_gate() {
     let description = "x".repeat(4 * 1024);
     let source = format!(
         r#"schema_version = 1
-[limits]
-trim_threshold_bytes = 100
 [prompt]
 jit = "jit"
 node = "node"
-trim = "trim"
 spawn_explicit_request_only = "explicit"
 spawn_proactive = "proactive"
 [tools.open]
@@ -381,22 +366,16 @@ description = "{description}"
 description = "{description}"
 [tools.next]
 description = "{description}"
-[tools.trim]
-description = "{description}"
 [tools.spawn]
 description = "{description}"
 "#
     );
     let plan = probe(|turn| {
-        set_spine_features(
-            turn,
-            &[Feature::SpineJit, Feature::SpineTrim, Feature::SpineSpawn],
-        );
+        set_spine_features(turn, &[Feature::SpineJit, Feature::SpineSpawn]);
         let spine_config = spine_core::host::SpineConfig::parse_toml(&source)
             .unwrap()
             .with_features([
                 spine_core::host::Feature::Jit,
-                spine_core::host::Feature::Trim,
                 spine_core::host::Feature::Spawn,
             ])
             .unwrap();

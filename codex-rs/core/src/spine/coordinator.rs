@@ -1,4 +1,4 @@
-use super::context_handler::response_item_to_observation_and_source;
+use super::context_handler::response_item_to_char_and_source;
 use super::context_plan::CodexContextPlanError;
 use super::context_plan::PreparedCodexContextPlan;
 use super::context_plan::prepare_codex_context_plan;
@@ -71,6 +71,7 @@ impl CanonicalSamplingCommit {
 pub(crate) struct InstalledCanonicalCommit {
     pub(crate) context: PreparedCodexContextPlan,
     pub(crate) projection: SpineProjection,
+    pub(crate) settled_spawn_call_ids: Vec<String>,
 }
 
 pub(crate) struct CodexSpineCoordinator {
@@ -134,16 +135,16 @@ impl CodexSpineCoordinator {
         items: &[ResponseItem],
     ) -> Result<PreparedCodexContextPlan, CoordinatorError> {
         self.require_healthy()?;
-        let mut observations = Vec::with_capacity(items.len());
+        let mut characters = Vec::with_capacity(items.len());
         let mut projected_items = Vec::with_capacity(items.len());
         for item in items {
             let boundary = RawBoundary(self.next_boundary);
             self.next_boundary = self.next_boundary.saturating_add(1);
-            let (observation, projected) = response_item_to_observation_and_source(item, boundary);
-            observations.push(observation);
+            let (character, projected) = response_item_to_char_and_source(item, boundary);
+            characters.push(character);
             projected_items.push(projected);
         }
-        let source_ids = self.runtime.observe_source_observations(observations)?;
+        let source_ids = self.runtime.observe_source(characters)?;
         self.source_items
             .extend(source_ids.into_iter().zip(projected_items));
         self.prepare_live_context()
@@ -289,10 +290,22 @@ impl CodexSpineCoordinator {
         let CanonicalSamplingCommit {
             prepared, context, ..
         } = commit;
+        let settled_spawn_call_ids = prepared
+            .durable_record()
+            .executions
+            .iter()
+            .filter(|&execution| matches!(execution.operation, SpineOperationFact::Spawn { .. }))
+            .map(|execution| match &execution.origin {
+                spine_core::host::ExecutionOrigin::Direct { execution_ref } => {
+                    execution_ref.clone()
+                }
+            })
+            .collect();
         let output = self.runtime.install_prepared(prepared)?;
         Ok(InstalledCanonicalCommit {
             context,
             projection: output.projection,
+            settled_spawn_call_ids,
         })
     }
 
@@ -309,6 +322,7 @@ impl CodexSpineCoordinator {
             &self.usage_samples,
             event_id,
             self.user_messages.clone(),
+            &commit.settled_spawn_call_ids,
         );
     }
 
@@ -318,6 +332,7 @@ impl CodexSpineCoordinator {
             &self.usage_samples,
             None,
             self.user_messages.clone(),
+            &[],
         );
     }
 
@@ -424,16 +439,6 @@ impl CodexSpineCoordinator {
             }
         }
         Ok(())
-    }
-
-    pub(crate) fn prepare_trim(
-        &self,
-        request: &spine_core::host::TrimRequest,
-    ) -> Result<SpineOperationFact, String> {
-        self.require_healthy().map_err(|error| error.to_string())?;
-        self.runtime
-            .validated_trim_fact(request)
-            .map_err(|error| error.to_string())
     }
 
     pub(crate) fn finish_execution(

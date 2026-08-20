@@ -12,7 +12,6 @@ use crate::SamplingCommitId;
 use crate::SamplingStarted;
 use crate::SourceLedger;
 use crate::SourceLedgerError;
-use crate::SourceObservation;
 use crate::SpineChar;
 use crate::SpineCharParser;
 use crate::SpineCompiler;
@@ -47,7 +46,7 @@ pub use compact::SpineCompactBarrierV1;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ReplayInput {
-    Source(SourceObservation),
+    Source(SpineChar),
     Archive(SamplingArchiveRecord),
     Compact(SpineCompactBarrierV1),
     Usage(TokenUsageSample),
@@ -99,11 +98,8 @@ impl CanonicalReplay {
     pub fn new(thread: ThreadNamespace) -> Result<Self, crate::InitError> {
         Ok(Self {
             thread,
-            runtime_config: SpineConfig::default().with_features([
-                crate::Feature::Jit,
-                crate::Feature::Trim,
-                crate::Feature::Spawn,
-            ])?,
+            runtime_config: SpineConfig::default()
+                .with_features([crate::Feature::Jit, crate::Feature::Spawn])?,
         })
     }
 
@@ -121,7 +117,7 @@ impl CanonicalReplay {
         I: IntoIterator<Item = ReplayInput>,
     {
         let config = self.runtime_config.clone();
-        let compiler = SpineCompiler::new(config.clone()).map_err(ReplayError::Initialize)?;
+        let compiler = SpineCompiler::new(config).map_err(ReplayError::Initialize)?;
         let source = SourceLedger::new(self.thread.clone(), ContextEpoch::ZERO)
             .map_err(ReplayError::Source)?;
         let mut state = ReplayState {
@@ -139,15 +135,14 @@ impl CanonicalReplay {
             usage_samples: Vec::new(),
             input_pressure: InputPressureState::default(),
             next_projection_ordinal: 0,
-            spawn_enabled: config.is_enabled(crate::Feature::Spawn),
         };
 
         for item in input {
             match item {
-                ReplayInput::Source(observation) => {
+                ReplayInput::Source(character) => {
                     state
                         .source
-                        .append_observations([observation])
+                        .append([character])
                         .map_err(ReplayError::Source)?;
                 }
                 ReplayInput::Archive(record) => state.apply_archive(record)?,
@@ -185,7 +180,6 @@ struct ReplayState {
     usage_samples: Vec<TokenUsageSample>,
     input_pressure: InputPressureState,
     next_projection_ordinal: u64,
-    spawn_enabled: bool,
 }
 
 impl ReplayState {
@@ -332,11 +326,9 @@ impl ReplayState {
         let plan = crate::planner::build_context_plan(
             &snapshot,
             compiler.projection(),
-            compiler.trim_projection(),
             &parser.pending_boundaries(),
             self.live_plan.as_ref(),
             &mut self.next_projection_ordinal,
-            self.spawn_enabled,
         )
         .map_err(ReplayError::Planner)?;
         self.parser = parser;
@@ -396,11 +388,9 @@ impl ReplayState {
             crate::planner::build_context_plan(
                 &snapshot,
                 self.compiler.projection(),
-                self.compiler.trim_projection(),
                 &self.parser.pending_boundaries(),
                 None,
                 &mut self.next_projection_ordinal,
-                self.spawn_enabled,
             )
             .map_err(ReplayError::Planner)?,
         );
@@ -489,7 +479,6 @@ fn map_sampling_delta_error(error: SamplingDeltaError) -> ReplayError {
         SamplingDeltaError::Parse(error) => ReplayError::Parse(error),
         SamplingDeltaError::Compile(error) => map_compile_error(error),
         SamplingDeltaError::MissingSourceBoundary(_)
-        | SamplingDeltaError::MissingTrimSource(_)
         | SamplingDeltaError::FactHasNoSourceGroup(_)
         | SamplingDeltaError::FactSourceExecutionMismatch => ReplayError::FactSourceMissing,
     }

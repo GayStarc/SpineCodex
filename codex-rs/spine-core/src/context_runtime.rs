@@ -2,7 +2,6 @@ mod projection;
 
 use self::projection::context_events_between;
 use self::projection::project_jit_stack;
-use self::projection::project_trim_stack;
 use crate::CharParseError;
 use crate::ContextEvent;
 use crate::ContextEventError;
@@ -25,7 +24,6 @@ use crate::SpineRecoveryInput;
 use crate::SpineSignal;
 use crate::TokenUsageSample;
 use crate::ToolCatalog;
-use crate::TrimProjection;
 use crate::bootstrap::InitError;
 use std::fmt;
 
@@ -34,7 +32,6 @@ pub struct SpineContextProjection {
     spine: SpineProjection,
     stack: ParseStack,
     usage_samples: Vec<TokenUsageSample>,
-    trim_projection: Option<TrimProjection>,
 }
 
 impl SpineContextProjection {
@@ -48,10 +45,6 @@ impl SpineContextProjection {
 
     pub fn usage_samples(&self) -> &[TokenUsageSample] {
         &self.usage_samples
-    }
-
-    pub fn trim_projection(&self) -> Option<&TrimProjection> {
-        self.trim_projection.as_ref()
     }
 }
 
@@ -89,7 +82,6 @@ where
     projection: SpineContextProjection,
     tools: ToolCatalog,
     jit_enabled: bool,
-    spawn_enabled: bool,
 }
 
 impl<D> SpineContextRuntime<D>
@@ -113,14 +105,12 @@ where
     ) -> Result<Self, InitError> {
         let tools = ToolCatalog::new(&config)?;
         let jit_enabled = config.is_enabled(Feature::Jit);
-        let spawn_enabled = config.is_enabled(Feature::Spawn);
         let compiler = SpineCompiler::new(config)?;
         let parser = SpineCharParser::default();
         let projection = SpineContextProjection {
             spine: compiler.projection().clone(),
             stack: parser.stack().clone(),
             usage_samples: Vec::new(),
-            trim_projection: compiler.trim_projection().cloned(),
         };
         Ok(Self {
             handler,
@@ -130,7 +120,6 @@ where
             projection,
             tools,
             jit_enabled,
-            spawn_enabled,
         })
     }
 
@@ -288,15 +277,9 @@ where
         let actual_before = self.handler.context_size(history);
         let raw_stack = parser.stack().clone();
         let target_stack = if self.jit_enabled {
-            project_jit_stack::<D::Error>(
-                &mut parser,
-                compiler.projection(),
-                compiler.trim_projection(),
-                &pending_boundaries,
-                self.spawn_enabled,
-            )?
+            project_jit_stack::<D::Error>(&mut parser, compiler.projection(), &pending_boundaries)?
         } else {
-            project_trim_stack(parser.stack(), compiler.trim_projection())
+            parser.stack().clone()
         };
         let events = context_events_between(&raw_stack, &target_stack)?;
         let expected_after = ContextEvent::resulting_size(actual_before, &events)
@@ -319,7 +302,6 @@ where
             spine: compiler.projection().clone(),
             stack: target_stack,
             usage_samples,
-            trim_projection: compiler.trim_projection().cloned(),
         };
         self.parser = parser;
         self.compiler = compiler;

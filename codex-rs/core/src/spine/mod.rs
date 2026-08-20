@@ -8,7 +8,6 @@ use crate::context_manager::is_user_turn_boundary;
 use crate::event_mapping::is_contextual_dev_message_content;
 use crate::event_mapping::is_contextual_user_message_content;
 use codex_protocol::models::ContentItem;
-use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::RolloutItem;
@@ -21,8 +20,6 @@ use spine_core::host::RawBoundary;
 use spine_core::host::SpineOperationFact;
 use spine_core::host::SpineProjection;
 use spine_core::host::ToolValidation;
-use spine_core::host::TrimEdit;
-use spine_core::host::TrimProjection;
 use spine_core::host::ValidatedTransition;
 use std::collections::BTreeMap;
 
@@ -48,8 +45,6 @@ pub(crate) mod spawn;
 pub(crate) mod spawn_gate;
 pub(crate) mod tool_response;
 
-pub(crate) const TOOL_RESULT_CLEARED_MESSAGE: &str = spine_core::host::TRIM_SNIPPED_BODY;
-
 pub(crate) fn validated_control_fact(
     tool: spine_core::host::SpineTool,
     arguments: &str,
@@ -67,9 +62,7 @@ pub(crate) fn validated_control_fact(
                 next_summary: summary,
             })
         }
-        ToolValidation::Transition(
-            ValidatedTransition::Trim(_) | ValidatedTransition::Spawn { .. },
-        )
+        ToolValidation::Transition(ValidatedTransition::Spawn { .. })
         | ToolValidation::Ordinary => Err(spine_core::host::ToolValidationError::UnknownTool(
             tool.qualified_name(),
         )),
@@ -175,7 +168,7 @@ pub(crate) fn is_canonical_rollout(
     ))
 }
 
-pub(crate) fn trim_to_current_sampling_start(items: &mut Vec<RolloutItem>) -> bool {
+pub(crate) fn truncate_to_current_sampling_start(items: &mut Vec<RolloutItem>) -> bool {
     let Some(start) = items
         .iter()
         .rposition(|item| matches!(item, RolloutItem::SpineSamplingStarted(_)))
@@ -222,7 +215,7 @@ pub(crate) fn effective_rollout_from_source<'a>(
             {
                 let first_user_boundary = user_boundaries.first().copied().unwrap_or(cut);
                 effective.truncate(cut);
-                // Native rollback trims contextual updates immediately above the removed
+                // Native rollback removes contextual updates immediately above the removed
                 // user-turn boundary. Keep the Spine selected prefix identical to that host
                 // boundary so projection cannot reintroduce settings that rollback removed.
                 let mut scan = effective.len();
@@ -230,7 +223,7 @@ pub(crate) fn effective_rollout_from_source<'a>(
                     let Some((_, item)) = effective.get(scan - 1) else {
                         break;
                     };
-                    let trim = match item {
+                    let remove = match item {
                         RolloutItem::ResponseItem(ResponseItem::Message {
                             role, content, ..
                         }) if role == "developer" => is_contextual_dev_message_content(content),
@@ -243,7 +236,7 @@ pub(crate) fn effective_rollout_from_source<'a>(
                         }
                         _ => false,
                     };
-                    if !trim {
+                    if !remove {
                         break;
                     }
                     effective.remove(scan - 1);
@@ -317,7 +310,6 @@ fn content_text(item: &ContentItem) -> Option<String> {
 fn materialize_context(
     context: &[ContextItem],
     source: &[(usize, &RolloutItem)],
-    trim: Option<&TrimProjection>,
     host_history: Option<&ContextManager>,
     node_context_costs: &BTreeMap<spine_core::host::NodeId, spine_core::host::NodeContextCost>,
     node_prompt: &str,
@@ -346,11 +338,7 @@ fn materialize_context(
                     if let Some(item) =
                         response_item_at(source, RawBoundary(raw_index), host_history)
                     {
-                        materialized.push(project_trim_item(
-                            item,
-                            usize::try_from(raw_index).unwrap_or(usize::MAX),
-                            trim,
-                        ));
+                        materialized.push(item);
                     }
                 }
             }
@@ -436,34 +424,6 @@ fn materialize_context(
         }
     }
     Ok(materialized)
-}
-
-fn project_trim_item(
-    mut item: ResponseItem,
-    raw_ordinal: usize,
-    trim: Option<&TrimProjection>,
-) -> ResponseItem {
-    let (call_id, body) = match &mut item {
-        ResponseItem::FunctionCallOutput {
-            call_id, output, ..
-        } => (call_id, &mut output.body),
-        ResponseItem::CustomToolCallOutput {
-            call_id, output, ..
-        } => (call_id, &mut output.body),
-        _ => return item,
-    };
-    let Some(edit) =
-        trim.and_then(|projection| projection.edit(RawBoundary(raw_ordinal as u64), call_id))
-    else {
-        return item;
-    };
-    let visible_body = match edit {
-        TrimEdit::Tagged { trim_id, body, .. } => format!("[TRIM_ID: {trim_id}]\n{body}"),
-        TrimEdit::Snipped => TOOL_RESULT_CLEARED_MESSAGE.to_string(),
-        TrimEdit::Sliced(value) => value.clone(),
-    };
-    *body = FunctionCallOutputBody::Text(visible_body);
-    item
 }
 
 fn response_item_at(
