@@ -19,6 +19,7 @@ use std::time::Instant;
 mod debug;
 
 const PRETTY_MAX_VISIBLE_SIBLINGS: usize = 3;
+const PRETTY_ACTIVE_PARENT_DEPTH: usize = 3;
 const INVALID_SPINE_TREE_SNAPSHOT_LABEL: &str = "invalid Spine tree snapshot";
 const LIVE_SPAWN_ROOT_ID: &str = "spine-live-root";
 
@@ -832,12 +833,21 @@ fn pretty_display_lines(
         return lines;
     }
 
-    let active_path = active_path_ids(snapshot);
+    let viewport = pretty_viewport(snapshot);
+    if viewport.earlier_branch_count > 0 {
+        render_history_bucket(
+            viewport.earlier_branch_count,
+            "  ",
+            viewport.root_nodes.is_empty() && !(overlays_at_root && !overlays.is_empty()),
+            width,
+            &mut lines,
+        );
+    }
     render_pretty_nodes(
         snapshot,
         overlays,
-        &root_nodes,
-        &active_path,
+        &viewport.root_nodes,
+        &viewport.active_path,
         "  ",
         width,
         &mut lines,
@@ -870,8 +880,21 @@ fn pretty_raw_lines(snapshot: &SpineTreeUpdatedNotification) -> Vec<Line<'static
         return lines;
     }
 
-    let active_path = active_path_ids(snapshot);
-    append_pretty_raw_nodes(snapshot, &root_nodes, &active_path, "  ", &mut lines);
+    let viewport = pretty_viewport(snapshot);
+    if viewport.earlier_branch_count > 0 {
+        lines.push(Line::from(format!(
+            "  {}◌ {}",
+            pretty_branch(viewport.root_nodes.is_empty()),
+            history_bucket_label(viewport.earlier_branch_count)
+        )));
+    }
+    append_pretty_raw_nodes(
+        snapshot,
+        &viewport.root_nodes,
+        &viewport.active_path,
+        "  ",
+        &mut lines,
+    );
     lines
 }
 
@@ -1047,6 +1070,75 @@ enum PrettySiblingItem<'a> {
     Node(&'a SpineTreeNode),
 }
 
+struct PrettyViewport<'a> {
+    root_nodes: Vec<&'a SpineTreeNode>,
+    earlier_branch_count: usize,
+    active_path: HashSet<&'a str>,
+}
+
+fn pretty_viewport(snapshot: &SpineTreeUpdatedNotification) -> PrettyViewport<'_> {
+    let active_path_nodes = active_path_nodes(snapshot);
+    let active_path = active_path_nodes
+        .iter()
+        .map(|node| node.node_id.as_str())
+        .collect::<HashSet<_>>();
+    let active_root = active_path_nodes
+        .last()
+        .copied()
+        .expect("validated snapshot must have an active root");
+    let active_root_nodes = visible_pretty_nodes(snapshot, &[active_root]);
+    let mut earlier_branch_count = child_nodes(snapshot, None)
+        .into_iter()
+        .filter(|node| node.node_id != active_root.node_id)
+        .flat_map(|node| visible_pretty_nodes(snapshot, &[node]))
+        .filter(|node| is_completed_history_node(node))
+        .count();
+    let visible_active_path = active_path_nodes
+        .into_iter()
+        .filter(|node| {
+            !should_elide_pretty_node(
+                node,
+                !child_nodes(snapshot, Some(node.node_id.as_str())).is_empty(),
+                node.node_id == snapshot.active_node_id,
+            )
+        })
+        .collect::<Vec<_>>();
+    if visible_active_path.len() <= PRETTY_ACTIVE_PARENT_DEPTH + 1 {
+        return PrettyViewport {
+            root_nodes: active_root_nodes,
+            earlier_branch_count,
+            active_path,
+        };
+    }
+    let focus_root = visible_active_path[PRETTY_ACTIVE_PARENT_DEPTH];
+
+    earlier_branch_count += completed_off_path_count(&active_root_nodes, &active_path);
+    for ancestor in visible_active_path
+        .iter()
+        .skip(PRETTY_ACTIVE_PARENT_DEPTH + 1)
+    {
+        let children = visible_pretty_nodes(
+            snapshot,
+            &child_nodes(snapshot, Some(ancestor.node_id.as_str())),
+        );
+        earlier_branch_count += completed_off_path_count(&children, &active_path);
+    }
+    PrettyViewport {
+        root_nodes: vec![focus_root],
+        earlier_branch_count,
+        active_path,
+    }
+}
+
+fn completed_off_path_count(nodes: &[&SpineTreeNode], active_path: &HashSet<&str>) -> usize {
+    nodes
+        .iter()
+        .filter(|node| {
+            !active_path.contains(node.node_id.as_str()) && is_completed_history_node(node)
+        })
+        .count()
+}
+
 fn pretty_sibling_items<'a>(
     nodes: &[&'a SpineTreeNode],
     active_path: &HashSet<&str>,
@@ -1134,21 +1226,21 @@ fn merge_adjacent_history_buckets<'a>(
     merged
 }
 
-fn active_path_ids(snapshot: &SpineTreeUpdatedNotification) -> HashSet<&str> {
-    let mut active_path = HashSet::new();
-    let mut current = snapshot.active_node_id.as_str();
-    active_path.insert(current);
-
-    while let Some(node) = snapshot.nodes.iter().find(|node| node.node_id == current) {
-        let Some(parent_id) = node.parent_id.as_deref() else {
-            break;
-        };
-        if !active_path.insert(parent_id) {
-            break;
-        }
-        current = parent_id;
+fn active_path_nodes(snapshot: &SpineTreeUpdatedNotification) -> Vec<&SpineTreeNode> {
+    let mut active_path = Vec::new();
+    let mut current = snapshot
+        .nodes
+        .iter()
+        .find(|node| node.node_id == snapshot.active_node_id);
+    while let Some(node) = current {
+        active_path.push(node);
+        current = node.parent_id.as_deref().and_then(|parent_id| {
+            snapshot
+                .nodes
+                .iter()
+                .find(|candidate| candidate.node_id == parent_id)
+        });
     }
-
     active_path
 }
 
@@ -1197,7 +1289,7 @@ fn render_history_bucket(
         "◌".dim(),
         " ".into(),
         Span::from(count.to_string()).green(),
-        " previous ".green(),
+        " earlier ".green(),
         Span::from(history_bucket_noun(count)).green(),
     ]);
     let wrapped = adaptive_wrap_line(
@@ -1209,11 +1301,11 @@ fn render_history_bucket(
 }
 
 fn history_bucket_label(count: usize) -> String {
-    format!("{count} previous {}", history_bucket_noun(count))
+    format!("{count} earlier {}", history_bucket_noun(count))
 }
 
 fn history_bucket_noun(count: usize) -> &'static str {
-    if count == 1 { "leaf" } else { "leaves" }
+    if count == 1 { "branch" } else { "branches" }
 }
 
 fn pretty_node_label_text(node: &SpineTreeNode, active: bool) -> String {
@@ -1562,7 +1654,7 @@ mod tests {
 
         insta::assert_snapshot!(render(&cell.display_lines(80)), @r###"
         • Spine Tree
-          ├ ✓ earlier work
+          ├ ◌ 1 earlier branch
           └ ▾ current scope
             └ ◉ focused task
         "###);
@@ -1619,7 +1711,7 @@ mod tests {
         let rendered = render(&lines);
         insta::assert_snapshot!(rendered, @r###"
         • Spine Tree
-          ├ ◌ 2 previous leaves
+          ├ ◌ 2 earlier branches
           ├ ✓ child 1
           ├ ✓ child 2
           └ ◉ active child
@@ -1635,20 +1727,20 @@ mod tests {
         let history_previous = lines[1]
             .spans
             .iter()
-            .find(|span| span.content == " previous ")
-            .expect("history bucket previous label");
+            .find(|span| span.content == " earlier ")
+            .expect("history bucket earlier label");
         assert_eq!(history_previous.style.fg, Some(Color::Green));
         assert!(!history_previous.style.add_modifier.contains(Modifier::BOLD));
         assert!(!history_previous.style.add_modifier.contains(Modifier::DIM));
         let history_noun = lines[1]
             .spans
             .iter()
-            .find(|span| span.content == "leaves")
+            .find(|span| span.content == "branches")
             .expect("history bucket noun");
         assert_eq!(history_noun.style.fg, Some(Color::Green));
         assert!(!history_noun.style.add_modifier.contains(Modifier::BOLD));
         assert!(!history_noun.style.add_modifier.contains(Modifier::DIM));
-        assert!(render(&cell.raw_lines()).contains("2 previous leaves"));
+        assert!(render(&cell.raw_lines()).contains("2 earlier branches"));
         assert!(!rendered.contains("old root"));
         assert!(!rendered.contains("3 "));
     }
@@ -1696,8 +1788,7 @@ mod tests {
 
         insta::assert_snapshot!(render(&pretty.display_lines(80)), @r###"
         • Spine Tree
-          ├ ◌ compacted parent
-          ├ ✓ closed parent
+          ├ ◌ 2 earlier branches
           └ ◉ active task
         "###);
         let raw = render(&pretty.raw_lines());
@@ -1710,7 +1801,7 @@ mod tests {
     }
 
     #[test]
-    fn folds_anonymous_completed_parent_as_one_previous_leaf() {
+    fn folds_anonymous_completed_parent_as_one_earlier_branch() {
         let cell = new_spine_tree_snapshot(snapshot(
             "2.1",
             vec![
@@ -1735,13 +1826,13 @@ mod tests {
         let lines = cell.display_lines(80);
         insta::assert_snapshot!(render(&lines), @r###"
         • Spine Tree
-          ├ ◌ 1 previous leaf
+          ├ ◌ 1 earlier branch
           └ ◉ active task
         "###);
         let history_noun = lines[1]
             .spans
             .iter()
-            .find(|span| span.content == "leaf")
+            .find(|span| span.content == "branch")
             .expect("history bucket noun");
         assert_eq!(history_noun.style.fg, Some(Color::Green));
         assert!(!history_noun.style.add_modifier.contains(Modifier::BOLD));
@@ -1749,8 +1840,8 @@ mod tests {
         let history_previous = lines[1]
             .spans
             .iter()
-            .find(|span| span.content == " previous ")
-            .expect("history bucket previous label");
+            .find(|span| span.content == " earlier ")
+            .expect("history bucket earlier label");
         assert_eq!(history_previous.style.fg, Some(Color::Green));
         assert!(!history_previous.style.add_modifier.contains(Modifier::BOLD));
         assert!(!history_previous.style.add_modifier.contains(Modifier::DIM));
@@ -1763,7 +1854,7 @@ mod tests {
         assert!(!history_count.style.add_modifier.contains(Modifier::BOLD));
         assert!(!history_count.style.add_modifier.contains(Modifier::DIM));
         let raw = render(&cell.raw_lines());
-        assert!(raw.contains("1 previous leaf"), "{raw}");
+        assert!(raw.contains("1 earlier branch"), "{raw}");
         assert!(!raw.contains("hidden historical child"));
     }
 
@@ -1805,8 +1896,7 @@ mod tests {
         let display = render(&cell.display_lines(80));
         insta::assert_snapshot!(display, @r###"
         • Spine Tree
-          ├ ✓ first task
-          ├ ✓ second task
+          ├ ◌ 2 earlier branches
           └ ▾ current scope
             └ ◉ active task
         "###);
@@ -1814,8 +1904,124 @@ mod tests {
 
         let raw = render(&cell.raw_lines());
         assert!(!raw.contains("root"));
-        assert!(raw.contains("first task"));
+        assert!(raw.contains("2 earlier branches"));
         assert!(raw.contains("active task"));
+    }
+
+    #[test]
+    fn focuses_deep_active_path_and_counts_hidden_history_branches() {
+        let cell = new_spine_tree_snapshot(snapshot(
+            "4.1.1.1.1.1",
+            vec![
+                node("1", None, Some("older work"), SpineTreeNodeStatus::Closed),
+                node(
+                    "2",
+                    None,
+                    Some("Implement and verify a loadable Pi Spine extension"),
+                    SpineTreeNodeStatus::Compacted,
+                ),
+                node(
+                    "3",
+                    None,
+                    Some("Implement the DeepSeek Harness required-event registry"),
+                    SpineTreeNodeStatus::Compacted,
+                ),
+                node(
+                    "4",
+                    None,
+                    Some("Complete DSH host validation and plugin integration"),
+                    SpineTreeNodeStatus::Opened,
+                ),
+                node(
+                    "4.0",
+                    Some("4"),
+                    Some("Review the current execution tree"),
+                    SpineTreeNodeStatus::Closed,
+                ),
+                node(
+                    "4.1",
+                    Some("4"),
+                    Some("Complete DSH seam validation and diff review"),
+                    SpineTreeNodeStatus::Opened,
+                ),
+                node(
+                    "4.1.0",
+                    Some("4.1"),
+                    Some("Refresh and verify the DSH event graph"),
+                    SpineTreeNodeStatus::Closed,
+                ),
+                node(
+                    "4.1.0.1",
+                    Some("4.1"),
+                    Some("Synchronize generated graph records"),
+                    SpineTreeNodeStatus::Closed,
+                ),
+                node(
+                    "4.1.1",
+                    Some("4.1"),
+                    Some("Run the full DSH type gate and review the diff"),
+                    SpineTreeNodeStatus::Opened,
+                ),
+                node(
+                    "4.1.1.0",
+                    Some("4.1.1"),
+                    Some("Review DSH host semantics and failure boundaries"),
+                    SpineTreeNodeStatus::Closed,
+                ),
+                node(
+                    "4.1.1.0.1",
+                    Some("4.1.1"),
+                    Some("Record DSH validation results"),
+                    SpineTreeNodeStatus::Closed,
+                ),
+                node(
+                    "4.1.1.1",
+                    Some("4.1.1"),
+                    Some("Bind the unified plugin to the DSH host API"),
+                    SpineTreeNodeStatus::Opened,
+                ),
+                node(
+                    "4.1.1.1.0",
+                    Some("4.1.1.1"),
+                    Some("Define the minimal DSH API binding contract"),
+                    SpineTreeNodeStatus::Closed,
+                ),
+                node(
+                    "4.1.1.1.1",
+                    Some("4.1.1.1"),
+                    Some("Implement and test DSH lifecycle bindings"),
+                    SpineTreeNodeStatus::Opened,
+                ),
+                node(
+                    "4.1.1.1.1.1",
+                    Some("4.1.1.1.1"),
+                    Some("Add runtime integration coverage for the DSH contract"),
+                    SpineTreeNodeStatus::Live,
+                ),
+            ],
+        ));
+
+        let rendered = render(&cell.display_lines(120));
+        insta::assert_snapshot!(rendered, @r###"
+        • Spine Tree
+          ├ ◌ 6 earlier branches
+          └ ▾ Run the full DSH type gate and review the diff
+            ├ ✓ Review DSH host semantics and failure boundaries
+            ├ ✓ Record DSH validation results
+            └ ▾ Bind the unified plugin to the DSH host API
+              ├ ✓ Define the minimal DSH API binding contract
+              └ ▾ Implement and test DSH lifecycle bindings
+                └ ◉ Add runtime integration coverage for the DSH contract
+        "###);
+        assert!(!rendered.contains("Pi Spine"), "{rendered}");
+        assert!(
+            !rendered.contains("Complete DSH seam validation"),
+            "{rendered}"
+        );
+        assert!(
+            render(&cell.raw_lines()).contains("6 earlier branches"),
+            "raw pretty output must use the same viewport"
+        );
     }
 
     #[test]
