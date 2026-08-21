@@ -62,45 +62,6 @@ pub enum NodeContextCost {
     Unavailable,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct StatusSignal {
-    pub cursor: NodeId,
-    pub node_summary: Option<String>,
-    pub parent: Option<NodeId>,
-    pub parent_summary: Option<String>,
-    pub cursor_node_context_tokens: Option<i64>,
-    pub context_left_tokens: Option<i64>,
-}
-
-pub fn status_signal(
-    projection: &SpineProjection,
-    pressures: &BTreeMap<NodeId, ContextPressure>,
-    context_left_tokens: Option<i64>,
-) -> StatusSignal {
-    let active_node = projection
-        .nodes
-        .iter()
-        .find(|node| node.id == projection.cursor);
-    let parent = active_node.and_then(|node| node.parent.clone());
-    let parent_summary = parent.as_ref().and_then(|parent_id| {
-        projection
-            .nodes
-            .iter()
-            .find(|node| &node.id == parent_id)
-            .and_then(|node| node.summary.clone())
-    });
-    StatusSignal {
-        cursor: projection.cursor.clone(),
-        node_summary: active_node.and_then(|node| node.summary.clone()),
-        parent,
-        parent_summary,
-        cursor_node_context_tokens: pressures
-            .get(&projection.cursor)
-            .and_then(|pressure| pressure.context_tokens),
-        context_left_tokens,
-    }
-}
-
 pub fn tree_snapshot(projection: &SpineProjection, samples: &[TokenUsageSample]) -> TreeSnapshot {
     let pressures = context_pressures(projection, samples);
     let nodes = projection

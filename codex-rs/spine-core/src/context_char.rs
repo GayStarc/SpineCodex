@@ -157,17 +157,6 @@ impl SpineCharParser {
         *self = Self::default();
     }
 
-    pub fn install_stack(&mut self, stack: ParseStack) {
-        self.last_boundary = stack.cells.last().map(|cell| cell.character.boundary());
-        self.next_cell_id = stack
-            .cells
-            .iter()
-            .map(|cell| cell.id.value())
-            .max()
-            .map_or(0, |id| id.saturating_add(1));
-        self.stack = stack;
-    }
-
     pub(crate) fn replace_stack(&mut self, stack: ParseStack) {
         self.next_cell_id = stack
             .cells

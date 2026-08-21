@@ -37,9 +37,3 @@ pub fn closed_memory_artifacts(projection: &SpineProjection) -> Vec<MemoryArtifa
         })
         .collect()
 }
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct UserMessageArtifact {
-    pub anchor: u64,
-    pub body: String,
-}
