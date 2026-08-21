@@ -62,6 +62,7 @@ use codex_rollout::state_db;
 use codex_state::log_db;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_absolute_path::canonicalize_existing_preserving_symlinks;
+use codex_utils_cli::CLI_COMMAND;
 use codex_utils_home_dir::find_codex_home;
 use codex_utils_oss::ensure_oss_provider_ready;
 use codex_utils_oss::get_default_model_for_oss_provider;
@@ -1474,7 +1475,7 @@ async fn run_ratatui_app(
             resume_hint: None,
             update_action: None,
             exit_reason: ExitReason::Fatal(format!(
-                "No saved session found with ID {id_str}. Run `codex {action}` without an ID to choose from existing sessions."
+                "No saved session found with ID {id_str}. Run `{CLI_COMMAND} {action}` without an ID to choose from existing sessions."
             )),
         })
     };

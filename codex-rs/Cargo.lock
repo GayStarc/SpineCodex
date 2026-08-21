@@ -2122,6 +2122,7 @@ dependencies = [
  "codex-app-server-protocol",
  "codex-app-server-transport",
  "codex-http-client",
+ "codex-install-context",
  "codex-uds",
  "codex-utils-home-dir",
  "futures",
@@ -2953,6 +2954,7 @@ dependencies = [
  "codex-cloud-config",
  "codex-config",
  "codex-core",
+ "codex-features",
  "codex-feedback",
  "codex-git-utils",
  "codex-login",
@@ -3490,6 +3492,7 @@ dependencies = [
  "codex-connectors",
  "codex-exec-server",
  "codex-exec-server-test-support",
+ "codex-install-context",
  "codex-login",
  "codex-model-provider",
  "codex-otel",
@@ -4438,6 +4441,7 @@ name = "codex-utils-cli"
 version = "0.3.0"
 dependencies = [
  "clap",
+ "codex-install-context",
  "codex-protocol",
  "codex-shell-command",
  "pretty_assertions",

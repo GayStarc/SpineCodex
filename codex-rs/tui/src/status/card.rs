@@ -24,6 +24,7 @@ use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_WORKSPACE;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_utils_absolute_path::AbsolutePathBuf;
+use codex_utils_cli::CLI_COMMAND;
 use codex_utils_sandbox_summary::summarize_permission_profile;
 use ratatui::prelude::*;
 use ratatui::style::Stylize;
@@ -730,7 +731,7 @@ impl HistoryCell for StatusHistoryCell {
                 (None, None) => "ChatGPT".to_string(),
             },
             StatusAccountDisplay::ApiKey => {
-                "API key configured (run codex login to use ChatGPT)".to_string()
+                format!("API key configured (run {CLI_COMMAND} login to use ChatGPT)")
             }
         });
 

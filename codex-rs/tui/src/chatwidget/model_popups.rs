@@ -4,6 +4,7 @@
 //! into another, especially while Plan mode is active.
 
 use super::*;
+use codex_utils_cli::CLI_COMMAND;
 
 const ULTRA_REASONING_CONCURRENCY_WARNING_THRESHOLD: usize = 8;
 
@@ -220,10 +221,8 @@ impl ChatWidget {
             });
         }
 
-        let header = self.model_menu_header(
-            "Select Model and Effort",
-            "Access legacy models by running codex -m <model_name> or in your config.toml",
-        );
+        let subtitle = format!("Legacy models: {CLI_COMMAND} -m <model_name> or config.toml");
+        let header = self.model_menu_header("Select Model and Effort", &subtitle);
         self.bottom_pane.show_selection_view(SelectionViewParams {
             footer_hint: Some(self.bottom_pane.standard_popup_hint_line()),
             items,

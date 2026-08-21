@@ -6,6 +6,7 @@ use codex_api::SharedAuthProvider;
 use codex_config::McpServerAuth;
 use codex_config::McpServerConfig;
 use codex_config::McpServerTransportConfig;
+use codex_install_context::distribution::CLI_COMMAND;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::McpStartupFailureReason;
@@ -96,7 +97,7 @@ pub(super) fn mcp_init_error_display(
         StartupOutcomeError::Failed { error, .. } if error.contains("Auth required")
     ) {
         format!(
-            "The {server_name} MCP server is not logged in. Run `codex mcp login {server_name}`."
+            "The {server_name} MCP server is not logged in. Run `{CLI_COMMAND} mcp login {server_name}`."
         )
     } else if matches!(
         error,

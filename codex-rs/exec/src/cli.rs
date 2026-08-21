@@ -9,7 +9,7 @@ use std::path::PathBuf;
 #[derive(Parser, Debug)]
 #[command(
     version,
-    override_usage = "codex exec [OPTIONS] [PROMPT]\n       codex exec [OPTIONS] <COMMAND> [ARGS]"
+    override_usage = "spine-codex exec [OPTIONS] [PROMPT]\n       spine-codex exec [OPTIONS] <COMMAND> [ARGS]"
 )]
 pub struct Cli {
     /// Process-only PSP routing selected by the parent Codex CLI.
