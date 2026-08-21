@@ -38,6 +38,7 @@ spine-codex
 | **Memory Projection**（`spinetree_memory_projection`） | 将编译后的节点记忆投影为可检查的 Markdown，路径为 `.codex/spinetree/YYYY/MM/DD/<session-id>/`。                    |
 
 Spine Spawn 默认开启。运行 `/experimental` 启用 Memory Projection，保存设置后开始新的对话。
+在 `~/.codex/config.toml` 中设置 `spine_spawn.max_concurrent_threads_per_session`，即可配置每个会话的总线程上限（含根线程）。
 
 <p align="center">
   <a href="./.github/assets/spinecodex-loop-zh-cn.webp">

@@ -46,6 +46,7 @@ spine-codex
 
 Spine Spawn is enabled by default. Run `/experimental` to enable Memory
 Projection, then save and start a new conversation.
+Set `spine_spawn.max_concurrent_threads_per_session` in `~/.codex/config.toml` to configure the total per-session thread limit, including the root thread.
 
 <p align="center">
   <a href="./.github/assets/spinecodex-loop.webp">
