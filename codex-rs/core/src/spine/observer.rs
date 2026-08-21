@@ -1,4 +1,3 @@
-use super::context_handler::CodexContextHandler;
 use super::memory_projection::SpinetreeMemoryProjection;
 use super::memory_projection::SpinetreeMemoryProjectionEntry;
 use super::memory_projection::SpinetreeUserMessageProjectionEntry;
@@ -14,9 +13,6 @@ use codex_protocol::spine_tree::SpineTreeNodeStatus;
 use spine_core::host::ContextPressureProblem;
 use spine_core::host::NodeKind;
 use spine_core::host::NodeStatus;
-use spine_core::host::SpineObserverEffect;
-use spine_core::host::SpineObserverEffectHandler;
-use spine_core::host::SpineObserverEffectKind;
 use tokio::sync::watch;
 use tracing::warn;
 
@@ -109,27 +105,6 @@ impl CodexSpineObserverHandler {
                 user_messages,
             }));
         }
-    }
-}
-
-impl SpineObserverEffectHandler<CodexContextHandler> for CodexSpineObserverHandler {
-    fn handle(&mut self, effect: SpineObserverEffect<'_>, context_handler: &CodexContextHandler) {
-        if !self.jit_enabled {
-            return;
-        }
-        self.publish_tree(
-            effect.projection().spine(),
-            effect.projection().usage_samples(),
-            context_handler.latest_turn_id(),
-            &[],
-        );
-        if effect.kind() != SpineObserverEffectKind::ContextCommitted {
-            return;
-        }
-        self.publish_memory(
-            effect.projection().spine(),
-            context_handler.user_message_projection_entries(effect.projection().stack()),
-        );
     }
 }
 
