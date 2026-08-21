@@ -54,13 +54,6 @@ impl SessionSpineRuntime {
         });
     }
 
-    pub(crate) fn current_input_tokens(&self) -> Option<i64> {
-        with_shared_coordinator(&self.coordinator, |coordinator| {
-            coordinator.current_input_tokens()
-        })
-        .flatten()
-    }
-
     pub(crate) fn compact_live(
         &mut self,
         replacement_items: &[ResponseItem],
@@ -158,12 +151,6 @@ impl SessionSpineRuntime {
             }
         }
         Ok(())
-    }
-
-    pub(crate) fn replace_last_turn_images(&mut self, placeholder: &str) {
-        with_shared_coordinator(&self.coordinator, |coordinator| {
-            coordinator.replace_last_turn_images(placeholder);
-        });
     }
 
     pub(crate) fn install_model_context(&mut self, items: Vec<ResponseItem>) {

@@ -93,20 +93,6 @@ impl CodexSpineCoordinator {
             .is_enabled(spine_core::host::Feature::Jit)
     }
 
-    pub(crate) fn replace_last_turn_images(&mut self, placeholder: &str) {
-        self.source_items
-            .iter_mut()
-            .rev()
-            .any(|(_, item)| replace_images_in_response_item(item, placeholder));
-    }
-
-    pub(crate) fn new(
-        thread: impl Into<String>,
-        config: SpineConfig,
-    ) -> Result<Self, CoordinatorError> {
-        Self::new_with_observer(thread, config, CodexSpineObserverHandler::default())
-    }
-
     pub(crate) fn new_with_observer(
         thread: impl Into<String>,
         config: SpineConfig,
@@ -462,20 +448,4 @@ impl CodexSpineCoordinator {
         }
         Ok(())
     }
-}
-
-fn replace_images_in_response_item(item: &mut ResponseItem, placeholder: &str) -> bool {
-    let output = match item {
-        ResponseItem::FunctionCallOutput { output, .. }
-        | ResponseItem::CustomToolCallOutput { output, .. } => output,
-        _ => return false,
-    };
-    let codex_protocol::models::FunctionCallOutputBody::Text(text) = &output.body else {
-        return false;
-    };
-    if !text.contains("data:image") {
-        return false;
-    }
-    output.body = codex_protocol::models::FunctionCallOutputBody::Text(placeholder.to_string());
-    true
 }

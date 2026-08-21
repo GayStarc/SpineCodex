@@ -260,10 +260,6 @@ impl SourceCell {
             },
         }
     }
-
-    pub(crate) fn observation(&self) -> SpineChar {
-        self.character()
-    }
 }
 
 impl ContextPlanSource for SourceSnapshot {

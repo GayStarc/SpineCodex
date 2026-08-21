@@ -44,7 +44,7 @@ pub(crate) fn preview_source_delta(
 ) -> Result<(), SamplingDeltaError> {
     for cell in &snapshot.cells()[committed_source_cells..] {
         let step = parser
-            .eat(cell.observation())
+            .eat(cell.character())
             .map_err(SamplingDeltaError::Parse)?;
         for event in step.events() {
             compiler
@@ -96,7 +96,7 @@ pub(crate) fn reduce_sampling_delta(
         source_tail.partition_point(|cell| cell.boundary.ordinal() <= pre_boundary.0);
     for cell in &source_tail[..sampling_start] {
         let step = parser
-            .eat(cell.observation())
+            .eat(cell.character())
             .map_err(SamplingDeltaError::Parse)?;
         for event in step.events() {
             compiler
@@ -116,7 +116,7 @@ pub(crate) fn reduce_sampling_delta(
     let sampling_source = &source_tail[sampling_start..];
     for cell in sampling_source {
         let step = parser
-            .eat(cell.observation())
+            .eat(cell.character())
             .map_err(SamplingDeltaError::Parse)?;
         for event in step.events() {
             retained_bytes = retained_bytes.saturating_add(event.retained_bytes());

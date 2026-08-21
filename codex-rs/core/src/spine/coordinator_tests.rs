@@ -53,7 +53,12 @@ fn coordinator() -> CodexSpineCoordinator {
     let config = SpineConfig::v1()
         .with_feature(Feature::Jit)
         .expect("JIT config");
-    CodexSpineCoordinator::new("thread-shadow", config).expect("coordinator")
+    CodexSpineCoordinator::new_with_observer(
+        "thread-shadow",
+        config,
+        CodexSpineObserverHandler::default(),
+    )
+    .expect("coordinator")
 }
 
 fn spawn_coordinator() -> CodexSpineCoordinator {
@@ -61,7 +66,12 @@ fn spawn_coordinator() -> CodexSpineCoordinator {
         .with_feature(Feature::Jit)
         .and_then(|config| config.with_feature(Feature::Spawn))
         .expect("JIT and Spawn config");
-    CodexSpineCoordinator::new("thread-spawn", config).expect("spawn coordinator")
+    CodexSpineCoordinator::new_with_observer(
+        "thread-spawn",
+        config,
+        CodexSpineObserverHandler::default(),
+    )
+    .expect("spawn coordinator")
 }
 
 fn spawn_operation() -> SpineOperationFact {
@@ -959,7 +969,12 @@ fn canonical_fork_preserves_prefix_ids_and_uses_child_suffix_namespace() {
     let config = SpineConfig::v1()
         .with_feature(Feature::Jit)
         .expect("JIT config");
-    let mut child = CodexSpineCoordinator::new("thread-child", config).expect("child coordinator");
+    let mut child = CodexSpineCoordinator::new_with_observer(
+        "thread-child",
+        config,
+        CodexSpineObserverHandler::default(),
+    )
+    .expect("child coordinator");
     let effective = rollout.iter().enumerate().collect::<Vec<_>>();
     let ReplayMode::Canonical { thread, records } =
         replay_mode(&effective).expect("canonical replay mode")
