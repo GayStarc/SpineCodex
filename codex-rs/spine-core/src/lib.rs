@@ -47,9 +47,7 @@ pub(crate) use identity::SamplingAttemptId;
 pub(crate) use observer::NoopSpineObserver;
 pub(crate) use planner::SamplingPlanner;
 
-pub(crate) use model::ContextEdit;
 pub(crate) use model::NodeSnapshot;
-pub(crate) use model::ProjectionDelta;
 pub(crate) use model::RolloutEvent;
 pub(crate) use sampling::FactPermit;
 pub(crate) use sampling::SamplingAttempt;

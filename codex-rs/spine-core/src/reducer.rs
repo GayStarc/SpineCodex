@@ -1,4 +1,3 @@
-use crate::ContextEdit;
 use crate::ContextItem;
 use crate::ContextWindowSample;
 use crate::ExecutedSpineFact;
@@ -10,7 +9,6 @@ use crate::NodeId;
 use crate::NodeKind;
 use crate::NodeSnapshot;
 use crate::NodeStatus;
-use crate::ProjectionDelta;
 use crate::RawBoundary;
 use crate::RawSpan;
 use crate::RolloutEvent;
@@ -103,8 +101,7 @@ impl SpineReducer {
         }
     }
 
-    pub(crate) fn apply(&mut self, event: RolloutEvent) -> ProjectionDelta {
-        let before = self.render_current_epoch();
+    pub(crate) fn apply(&mut self, event: RolloutEvent) -> SpineProjection {
         self.last_boundary = Some(event.boundary());
         match event {
             RolloutEvent::Message(message) => self.apply_message(message),
@@ -122,7 +119,7 @@ impl SpineReducer {
                 replacement_history,
             } => self.apply_compact(boundary, replacement_history),
         }
-        self.delta_from(before)
+        self.projection()
     }
 
     pub(crate) fn apply_sampling(
@@ -130,8 +127,7 @@ impl SpineReducer {
         span: RawSpan,
         facts: &[&ExecutedSpineFact],
         open_input_tokens: Option<u64>,
-    ) -> Result<ProjectionDelta, TypedTransitionError> {
-        let before = self.render_current_epoch();
+    ) -> Result<SpineProjection, TypedTransitionError> {
         self.last_boundary = Some(span.end);
         let structural = facts.to_vec();
         let all_spawn = structural
@@ -192,7 +188,7 @@ impl SpineReducer {
             }
         }
 
-        Ok(self.delta_from(before))
+        Ok(self.projection())
     }
 
     pub(crate) fn projection(&self) -> SpineProjection {
@@ -201,14 +197,6 @@ impl SpineReducer {
             cursor: self.cursor.clone(),
             visible_context: self.render_current_epoch(),
             last_boundary: self.last_boundary,
-        }
-    }
-
-    fn delta_from(&self, before: Vec<ContextItem>) -> ProjectionDelta {
-        let projection = self.projection();
-        ProjectionDelta {
-            context_edit: ContextEdit::between(&before, &projection.visible_context),
-            projection,
         }
     }
 

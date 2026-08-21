@@ -1,5 +1,4 @@
 use crate::ExecutedSpineFact;
-use crate::ProjectionDelta;
 use crate::RawBoundary;
 use crate::RawSpan;
 use crate::RolloutEvent;
@@ -35,22 +34,19 @@ impl SpineCompiler {
         })
     }
 
-    pub(crate) fn eat(&mut self, event: RolloutEvent) -> Result<ProjectionDelta, SpineError> {
+    pub(crate) fn eat(&mut self, event: RolloutEvent) -> Result<(), SpineError> {
         validate_event(
             self.projection.last_boundary,
             event.boundary(),
             event.retained_bytes(),
         )?;
-        let delta = self.reducer.apply(event);
-        validate_projection(&delta.projection)?;
-        self.projection = delta.projection.clone();
-        Ok(delta)
+        let projection = self.reducer.apply(event);
+        validate_projection(&projection)?;
+        self.projection = projection;
+        Ok(())
     }
 
-    pub(crate) fn eat_source(
-        &mut self,
-        event: RolloutEvent,
-    ) -> Result<ProjectionDelta, SamplingCompileError> {
+    pub(crate) fn eat_source(&mut self, event: RolloutEvent) -> Result<(), SamplingCompileError> {
         self.eat(event).map_err(SamplingCompileError::Spine)
     }
 
@@ -60,7 +56,7 @@ impl SpineCompiler {
         retained_bytes: usize,
         facts: &[&ExecutedSpineFact],
         open_input_tokens: Option<u64>,
-    ) -> Result<ProjectionDelta, SamplingCompileError> {
+    ) -> Result<(), SamplingCompileError> {
         let event = RolloutEvent::SourceSpan {
             span,
             retained_bytes,
@@ -71,13 +67,13 @@ impl SpineCompiler {
             event.retained_bytes(),
         )
         .map_err(SamplingCompileError::Spine)?;
-        let delta = self
+        let projection = self
             .reducer
             .apply_sampling(span, facts, open_input_tokens)
             .map_err(SamplingCompileError::Transition)?;
-        validate_projection(&delta.projection).map_err(SamplingCompileError::Spine)?;
-        self.projection = delta.projection.clone();
-        Ok(delta)
+        validate_projection(&projection).map_err(SamplingCompileError::Spine)?;
+        self.projection = projection;
+        Ok(())
     }
 
     pub(crate) fn reset(&mut self) {
