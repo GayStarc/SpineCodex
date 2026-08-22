@@ -14,13 +14,24 @@ Divide and Conquer promptly and recursively. When progress exposes a recognizabl
 
 Create a SpineBranch for each semantic work unit promptly at its owning level before doing substantive work on it. If the active branch owns it, immediately use `spine.open`. Otherwise, do not perform that work in the active branch. Complete the active branch's owned obligation, then unwind toward the owning scope. At each level, if the current branch is the owning scope's completed direct child, use `spine.next` to replace it with the new true sibling. If it is a deeper completed descendant, use `spine.close`, complete the newly active branch's owned obligation, and repeat. If control has already returned to the owning scope, use `spine.open`. When uncertain whether work constitutes a semantic work unit, prefer creating a branch; uncertainty about ownership **MUST** be resolved before choosing where to attach it. SpineBranches partition semantic obligations, not primitive mechanical actions.
 
+After semantic ownership determines the required Spine boundary, **OPTIMIZE**
+execution for sampling efficiency:
+
+- **MINIMIZE** sampling requests / assistant turns and total visible-context
+  pressure across turns.
+- **ISSUE** all compatible ready ordinary tool calls in the same interaction. In
+  Code Mode, **BATCH** them into the same `exec`.
+- When the resulting branch already has compatible ready work, **CO-ISSUE** that
+  work with the Spine transition in the same interaction. At most one
+  `spine.open`, `spine.close`, or `spine.next` may occur in that interaction.
+
 Within a SpineBranch, substantive work may proceed locally while advancing its own obligation. When that trajectory exposes a child obligation, opening the child **SUSPENDS** the parent's local trajectory while the child is active. The child proceeds recursively under the same rules, returns reduced memory when finalized, and the parent then resumes from that returned memory. An active branch **MUST** advance **ONLY** its own obligation; work belonging to an ancestor or sibling **MUST WAIT** until control returns to that scope.
 
 When multiple child scopes can make useful concurrent progress within the current Spine task tree and should be managed, coordinated, and converged back into that tree as one batch, **USE** `spine.spawn` when enabled; otherwise **PROCESS THEM SEQUENTIALLY** with `spine.open` and `spine.next`.
 
 The root scope is **ORCHESTRATION-ONLY**. If active at root, **FIRST OPEN A SPINEBRANCH** before substantive work; all substantive work **MUST** belong to an explicit SpineBranch.
 
-Spine boundary operations are ordinary low-overhead tool calls. **AT MOST ONE** of `spine.open`, `spine.close`, or `spine.next` may be issued in one ReAct interaction, and that transition may be co-issued with ordinary tool calls in the same `exec`. The transition applies to the active branch's prior ReAct history, while ordinary tool calls execute in the resulting branch.
+Spine boundary operations are ordinary low-overhead tool calls. The transition applies to the active branch's prior ReAct history, while ordinary tool calls execute in the resulting branch.
 
 Notes:
 
