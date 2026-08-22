@@ -5,6 +5,7 @@ use crate::motion::ORGANIC_ACTIVITY_WORDS;
 use crate::product_brand::SPINE_BRAND_COLOR;
 use crate::style::muted_text_style;
 use codex_app_server_protocol::CollabAgentStatus;
+use codex_app_server_protocol::CommandExecutionOutputDeltaNotification;
 use codex_app_server_protocol::ItemCompletedNotification;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::SpineSpawnProgressUpdatedNotification;
@@ -111,6 +112,40 @@ fn renders_live_mixed_child_statuses() {
         );
         assert_eq!(activity_line.spans[0].style.fg, None);
     }
+}
+
+#[test]
+fn non_preview_activity_does_not_stay_on_waiting_placeholder() {
+    let mut overlay = SpineSpawnOverlay::new(SpineSpawnProgressUpdatedNotification {
+        thread_id: "parent".to_string(),
+        turn_id: "turn-1".to_string(),
+        call_id: "spawn-1".to_string(),
+        tasks: vec![SpineSpawnTaskProgress {
+            ordinal: 0,
+            summary: "run command".to_string(),
+            thread_id: "child".to_string(),
+            agent_path: None,
+            status: CollabAgentStatus::Running,
+        }],
+    });
+    let notification = ServerNotification::CommandExecutionOutputDelta(
+        CommandExecutionOutputDeltaNotification {
+            thread_id: "child".to_string(),
+            turn_id: "turn-1".to_string(),
+            item_id: "command".to_string(),
+            delta: "output".to_string(),
+        },
+    );
+
+    assert!(overlay.seed_activity("child", [notification].into_iter()));
+    let rendered = plain_lines(overlay.display_lines("  ", true, 80, false))
+        .into_iter()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(rendered.contains("Activity in progress..."), "{rendered}");
+    assert!(!rendered.contains("Waiting for activity..."), "{rendered}");
+    assert!(rendered.contains("run command"), "{rendered}");
 }
 
 #[test]

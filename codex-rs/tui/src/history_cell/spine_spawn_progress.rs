@@ -42,6 +42,7 @@ const FALLBACK_FOREGROUND_RGB: (u8, u8, u8) = (160, 160, 160);
 #[derive(Debug, Clone)]
 struct TaskVisual {
     activity: Option<AgentActivityTracker>,
+    activity_seen: bool,
     activity_word: String,
     completed_at: Option<Instant>,
 }
@@ -177,6 +178,14 @@ impl SpineSpawnOverlay {
                     spine_spawn_status(&notification),
                 )
             };
+            let visual = self
+                .visuals
+                .get_mut(thread_id)
+                .expect("known spawn task");
+            visual.activity_seen = visual
+                .activity
+                .as_ref()
+                .is_some_and(AgentActivityTracker::activity_seen);
         }
         sync_task_visuals(&self.notification.tasks, &mut self.visuals, now);
         changed
@@ -196,18 +205,26 @@ impl SpineSpawnOverlay {
         else {
             return false;
         };
-        let tracker = self
+        let (changed, activity_seen) = {
+            let tracker = self
+                .visuals
+                .get_mut(thread_id)
+                .expect("known spawn task")
+                .activity
+                .get_or_insert_default();
+            let changed = apply_notification(
+                &mut self.notification.tasks[task_index],
+                tracker,
+                notification,
+                status,
+            );
+            (changed, tracker.activity_seen())
+        };
+        let visual = self
             .visuals
             .get_mut(thread_id)
-            .expect("known spawn task")
-            .activity
-            .get_or_insert_default();
-        let changed = apply_notification(
-            &mut self.notification.tasks[task_index],
-            tracker,
-            notification,
-            status,
-        );
+            .expect("known spawn task");
+        visual.activity_seen = activity_seen;
         sync_task_visuals(&self.notification.tasks, &mut self.visuals, Instant::now());
         changed
     }
@@ -240,7 +257,7 @@ impl SpineSpawnOverlay {
     pub(crate) fn has_activity(&self, thread_id: &str) -> bool {
         self.visuals
             .get(thread_id)
-            .is_some_and(|visual| visual.activity.is_some())
+            .is_some_and(|visual| visual.activity_seen)
     }
 
     pub(crate) fn update_status(&mut self, thread_id: &str, status: CollabAgentStatus) -> bool {
@@ -319,6 +336,9 @@ impl SpineSpawnOverlay {
                 Some(_) => continue,
                 None => match task.status {
                     CollabAgentStatus::PendingInit => ("Waiting to start...", None),
+                    CollabAgentStatus::Running if visual.activity_seen => {
+                        ("Activity in progress...", None)
+                    }
                     CollabAgentStatus::Running => ("Waiting for activity...", None),
                     _ => continue,
                 },
@@ -508,6 +528,7 @@ fn sync_task_visuals(
                 task.thread_id.clone(),
                 TaskVisual {
                     activity: None,
+                    activity_seen: false,
                     activity_word: word,
                     completed_at: None,
                 },

@@ -109,6 +109,7 @@ impl AgentActivityPreview {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct AgentActivityTracker {
     entries: VecDeque<AgentActivityEntry>,
+    activity_seen: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -122,9 +123,11 @@ impl AgentActivityTracker {
     pub(crate) fn apply(&mut self, notification: &ServerNotification) -> bool {
         match notification {
             ServerNotification::ItemStarted(notification) => {
+                self.activity_seen = true;
                 self.touch_started_item(&notification.item)
             }
             ServerNotification::ItemCompleted(notification) => {
+                self.activity_seen = true;
                 let item_id = notification.item.id().to_string();
                 let removed = self.remove_item(&item_id);
                 let inserted =
@@ -142,8 +145,27 @@ impl AgentActivityTracker {
                 Some(notification.summary_index),
                 &notification.delta,
             ),
+            // These events prove that the child is active but intentionally do not belong in the
+            // bounded textual preview (command output and raw reasoning can be noisy or
+            // sensitive). Keep a neutral activity marker so the UI does not remain on its
+            // pre-activity placeholder when these are the first events observed.
+            ServerNotification::CommandExecutionOutputDelta(_)
+            | ServerNotification::CommandExecOutputDelta(_)
+            | ServerNotification::ProcessOutputDelta(_)
+            | ServerNotification::FileChangeOutputDelta(_)
+            | ServerNotification::ReasoningTextDelta(_)
+            | ServerNotification::ReasoningSummaryPartAdded(_)
+            | ServerNotification::TerminalInteraction(_)
+            | ServerNotification::McpToolCallProgress(_) => {
+                self.activity_seen = true;
+                true
+            }
             _ => false,
         }
+    }
+
+    pub(crate) fn activity_seen(&self) -> bool {
+        self.activity_seen
     }
 
     pub(crate) fn preview(&self) -> AgentActivityPreview {

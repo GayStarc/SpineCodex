@@ -834,15 +834,6 @@ fn pretty_display_lines(
     }
 
     let viewport = pretty_viewport(snapshot);
-    if viewport.earlier_branch_count > 0 {
-        render_history_bucket(
-            viewport.earlier_branch_count,
-            "  ",
-            viewport.root_nodes.is_empty() && !(overlays_at_root && !overlays.is_empty()),
-            width,
-            &mut lines,
-        );
-    }
     render_pretty_nodes(
         snapshot,
         overlays,
@@ -853,6 +844,7 @@ fn pretty_display_lines(
         &mut lines,
         overlays_at_root && !overlays.is_empty(),
         animations_enabled,
+        viewport.earlier_branch_count,
     );
     if overlays_at_root {
         for (index, overlay) in overlays.iter().enumerate() {
@@ -881,19 +873,13 @@ fn pretty_raw_lines(snapshot: &SpineTreeUpdatedNotification) -> Vec<Line<'static
     }
 
     let viewport = pretty_viewport(snapshot);
-    if viewport.earlier_branch_count > 0 {
-        lines.push(Line::from(format!(
-            "  {}◌ {}",
-            pretty_branch(viewport.root_nodes.is_empty()),
-            history_bucket_label(viewport.earlier_branch_count)
-        )));
-    }
     append_pretty_raw_nodes(
         snapshot,
         &viewport.root_nodes,
         &viewport.active_path,
         "  ",
         &mut lines,
+        viewport.earlier_branch_count,
     );
     lines
 }
@@ -944,6 +930,7 @@ fn render_pretty_node(
         out,
         !node_overlays.is_empty(),
         animations_enabled,
+        0,
     );
     for (index, overlay) in node_overlays.iter().enumerate() {
         out.extend(overlay.display_lines(
@@ -965,8 +952,10 @@ fn render_pretty_nodes(
     out: &mut Vec<Line<'static>>,
     has_trailing_overlay: bool,
     animations_enabled: bool,
+    leading_history_count: usize,
 ) {
-    let items = pretty_render_items(snapshot, nodes, active_path);
+    let mut items = pretty_render_items(snapshot, nodes, active_path);
+    prepend_history_bucket(&mut items, leading_history_count);
     let item_count = items.len();
     for (index, item) in items.into_iter().enumerate() {
         let is_last = index + 1 == item_count && !has_trailing_overlay;
@@ -997,8 +986,10 @@ fn append_pretty_raw_nodes(
     active_path: &HashSet<&str>,
     prefix: &str,
     out: &mut Vec<Line<'static>>,
+    leading_history_count: usize,
 ) {
-    let items = pretty_render_items(snapshot, nodes, active_path);
+    let mut items = pretty_render_items(snapshot, nodes, active_path);
+    prepend_history_bucket(&mut items, leading_history_count);
     let item_count = items.len();
     for (index, item) in items.into_iter().enumerate() {
         let is_last = index + 1 == item_count;
@@ -1024,9 +1015,20 @@ fn append_pretty_raw_nodes(
                     continue;
                 }
                 let child_prefix = format!("{}{}", prefix, pretty_child_prefix(is_last));
-                append_pretty_raw_nodes(snapshot, &children, active_path, &child_prefix, out);
+                append_pretty_raw_nodes(snapshot, &children, active_path, &child_prefix, out, 0);
             }
         }
+    }
+}
+
+fn prepend_history_bucket<'a>(items: &mut Vec<PrettySiblingItem<'a>>, count: usize) {
+    if count == 0 {
+        return;
+    }
+    if let Some(PrettySiblingItem::HistoryBucket(existing)) = items.first_mut() {
+        *existing += count;
+    } else {
+        items.insert(0, PrettySiblingItem::HistoryBucket(count));
     }
 }
 
@@ -1743,6 +1745,41 @@ mod tests {
         assert!(render(&cell.raw_lines()).contains("2 earlier branches"));
         assert!(!rendered.contains("old root"));
         assert!(!rendered.contains("3 "));
+    }
+
+    #[test]
+    fn merges_viewport_history_with_leading_sibling_bucket() {
+        let cell = new_spine_tree_snapshot(snapshot(
+            "4.6",
+            vec![
+                node("1", None, Some("old root 1"), SpineTreeNodeStatus::Closed),
+                node("2", None, Some("old root 2"), SpineTreeNodeStatus::Closed),
+                node("3", None, Some("old root 3"), SpineTreeNodeStatus::Closed),
+                root_epoch("4", Some("root"), SpineTreeNodeStatus::Opened),
+                node("4.1", Some("4"), None, SpineTreeNodeStatus::Closed),
+                node("4.2", Some("4"), None, SpineTreeNodeStatus::Closed),
+                node("4.3", Some("4"), None, SpineTreeNodeStatus::Closed),
+                node("4.4", Some("4"), None, SpineTreeNodeStatus::Closed),
+                node("4.5", Some("4"), None, SpineTreeNodeStatus::Closed),
+                node(
+                    "4.6",
+                    Some("4"),
+                    Some("active task"),
+                    SpineTreeNodeStatus::Live,
+                ),
+            ],
+        ));
+
+        let rendered = render(&cell.display_lines(80));
+        insta::assert_snapshot!(rendered, @r###"
+        • Spine Tree
+          ├ ◌ 8 earlier branches
+          └ ◉ active task
+        "###);
+        let raw = render(&cell.raw_lines());
+        assert!(raw.contains("8 earlier branches"), "{raw}");
+        assert!(!raw.contains("3 earlier branches"), "{raw}");
+        assert!(!raw.contains("5 earlier branches"), "{raw}");
     }
 
     #[test]
