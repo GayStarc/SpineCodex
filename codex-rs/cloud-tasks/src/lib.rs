@@ -18,7 +18,7 @@ use codex_http_client::HttpClientFactory;
 #[cfg(debug_assertions)]
 use codex_http_client::OutboundProxyPolicy;
 use codex_http_client::RouteAwareClientPool;
-use codex_login::default_client::get_codex_user_agent;
+use codex_login::default_client::get_codex_compat_user_agent;
 use codex_utils_cli::CLI_COMMAND;
 use owo_colors::OwoColorize;
 use owo_colors::Stream;
@@ -72,7 +72,7 @@ async fn init_backend(user_agent_suffix: &str) -> anyhow::Result<BackendContext>
         });
     }
 
-    let ua = get_codex_user_agent();
+    let ua = get_codex_compat_user_agent();
     let (auth_manager, http_client_factory) = util::load_auth_manager(Some(base_url.clone())).await;
     let environment_http = RouteAwareClientPool::new_without_request_logging(
         http_client_factory.clone(),
@@ -826,7 +826,7 @@ pub async fn run_main(cli: Cli, _codex_linux_sandbox_exe: Option<PathBuf>) -> an
     append_error_log(format!(
         "startup: wham_force_internal={} ua={}",
         force_internal,
-        get_codex_user_agent()
+        get_codex_compat_user_agent()
     ));
     // Non-blocking initial load so the in-box spinner can animate
     app.status = "Loading tasks…".to_string();
