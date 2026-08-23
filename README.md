@@ -37,6 +37,18 @@ npm install -g @spinejit/spine-codex@latest
 spine-codex
 ```
 
+### What's new in 0.3.2
+
+- Restores the upstream Codex compatibility identity (`0.147.0`) on Responses
+  requests, model discovery, and remote User-Agent headers. This fixes
+  compatibility rejections for models such as `gpt-5.6-luna` while keeping the
+  SpineCodex product version separate.
+- Keeps the SpineCodex update cache isolated from upstream Codex installations.
+- Hides closed spawn agents after resume so the subagent picker shows only
+  currently loaded agents.
+- Adds release-contract and metadata consistency checks before the six-platform
+  build and install-smoke matrix.
+
 ## Features
 
 | Feature                                                       | Purpose                                                                                                                                                                     |

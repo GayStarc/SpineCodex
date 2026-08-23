@@ -585,6 +585,8 @@ jobs:
       - package
       - smoke
     runs-on: ubuntu-24.04
+    env:
+      RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
     permissions:
       contents: write
       actions: read
@@ -636,6 +638,11 @@ jobs:
                   f"Upstream Codex baseline: `{metadata['codex_upstream_tag']}`\n"
                   f"Upstream Codex commit: `{metadata['codex_upstream_commit']}`\n"
               )
+              release_notes = Path(
+                  "codex-rs/docs/releases-" + os.environ["RELEASE_VERSION"] + ".md"
+              )
+              if release_notes.exists():
+                  output.write("\n---\n\n" + release_notes.read_text(encoding="utf-8"))
           PY
           manifest="dist/codex-package_SHA256SUMS"
           find dist/native -type f -name 'codex-package-*.tar.gz' -print |

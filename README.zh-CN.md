@@ -30,6 +30,15 @@ npm install -g @spinejit/spine-codex@latest
 spine-codex
 ```
 
+### 0.3.2 更新内容
+
+- 在 Responses 请求、模型发现和远端 User-Agent 中恢复上游 Codex 兼容身份
+  （`0.147.0`）。这修复了 `gpt-5.6-luna` 等模型的版本兼容拒绝，同时保持
+  SpineCodex 产品版本独立。
+- 保持 SpineCodex 更新缓存与上游 Codex 安装隔离。
+- 恢复会话后隐藏已关闭的 Spawn 智能体，让子智能体选择器只显示当前加载的智能体。
+- 在六平台构建和安装 smoke 之前增加发布契约与版本元数据一致性检查。
+
 ## 功能
 
 | 功能                                                   | 用途                                                                                                       |
