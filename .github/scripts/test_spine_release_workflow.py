@@ -12,6 +12,7 @@ STAGING_SCRIPT = ROOT / "scripts" / "stage_npm_packages.py"
 README = ROOT / "README.md"
 PACKAGE_JSON = ROOT / "codex-cli" / "package.json"
 CARGO_TOML = ROOT / "codex-rs" / "Cargo.toml"
+INSTALL_CONTEXT = ROOT / "codex-rs" / "install-context" / "src" / "distribution.rs"
 
 NATIVE_TARGETS = {
     "x86_64-unknown-linux-musl",
@@ -57,8 +58,40 @@ class SpineReleaseWorkflowTest(unittest.TestCase):
         self.assertIn(product_bin, workflow)
         self.assertIn('name: spine-release', workflow)
         self.assertIn('- "v*.*.*"', workflow)
-        self.assertIn('version = "0.3.0"', cargo)
-        self.assertIn('codex_compat_version = "0.147.0"', cargo)
+        workspace_version = re.search(
+            r"(?ms)^\[workspace\.package\]\s+version = \"([^\"]+)\"",
+            cargo,
+        )
+        self.assertIsNotNone(workspace_version)
+        self.assertIn(f'version = "{workspace_version.group(1)}"', cargo)
+        metadata = re.search(
+            r'(?ms)^\[workspace\.metadata\.spinecodex\](.*?)(?=^\[|\Z)',
+            cargo,
+        )
+        self.assertIsNotNone(metadata)
+        compat_version = re.search(
+            r'^codex_compat_version = "([^"]+)"$', metadata.group(1), re.MULTILINE
+        )
+        upstream_tag = re.search(
+            r'^codex_upstream_tag = "([^"]+)"$', metadata.group(1), re.MULTILINE
+        )
+        upstream_commit = re.search(
+            r'^codex_upstream_commit = "([^"]+)"$', metadata.group(1), re.MULTILINE
+        )
+        self.assertIsNotNone(compat_version)
+        self.assertIsNotNone(upstream_tag)
+        self.assertIsNotNone(upstream_commit)
+        distribution = INSTALL_CONTEXT.read_text(encoding="utf-8")
+        for name, value in (
+            ("CODEX_COMPAT_VERSION", compat_version.group(1)),
+            ("CODEX_UPSTREAM_TAG", upstream_tag.group(1)),
+            ("CODEX_UPSTREAM_COMMIT", upstream_commit.group(1)),
+        ):
+            with self.subTest(name=name):
+                self.assertRegex(
+                    distribution,
+                    rf'pub const {name}: &str = "{re.escape(value)}";',
+                )
 
     def test_product_and_upstream_release_lanes_are_separate(self) -> None:
         spine = workflow_text(SPINE_WORKFLOW)

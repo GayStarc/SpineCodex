@@ -3,12 +3,17 @@ use pretty_assertions::assert_eq;
 
 #[test]
 fn compatibility_user_agent_uses_upstream_version_segment() {
+    let product_version = env!("CARGO_PKG_VERSION");
     assert_eq!(
         user_agent_with_version(
-            "client/0.3.0 (Linux 6.8.0; x86_64) codex_cli_rs/0.3.0".to_string(),
+            format!(
+                "client/{product_version} (Linux 6.8.0; x86_64) codex_cli_rs/{product_version}"
+            ),
             "0.147.0",
         ),
-        "client/0.147.0 (Linux 6.8.0; x86_64) codex_cli_rs/0.3.0",
+        format!(
+            "client/0.147.0 (Linux 6.8.0; x86_64) codex_cli_rs/{product_version}"
+        ),
     );
 }
 

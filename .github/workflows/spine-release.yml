@@ -58,6 +58,11 @@ jobs:
           echo "source_sha=$(git rev-parse HEAD)"
           echo "version=$version tag=${tag:-rehearsal} publish=$publish"
 
+      - name: Run SpineCodex release contract checks
+        run: |
+          python3 .github/scripts/test_spine_release_workflow.py
+          python3 .github/scripts/test_spine_product_docs.py
+
   build-unix:
     name: Build ${{ matrix.target }}
     needs: metadata

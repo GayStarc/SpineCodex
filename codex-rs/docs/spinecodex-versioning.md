@@ -4,11 +4,11 @@ SpineCodex carries two intentionally separate version identities:
 
 - The product version is the workspace package version. It is used by npm
   packages, GitHub release tags, update checks, and product telemetry. The
-  current product version is `0.3.0`.
+  current product version is `0.3.2`.
 - The Codex compatibility version is the upstream client baseline used by
   protocol-facing requests. It is recorded in
-  `[workspace.metadata.spinecodex]` in `codex-rs/Cargo.toml` and projected by
-  `codex-protocol` at build time. The current baseline is `0.147.0`, tag
+  `[workspace.metadata.spinecodex]` in `codex-rs/Cargo.toml` and mirrored into
+  runtime distribution metadata. The current baseline is `0.147.0`, tag
   `rust-v0.147.0`, commit
   `be6e8eac029b183056b7e4402879f15d2c85f61b`.
 
