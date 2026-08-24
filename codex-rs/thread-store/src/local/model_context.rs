@@ -218,6 +218,7 @@ fn load_complete_history_from_lineage_blocking(
         let mut byte_offset = 0_u64;
         let mut line = String::new();
         while byte_offset < end_byte_offset {
+            let line_start_byte_offset = byte_offset;
             line.clear();
             let bytes_read =
                 reader
@@ -256,14 +257,19 @@ fn load_complete_history_from_lineage_blocking(
             if line.trim().is_empty() {
                 continue;
             }
-            let record: RolloutLine = serde_json::from_str(line.trim_end()).map_err(|err| {
-                ThreadStoreError::InvalidRequest {
-                    message: format!(
-                        "invalid complete lineage record in {}: {err}",
-                        segment.rollout_path.display()
-                    ),
+            let record: RolloutLine = match serde_json::from_str(line.trim_end()) {
+                Ok(record) => record,
+                Err(err) => {
+                    tracing::warn!(
+                        rollout_path = %segment.rollout_path.display(),
+                        line_start_byte_offset,
+                        line_end_byte_offset = byte_offset,
+                        error = %err,
+                        "skipping rejected complete lineage record"
+                    );
+                    continue;
                 }
-            })?;
+            };
             if matches!(&record.item, RolloutItem::SessionMeta(_)) {
                 continue;
             }
