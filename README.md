@@ -37,6 +37,14 @@ npm install -g @spinejit/spine-codex@latest
 spine-codex
 ```
 
+### What's new in 0.3.3
+
+- Resumes paginated sessions when an individual historical rollout record has
+  an incompatible shape, while preserving fatal errors for broken files and
+  lineage boundaries.
+- Adds regression coverage for malformed rate-limit records during complete
+  lineage replay.
+
 ### What's new in 0.3.2
 
 - Restores the upstream Codex compatibility identity (`0.147.0`) on Responses

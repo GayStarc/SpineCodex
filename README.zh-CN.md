@@ -30,6 +30,11 @@ npm install -g @spinejit/spine-codex@latest
 spine-codex
 ```
 
+### 0.3.3 更新内容
+
+- 当历史 rollout 中单条记录格式不兼容时，恢复 paginated 会话仍会继续执行；文件损坏和 lineage 边界错误仍会正常失败。
+- 增加完整 lineage replay 遇到异常限流记录时的回归测试。
+
 ### 0.3.2 更新内容
 
 - 在 Responses 请求、模型发现和远端 User-Agent 中恢复上游 Codex 兼容身份
