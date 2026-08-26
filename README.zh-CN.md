@@ -142,8 +142,7 @@ _超长周期编程 · 9 个任务评测 · GPT-5.6 · high · 每次试验的�
 
 </details>
 
-<details>
-<summary>技术细节：SpineJIT 如何工作</summary>
+## SpineJIT 如何工作
 
 **智能体形态发生（Agent Morphogenesis）：** 每个任务都通过即时上下文树编译和递归子智能体扩展，塑造属于自己的上下文与执行过程。
 
@@ -252,8 +251,6 @@ SpineJIT 暴露 Spine 工具，让 LLM 表达这些决策。在某个采样步�
   <sub>点击查看完整动画。</sub>
 </p>
 
-</details>
-
 ## 引用
 
 SpineJIT 技术报告即将发布。
@@ -274,14 +271,6 @@ SpineJIT 技术报告即将发布。
 SpineCodex 是独立维护的 [OpenAI Codex CLI](https://github.com/openai/codex)（上游 0.147.0），由
 [Jiahong Xiang](https://ghabix.github.io) 和
 [Kunqiu Chen](https://camsyn.github.io) 维护。
-
-- [源代码](https://github.com/GhabiX/SpineCodex)
-- [版本发布](https://github.com/GhabiX/SpineCodex/releases)
-- [问题反馈](https://github.com/GhabiX/SpineCodex/issues)
-- [参与贡献](./docs/contributing.md)
-- [从源码安装和构建](./docs/install.md)
-- [Spine 反馈与隐私](./docs/spine-feedback.md)
-- [上游 Codex 文档](https://developers.openai.com/codex)
 
 SpineCodex 采用 [Apache-2.0 许可证](LICENSE)。OpenAI Codex 及其他派生组件的署名信息保留在 [NOTICE](NOTICE) 中。
 

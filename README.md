@@ -170,8 +170,7 @@ FrontierSWE.
 
 </details>
 
-<details>
-<summary>Technical details: How SpineJIT works</summary>
+## How SpineJIT works
 
 **Agent Morphogenesis:** Each task shapes its own context and execution through
 just-in-time context-tree compilation and recursive subagent scaling.
@@ -288,8 +287,6 @@ These tokens connect the model's task-boundary decisions to the LR(0) parser, wh
   <sub>Click to view the full animation.</sub>
 </p>
 
-</details>
-
 ## Citation
 
 A technical report on SpineJIT will be released soon.
@@ -310,14 +307,6 @@ If you use SpineCodex in your research, please cite this repository:
 SpineCodex is an independently maintained [OpenAI Codex CLI](https://github.com/openai/codex)
 (upstream 0.147.0), maintained by [Jiahong Xiang](https://ghabix.github.io)
 and [Kunqiu Chen](https://camsyn.github.io).
-
-- [Source](https://github.com/GhabiX/SpineCodex)
-- [Releases](https://github.com/GhabiX/SpineCodex/releases)
-- [Issues](https://github.com/GhabiX/SpineCodex/issues)
-- [Contributing](./docs/contributing.md)
-- [Installing and building from source](./docs/install.md)
-- [Spine feedback and privacy](./docs/spine-feedback.md)
-- [Upstream Codex documentation](https://developers.openai.com/codex)
 
 SpineCodex is licensed under the [Apache-2.0 License](LICENSE). OpenAI Codex
 and other derived components retain their attribution in [NOTICE](NOTICE).
