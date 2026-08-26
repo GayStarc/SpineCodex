@@ -7,7 +7,7 @@
 <p align="center"><a href="./README.md">English</a> · 简体中文</p>
 
 <p align="center">
-  <img src="./.github/assets/spinecodex-tui.gif" width="820" alt="SpineCodex TUI 演示" />
+  <img src="./.github/assets/spinecodex-tui.gif" width="800" alt="SpineCodex TUI 演示" />
 </p>
 
 ## 为什么选择 SpineCodex
@@ -25,37 +25,9 @@ spine-codex
 
 Spine Spawn 默认开启。运行 `/experimental` 启用可选的 Memory Projection，保存设置后开始新的对话。在 `~/.codex/config.toml` 中设置 `spine_spawn.max_concurrent_threads_per_session`，即可配置每个会话的总线程上限（含根线程）。
 
-### 核心矛盾
-
-LLM API 提供的是**线性上下文**，而真实工作会递归展开，并具有所有权、嵌套关系和生命周期。这带来两个矛盾：模型侧接口是线性的，而工作本身是递归的；递归工作需要持久化的运行时表征，而不能要求智能体自己携带和维护全局状态。Spine 通过将局部工作与递归状态分开解决这一问题：智能体处理当前 Work Unit，Runtime 维护整棵树以及模型侧上下文。其形式化运行时规则见下方的 [SpineJIT 如何工作](#spinejit-如何工作) 章节。
-
-### SpineJIT：运行时是树，模型上下文是线
-
-在 Runtime 中，每个 Work Unit 都由一个持久化的 SpineBranch 表示，多个 SpineBranch 组合并持续演化为 SpineTree。这套结构隐藏在现有工作流之后，智能体只需关注当前 Work Unit，Spine Runtime 则负责维护递归状态。
-
-职责划分很简单：
-
-| 层 | 负责什么 |
-| --- | --- |
-| **智能体** | 管理当前 Work Unit：理解目标、执行局部工作并返回结果。 |
-| **Spine Runtime** | 将 Work Unit 持久化为分支，组合成 SpineTree，并维护上下文、记忆、子工作、执行、replay、compact、调度和生命周期。 |
-| **SpineJIT** | 将当前分支相关的树状态投影为下一次采样所需的模型侧线性上下文。 |
-
-换句话说，智能体管理工作；Spine 作为 Runtime，维护工作所隐含的递归状态。Runtime 规则保证状态一致，让智能体可以扩展和演化工作，而不必承担全局树和对话记录的结构维护成本。
-
-在每个采样边界，SpineJIT 将消息流和 Spine 控制事件增量编译为运行时维护的 Work Unit 树，再把与当前分支相关的状态投影成下一次采样所需的线性上下文：
-
-```text
-消息 + 控制事件 -> SpineTree -> 当前分支上下文 -> 下一次采样
-```
-
-已完成的子树会被简洁的 Node Memory 替换，同时保持可复用的前缀稳定。这样得到的上下文既保留递归工作的结构，又维持模型侧的线性接口，并有利于提示词缓存复用。详细的 token 语法和 LR(0) 归约规则见下方的[SpineJIT 如何工作](#spinejit-如何工作)章节。
-
 ### 带来的能力
 
 与 Codex 相比，SpineCodex 在 [SWE-Milestone](https://github.com/DeepCommit-ai/SWE-Milestone) 上以低 27% 的总成本多解决 **89% 的任务**，并将有效工作上下文最多扩展至 **10 倍**。它还在 [ProgramBench](https://programbench.com) 上将平均得分提高 **10.8 分**，并在 [FrontierSWE](https://www.frontierswe.com) 上将平均得分提高 **9.2 分**。
-
-### 评估
 
 | 线性上下文                        | SpineCodex                                                                                                                          |
 | --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
@@ -114,9 +86,26 @@ LLM API 提供的是**线性上下文**，而真实工作会递归展开，并�
 </details>
 </details>
 
+## Spine 如何工作
+
+LLM 消费线性上下文，而工作会递归展开。
+
+- **智能体：** 处理当前 Work Unit。
+- **Spine Runtime：** 将 Work Unit 持久化为 SpineBranch，并组合成 SpineTree。
+- **SpineJIT：** 将当前分支投影为下一次模型采样所需的线性上下文。
+
+```text
+Work Unit -> SpineBranch -> SpineTree -> 当前分支上下文
+```
+
+智能体管理工作；Spine 在现有工作流背后维护递归状态。
+
 ## 长周期任务表现
 
 在三项长周期编程基准测试中，SpineCodex 均取得了更好的结果：在 SWE-Milestone 上以低 27% 的总成本解决了 **1.89 倍的任务**，在 ProgramBench 上将平均得分提高 **10.80 个百分点**，并在 FrontierSWE 上将平均得分提高 **9.2 个百分点**。
+
+<details>
+<summary>基准测试详情</summary>
 
 ### SWE-Milestone（ICML 2026）
 
@@ -151,7 +140,10 @@ _超长周期编程 · 9 个任务评测 · GPT-5.6 · high · 每次试验的�
 
 **平均得分提高 9.2 个百分点，最佳得分提高 8.9 个百分点。**
 
-## SpineJIT 如何工作
+</details>
+
+<details>
+<summary>技术细节：SpineJIT 如何工作</summary>
 
 **智能体形态发生（Agent Morphogenesis）：** 每个任务都通过即时上下文树编译和递归子智能体扩展，塑造属于自己的上下文与执行过程。
 
@@ -259,6 +251,8 @@ SpineJIT 暴露 Spine 工具，让 LLM 表达这些决策。在某个采样步�
   <br />
   <sub>点击查看完整动画。</sub>
 </p>
+
+</details>
 
 ## 引用
 

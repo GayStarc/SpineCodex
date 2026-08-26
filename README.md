@@ -7,7 +7,7 @@
 <p align="center">English · <a href="./README.zh-CN.md">简体中文</a></p>
 
 <p align="center">
-  <img src="./.github/assets/spinecodex-tui.gif" width="820" alt="SpineCodex TUI demonstration" />
+  <img src="./.github/assets/spinecodex-tui.gif" width="800" alt="SpineCodex TUI demonstration" />
 </p>
 
 ## Why SpineCodex
@@ -33,52 +33,6 @@ Memory Projection surface, then save and start a new conversation. Set
 `spine_spawn.max_concurrent_threads_per_session` in `~/.codex/config.toml` to
 configure the total per-session thread limit, including the root thread.
 
-### The core tension
-
-LLM APIs expose a **linear context**, while real work unfolds recursively, with
-ownership, nesting, and lifetime. This creates two tensions: the model-facing
-interface is linear while the work is recursive, and recursive work needs a
-persistent runtime representation rather than an agent carrying global state.
-Spine resolves this by keeping local work and recursive state separate: the
-agent works on the current Work Unit, while the runtime maintains the tree and
-the model-facing context. The formal runtime rules are described in [How
-SpineJIT works](#how-spinejit-works).
-
-### SpineJIT: tree in the runtime, line in the context
-
-At runtime, each Work Unit is represented by a persistent SpineBranch, and
-SpineBranches compose into the evolving SpineTree. This structure stays behind
-the existing workflow, so the agent can focus on the current Work Unit while
-Spine Runtime maintains the recursive state.
-
-The division of labor is simple:
-
-| Layer | What it does |
-| --- | --- |
-| **Agent** | Manages the current Work Unit: understand the objective, execute local work, and return the result. |
-| **Spine Runtime** | Persists Work Units as branches, composes the SpineTree, and maintains context, memory, child work, execution, replay, compaction, scheduling, and lifecycle. |
-| **SpineJIT** | Projects the current branch's relevant tree state into the model-facing linear context for the next sample. |
-
-In other words, the agent manages work; Spine, as the runtime, maintains the
-recursive state implied by that work. The runtime rules keep this state
-consistent, so the agent can scale and evolve work without paying the mental
-cost of global tree and transcript bookkeeping.
-
-At each sampling boundary, SpineJIT incrementally compiles the message stream
-and Spine control events into the runtime's Work Unit tree, then projects the
-state relevant to the current branch into the linear context required by the
-next sample:
-
-```text
-messages + control events -> SpineTree -> current-branch context -> next sample
-```
-
-Completed subtrees are replaced by concise Node Memory, while the reusable
-prefix remains stable. The result is a cache-friendly context that preserves
-the structure of recursive work while keeping the model-facing interface
-linear. The detailed token grammar and LR(0) reduction rules are described in
-[How SpineJIT works](#how-spinejit-works) below.
-
 ### What this enables
 
 Compared with Codex, SpineCodex resolves **89% more tasks at 27% lower total
@@ -86,8 +40,6 @@ cost** on [SWE-Milestone](https://github.com/DeepCommit-ai/SWE-Milestone) and
 extends the effective working context by up to **10×**. It also improves the
 average score by **10.8 points** on [ProgramBench](https://programbench.com) and
 the mean score by **9.2 points** on [FrontierSWE](https://www.frontierswe.com).
-
-### Evaluation
 
 | Linear context                                     | SpineCodex                                                                                                                                                                                                                     |
 | -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -158,12 +110,30 @@ surfaces of that design.
 </details>
 </details>
 
+## How Spine works
+
+LLMs consume a linear context, but work unfolds recursively.
+
+- **Agent:** works on the current Work Unit.
+- **Spine Runtime:** persists Work Units as SpineBranches and composes them into a SpineTree.
+- **SpineJIT:** projects the current branch into the linear context required by the next model sample.
+
+```text
+Work Unit -> SpineBranch -> SpineTree -> current-branch Context
+```
+
+The agent manages work; Spine maintains the recursive state behind the existing
+workflow.
+
 ## Long-horizon performance
 
 Across three long-horizon coding benchmarks, SpineCodex delivers stronger
 outcomes: **1.89× resolved tasks at 27% lower total cost** on SWE-Milestone,
 **+10.80pp average score** on ProgramBench, and **+9.2pp mean score** on
 FrontierSWE.
+
+<details>
+<summary>Benchmark details</summary>
 
 ### SWE-Milestone (ICML 2026)
 
@@ -198,7 +168,10 @@ FrontierSWE.
 
 **+9.2pp mean score and +8.9pp best score.**
 
-## How SpineJIT works
+</details>
+
+<details>
+<summary>Technical details: How SpineJIT works</summary>
 
 **Agent Morphogenesis:** Each task shapes its own context and execution through
 just-in-time context-tree compilation and recursive subagent scaling.
@@ -314,6 +287,8 @@ These tokens connect the model's task-boundary decisions to the LR(0) parser, wh
   <br />
   <sub>Click to view the full animation.</sub>
 </p>
+
+</details>
 
 ## Citation
 
