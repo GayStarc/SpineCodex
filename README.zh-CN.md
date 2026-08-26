@@ -1,66 +1,118 @@
 <h1 align="center"><img src="./.github/assets/spinecodex-tree.svg" width="56" alt="SpineCodex 树形标志" /> SpineCodex</h1>
 
-<p align="center"><em>生命始于分裂与分化。智能体主导自身的形态发生。</em></p>
+<p align="center"><em>让你的 Codex 在 SpineTree 上工作、演化与扩展。</em></p>
 
-<p align="center">
-  <a href="https://www.npmjs.com/package/@spinejit/spine-codex"><img src="https://img.shields.io/npm/v/%40spinejit%2Fspine-codex?label=npm" alt="npm 版本" /></a>
-  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="Apache-2.0 许可证" /></a>
-</p>
-
-<p align="center">基于 <a href="https://github.com/openai/codex">OpenAI Codex</a>。由 <a href="https://ghabix.github.io">Jiahong Xiang</a> 和 <a href="https://camsyn.github.io">Kunqiu Chen</a> 维护。</p>
+<p align="center"><a href="https://www.npmjs.com/package/@spinejit/spine-codex"><img src="https://img.shields.io/npm/v/%40spinejit%2Fspine-codex?label=npm" alt="npm 版本" /></a> · <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="Apache-2.0 许可证" /></a></p>
 
 <p align="center"><a href="./README.md">English</a> · 简体中文</p>
 
+<p align="center">
+  <img src="./.github/assets/spinecodex-tui.gif" width="820" alt="SpineCodex TUI 演示" />
+</p>
+
 ## 为什么选择 SpineCodex
 
-SpineCodex 是面向复杂、长周期软件工程任务的增强版 [OpenAI Codex CLI](https://github.com/openai/codex)，由我们独立维护。它会继承你现有的 Codex 配置，开箱即用。与 Codex 相比，它在 [SWE-Milestone](https://github.com/DeepCommit-ai/SWE-Milestone) 上以低 27% 的总成本多解决 **89% 的任务**，并将有效工作上下文最多扩展至 **10 倍**。它还在 [ProgramBench](https://programbench.com) 上将平均得分提高 **10.8 分**，并在 [FrontierSWE](https://www.frontierswe.com) 上将平均得分提高 **9.2 分**。
+SpineCodex 让你的 Codex **在一棵 SpineTree 上工作**：长周期、多步骤工作会被拆分为有明确边界的 Work Unit，由 Runtime 持久化为 SpineBranch，并随着树的演化不断细化、委派和完成，而不必把整个过程不断堆进一条越来越长的 transcript。
 
-| 线性上下文                        | SpineCodex                                                                                                                          |
-| --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| ❌ **上下文不够用？**             | ✅ **256K → 2.5M 有效工作上下文**<br />SpineJIT 将已完成分支编译为语义化节点记忆（Node Memory），使有效工作上下文突破原生窗口限制。 |
-| ❌ **反复压缩后发生偏移？**       | ✅ **最小有效上下文，最大专注度。**<br />智能体通过 SpineTree 统一管理任务与上下文，始终聚焦当前任务所需的最小上下文。              |
-| ❌ **在长任务中失去耐心与专注？** | ✅ **按需递归扩展子智能体。**<br />SpineJIT 让智能体能够按需递归展开为专门的子智能体，为复杂问题引入分治结构和更深的推理。          |
+### 快速开始
 
-## 快速开始
-
-只需安装并运行，SpineCodex 会自动继承你现有的 Codex 配置，无需修改设置，开箱即用。
+在现有 Codex 环境中安装并直接运行。当前版本基于上游 OpenAI Codex `0.147.0`，你现有的 Codex 配置和工作流无需改变：
 
 ```bash
 npm install -g @spinejit/spine-codex@latest
 spine-codex
 ```
 
-### 0.3.3 更新内容
+Spine Spawn 默认开启。运行 `/experimental` 启用可选的 Memory Projection，保存设置后开始新的对话。在 `~/.codex/config.toml` 中设置 `spine_spawn.max_concurrent_threads_per_session`，即可配置每个会话的总线程上限（含根线程）。
 
-- 当历史 rollout 中单条记录格式不兼容时，恢复 paginated 会话仍会继续执行；文件损坏和 lineage 边界错误仍会正常失败。
-- 增加完整 lineage replay 遇到异常限流记录时的回归测试。
+### 核心矛盾
 
-### 0.3.2 更新内容
+LLM API 提供的是**线性上下文**，而真实工作会递归展开，并具有所有权、嵌套关系和生命周期。这带来两个矛盾：模型侧接口是线性的，而工作本身是递归的；递归工作需要持久化的运行时表征，而不能要求智能体自己携带和维护全局状态。Spine 通过将局部工作与递归状态分开解决这一问题：智能体处理当前 Work Unit，Runtime 维护整棵树以及模型侧上下文。其形式化运行时规则见下方的 [SpineJIT 如何工作](#spinejit-如何工作) 章节。
 
-- 在 Responses 请求、模型发现和远端 User-Agent 中恢复上游 Codex 兼容身份
-  （`0.147.0`）。这修复了 `gpt-5.6-luna` 等模型的版本兼容拒绝，同时保持
-  SpineCodex 产品版本独立。
-- 保持 SpineCodex 更新缓存与上游 Codex 安装隔离。
-- 恢复会话后隐藏已关闭的 Spawn 智能体，让子智能体选择器只显示当前加载的智能体。
-- 在六平台构建和安装 smoke 之前增加发布契约与版本元数据一致性检查。
+### SpineJIT：运行时是树，模型上下文是线
 
-## 功能
+在 Runtime 中，每个 Work Unit 都由一个持久化的 SpineBranch 表示，多个 SpineBranch 组合并持续演化为 SpineTree。这套结构隐藏在现有工作流之后，智能体只需关注当前 Work Unit，Spine Runtime 则负责维护递归状态。
 
-| 功能                                                   | 用途                                                                                                       |
-| ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------- |
-| **Spine Spawn**（`spine_spawn`）                       | 默认开启。在任意节点并发生成多个继承其历史的差异化分支智能体；它们可以递归协作，并借助利于缓存的上下文复用汇聚结果。 |
-| **Memory Projection**（`spinetree_memory_projection`） | 将编译后的节点记忆投影为可检查的 Markdown，路径为 `.codex/spinetree/YYYY/MM/DD/<session-id>/`。                    |
+职责划分很简单：
 
-Spine Spawn 默认开启。运行 `/experimental` 启用 Memory Projection，保存设置后开始新的对话。
-在 `~/.codex/config.toml` 中设置 `spine_spawn.max_concurrent_threads_per_session`，即可配置每个会话的总线程上限（含根线程）。
+| 层 | 负责什么 |
+| --- | --- |
+| **智能体** | 管理当前 Work Unit：理解目标、执行局部工作并返回结果。 |
+| **Spine Runtime** | 将 Work Unit 持久化为分支，组合成 SpineTree，并维护上下文、记忆、子工作、执行、replay、compact、调度和生命周期。 |
+| **SpineJIT** | 将当前分支相关的树状态投影为下一次采样所需的模型侧线性上下文。 |
 
-<p align="center">
-  <a href="./.github/assets/spinecodex-loop-zh-cn.webp">
-    <img src="./.github/assets/spinecodex-loop-zh-cn.webp" width="1200" alt="SpineCodex 上下文树通过递归生成智能体不断生长" />
-  </a>
-  <br />
-  <sub>点击查看完整动画。</sub>
-</p>
+换句话说，智能体管理工作；Spine 作为 Runtime，维护工作所隐含的递归状态。Runtime 规则保证状态一致，让智能体可以扩展和演化工作，而不必承担全局树和对话记录的结构维护成本。
+
+在每个采样边界，SpineJIT 将消息流和 Spine 控制事件增量编译为运行时维护的 Work Unit 树，再把与当前分支相关的状态投影成下一次采样所需的线性上下文：
+
+```text
+消息 + 控制事件 -> SpineTree -> 当前分支上下文 -> 下一次采样
+```
+
+已完成的子树会被简洁的 Node Memory 替换，同时保持可复用的前缀稳定。这样得到的上下文既保留递归工作的结构，又维持模型侧的线性接口，并有利于提示词缓存复用。详细的 token 语法和 LR(0) 归约规则见下方的[SpineJIT 如何工作](#spinejit-如何工作)章节。
+
+### 带来的能力
+
+与 Codex 相比，SpineCodex 在 [SWE-Milestone](https://github.com/DeepCommit-ai/SWE-Milestone) 上以低 27% 的总成本多解决 **89% 的任务**，并将有效工作上下文最多扩展至 **10 倍**。它还在 [ProgramBench](https://programbench.com) 上将平均得分提高 **10.8 分**，并在 [FrontierSWE](https://www.frontierswe.com) 上将平均得分提高 **9.2 分**。
+
+### 评估
+
+| 线性上下文                        | SpineCodex                                                                                                                          |
+| --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| ❌ **上下文不够用？**             | ✅ **256K → 2.5M 有效工作上下文**<br />SpineJIT 将已完成分支编译为语义化节点记忆（Node Memory），使有效工作上下文突破原生窗口限制。 |
+| ❌ **反复压缩后发生偏移？**       | ✅ **最小有效上下文，最大专注度。**<br />Spine Runtime 维护 SpineTree，并只为当前 Work Unit 投影所需上下文，让智能体保持专注。              |
+| ❌ **在长任务中失去耐心与专注？** | ✅ **按需递归扩展子智能体。**<br />SpineJIT 让智能体能够按需递归展开为专门的子智能体，为复杂问题引入分治结构和更深的推理。          |
+
+## 更新内容
+
+### 即将推出
+
+- **PI 和 DeepSeek Harness 插件** — 基于 SpineSDK 的集成正在开发中。
+- **App Spine UI** — 支持在 Codex App 中查看和操作 SpineTree、Work Unit 及运行时状态。正在开发中。
+
+<details>
+<summary>预览 App Spine UI</summary>
+
+  <p align="center">
+    <img src="./.github/assets/spinecodex-app-ui-preview.gif" width="820" alt="即将推出的 App Spine UI 预览" />
+    <br />
+    <sub>预览：App Spine UI 正在开发中。</sub>
+  </p>
+</details>
+
+<details>
+<summary>版本</summary>
+
+<details>
+<summary>0.3.3</summary>
+
+改进 paginated 会话恢复：不兼容的历史记录不再阻塞有效 lineage，同时文件损坏和 lineage 边界错误仍会正常失败；增加异常限流记录 replay 的回归覆盖。
+</details>
+
+<details>
+<summary>0.3.2</summary>
+
+恢复上游 Codex 兼容身份（`0.147.0`），同时保持 SpineCodex 产品版本独立；并加强更新缓存隔离、恢复后的 Spawn 可见性和发布元数据检查。
+</details>
+
+<details>
+<summary>0.3.1</summary>
+
+将 SpineCodex 更新缓存与上游 Codex 安装隔离，避免产品更新与上游客户端相互影响。
+</details>
+
+<details>
+<summary>0.3.0</summary>
+
+将 Spine 迁移到采样边界运行时：Work Unit、递归 Spawn、Node Memory、replay 和 projection 由 SpineSDK 协调，并通过原生 Codex 体验呈现。运行时维护树状态和上下文投影，智能体聚焦当前单元。
+</details>
+
+<details>
+<summary>0.2.2</summary>
+
+首次公开 SpineJIT 设计：将线性消息流编译为 SpineTree，用 Node Memory 替换已完成分支，并支持递归扩展子智能体；Spine Spawn 和 Memory Projection 是最初的实验性界面。
+</details>
+</details>
 
 ## 长周期任务表现
 
@@ -200,6 +252,14 @@ SpineJIT 暴露 Spine 工具，让 LLM 表达这些决策。在某个采样步�
 
 这些 token 将模型对任务边界的决策连接到 LR(0) 解析器。解析器持续更新 ParseStack，进而更新下一次采样所看到的上下文。
 
+<p align="center">
+  <a href="./.github/assets/spinecodex-loop-zh-cn.webp">
+    <img src="./.github/assets/spinecodex-loop-zh-cn.webp" width="700" alt="SpineCodex 上下文树通过递归生成智能体不断生长" />
+  </a>
+  <br />
+  <sub>点击查看完整动画。</sub>
+</p>
+
 ## 引用
 
 SpineJIT 技术报告即将发布。
@@ -217,7 +277,9 @@ SpineJIT 技术报告即将发布。
 
 ## 项目
 
-SpineCodex 是基于 [OpenAI Codex](https://github.com/openai/codex) 并由其派生、独立维护的分支。它不是 OpenAI 官方 Codex CLI，也不是官方 `@openai/codex` npm 包。
+SpineCodex 是独立维护的 [OpenAI Codex CLI](https://github.com/openai/codex)（上游 0.147.0），由
+[Jiahong Xiang](https://ghabix.github.io) 和
+[Kunqiu Chen](https://camsyn.github.io) 维护。
 
 - [源代码](https://github.com/GhabiX/SpineCodex)
 - [版本发布](https://github.com/GhabiX/SpineCodex/releases)
@@ -228,3 +290,11 @@ SpineCodex 是基于 [OpenAI Codex](https://github.com/openai/codex) 并由其�
 - [上游 Codex 文档](https://developers.openai.com/codex)
 
 SpineCodex 采用 [Apache-2.0 许可证](LICENSE)。OpenAI Codex 及其他派生组件的署名信息保留在 [NOTICE](NOTICE) 中。
+
+## 参与贡献
+
+欢迎提交 bug、参与 issue 讨论，也欢迎提出新功能想法。如果有新 feature 或 PR
+想法，请先通过 issue 与我们沟通，确认方向、范围以及与当前 SpineSDK 和上游
+Codex 版本的兼容性，再开始实现。任何 bug 都欢迎在
+[GitHub Issues](https://github.com/GhabiX/SpineCodex/issues) 中反馈，我们会及时跟进并推动修复。也欢迎直接联系
+[Jiahong Xiang](https://ghabix.github.io)。

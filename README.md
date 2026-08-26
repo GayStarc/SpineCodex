@@ -1,80 +1,162 @@
 <h1 align="center"><img src="./.github/assets/spinecodex-tree.svg" width="56" alt="SpineCodex tree mark" /> SpineCodex</h1>
 
-<p align="center"><em>Life begins with division and differentiation. An agent owns its own morphogenesis.</em></p>
+<p align="center"><em>Let your Codex work, evolve, and scale on the SpineTree.</em></p>
 
-<p align="center">
-  <a href="https://www.npmjs.com/package/@spinejit/spine-codex"><img src="https://img.shields.io/npm/v/%40spinejit%2Fspine-codex?label=npm" alt="npm version" /></a>
-  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="Apache-2.0 license" /></a>
-</p>
-
-<p align="center">Based on <a href="https://github.com/openai/codex">OpenAI Codex</a>. Maintained by <a href="https://ghabix.github.io">Jiahong Xiang</a> and <a href="https://camsyn.github.io">Kunqiu Chen</a>.</p>
+<p align="center"><a href="https://www.npmjs.com/package/@spinejit/spine-codex"><img src="https://img.shields.io/npm/v/%40spinejit%2Fspine-codex?label=npm" alt="npm version" /></a> · <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="Apache-2.0 license" /></a></p>
 
 <p align="center">English · <a href="./README.zh-CN.md">简体中文</a></p>
 
+<p align="center">
+  <img src="./.github/assets/spinecodex-tui.gif" width="820" alt="SpineCodex TUI demonstration" />
+</p>
+
 ## Why SpineCodex
 
-SpineCodex is an enhanced, independently maintained version of the [OpenAI
-Codex CLI](https://github.com/openai/codex) for complex, long-running software
-engineering tasks. It inherits your existing Codex configuration and works out
-of the box. Compared with Codex, it resolves **89% more tasks at 27% lower total
-cost** on [SWE-Milestone](https://github.com/DeepCommit-ai/SWE-Milestone) and
-extends the effective working context by up to **10×**. It also improves the
-average score by **10.8 points** on [ProgramBench](https://programbench.com) and
-the mean score by **9.2 points** on [FrontierSWE](https://www.frontierswe.com).
+SpineCodex gives your Codex a **SpineTree to work on**: long-running,
+multi-step work is broken into owned Work Units, persisted by the runtime as
+SpineBranches, and refined, delegated, and completed as the tree evolves —
+without forcing the entire process into one ever-growing transcript.
 
-| Linear context                                     | SpineCodex                                                                                                                                                                                                                     |
-| -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| ❌**Run out of context?**                    | ✅**256K → 2.5M Effective Working Context**<br />SpineJIT compiles completed branches into semantic Node Memory, extending effective working context beyond the native window.                                          |
-| ❌**Drift after repeated compaction?**       | ✅**Minimum Effective Context. Maximum Focus.**<br />Through the SpineTree, the agent manages tasks and context as one unified system, staying focused on the minimum context required by the current task.              |
-| ❌**Lose patience and focus on long tasks?** | ✅**Recursive Subagent Scaling on Demand.**<br />SpineJIT lets the agent recursively unfold into specialized subagents on demand, bringing divide-and-conquer structure and greater reasoning depth to complex problems. |
+### Get started
 
-## Get started
-
-Just install and run—SpineCodex automatically inherits your existing Codex configuration and works out of the box.
+Install it in your existing Codex environment and run it directly. The current
+release is based on upstream OpenAI Codex `0.147.0`; your existing Codex
+configuration and workflow remain unchanged:
 
 ```bash
 npm install -g @spinejit/spine-codex@latest
 spine-codex
 ```
 
-### What's new in 0.3.3
+Spine Spawn is enabled by default. Run `/experimental` to enable the optional
+Memory Projection surface, then save and start a new conversation. Set
+`spine_spawn.max_concurrent_threads_per_session` in `~/.codex/config.toml` to
+configure the total per-session thread limit, including the root thread.
 
-- Resumes paginated sessions when an individual historical rollout record has
-  an incompatible shape, while preserving fatal errors for broken files and
-  lineage boundaries.
-- Adds regression coverage for malformed rate-limit records during complete
-  lineage replay.
+### The core tension
 
-### What's new in 0.3.2
+LLM APIs expose a **linear context**, while real work unfolds recursively, with
+ownership, nesting, and lifetime. This creates two tensions: the model-facing
+interface is linear while the work is recursive, and recursive work needs a
+persistent runtime representation rather than an agent carrying global state.
+Spine resolves this by keeping local work and recursive state separate: the
+agent works on the current Work Unit, while the runtime maintains the tree and
+the model-facing context. The formal runtime rules are described in [How
+SpineJIT works](#how-spinejit-works).
 
-- Restores the upstream Codex compatibility identity (`0.147.0`) on Responses
-  requests, model discovery, and remote User-Agent headers. This fixes
-  compatibility rejections for models such as `gpt-5.6-luna` while keeping the
-  SpineCodex product version separate.
-- Keeps the SpineCodex update cache isolated from upstream Codex installations.
-- Hides closed spawn agents after resume so the subagent picker shows only
-  currently loaded agents.
-- Adds release-contract and metadata consistency checks before the six-platform
-  build and install-smoke matrix.
+### SpineJIT: tree in the runtime, line in the context
 
-## Features
+At runtime, each Work Unit is represented by a persistent SpineBranch, and
+SpineBranches compose into the evolving SpineTree. This structure stays behind
+the existing workflow, so the agent can focus on the current Work Unit while
+Spine Runtime maintains the recursive state.
 
-| Feature                                                       | Purpose                                                                                                                                                                     |
-| ------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Spine Spawn** (`spine_spawn`)                       | Enabled by default. At any node, concurrently spawn multiple differentiated branch agents that inherit its history, recursively collaborate, and converge through cache-friendly context reuse. |
-| **Memory Projection** (`spinetree_memory_projection`) | Project compiled Node Memory into inspectable Markdown under `.codex/spinetree/YYYY/MM/DD/<session-id>/`.                                                                  |
+The division of labor is simple:
 
-Spine Spawn is enabled by default. Run `/experimental` to enable Memory
-Projection, then save and start a new conversation.
-Set `spine_spawn.max_concurrent_threads_per_session` in `~/.codex/config.toml` to configure the total per-session thread limit, including the root thread.
+| Layer | What it does |
+| --- | --- |
+| **Agent** | Manages the current Work Unit: understand the objective, execute local work, and return the result. |
+| **Spine Runtime** | Persists Work Units as branches, composes the SpineTree, and maintains context, memory, child work, execution, replay, compaction, scheduling, and lifecycle. |
+| **SpineJIT** | Projects the current branch's relevant tree state into the model-facing linear context for the next sample. |
 
-<p align="center">
-  <a href="./.github/assets/spinecodex-loop.webp">
-    <img src="./.github/assets/spinecodex-loop.webp" width="1200" alt="SpineCodex context tree growing through recursive agent spawning" />
-  </a>
-  <br />
-  <sub>Click to view the full animation.</sub>
-</p>
+In other words, the agent manages work; Spine, as the runtime, maintains the
+recursive state implied by that work. The runtime rules keep this state
+consistent, so the agent can scale and evolve work without paying the mental
+cost of global tree and transcript bookkeeping.
+
+At each sampling boundary, SpineJIT incrementally compiles the message stream
+and Spine control events into the runtime's Work Unit tree, then projects the
+state relevant to the current branch into the linear context required by the
+next sample:
+
+```text
+messages + control events -> SpineTree -> current-branch context -> next sample
+```
+
+Completed subtrees are replaced by concise Node Memory, while the reusable
+prefix remains stable. The result is a cache-friendly context that preserves
+the structure of recursive work while keeping the model-facing interface
+linear. The detailed token grammar and LR(0) reduction rules are described in
+[How SpineJIT works](#how-spinejit-works) below.
+
+### What this enables
+
+Compared with Codex, SpineCodex resolves **89% more tasks at 27% lower total
+cost** on [SWE-Milestone](https://github.com/DeepCommit-ai/SWE-Milestone) and
+extends the effective working context by up to **10×**. It also improves the
+average score by **10.8 points** on [ProgramBench](https://programbench.com) and
+the mean score by **9.2 points** on [FrontierSWE](https://www.frontierswe.com).
+
+### Evaluation
+
+| Linear context                                     | SpineCodex                                                                                                                                                                                                                     |
+| -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| ❌**Run out of context?**                    | ✅**256K → 2.5M Effective Working Context**<br />SpineJIT compiles completed branches into semantic Node Memory, extending effective working context beyond the native window.                                          |
+| ❌**Drift after repeated compaction?**       | ✅**Minimum Effective Context. Maximum Focus.**<br />Spine Runtime maintains the SpineTree and projects only the context required by the current Work Unit, keeping the agent focused.              |
+| ❌**Lose patience and focus on long tasks?** | ✅**Recursive Subagent Scaling on Demand.**<br />SpineJIT lets the agent recursively unfold into specialized subagents on demand, bringing divide-and-conquer structure and greater reasoning depth to complex problems. |
+
+## What's new
+
+### Upcoming
+
+- **PI and DeepSeek Harness plugins** — SpineSDK integrations in development.
+- **App Spine UI** — Inspect and operate the SpineTree, Work Units, and runtime
+  state from the Codex App. In development.
+
+<details>
+<summary>Preview App Spine UI</summary>
+
+  <p align="center">
+    <img src="./.github/assets/spinecodex-app-ui-preview.gif" width="820" alt="Upcoming App Spine UI preview" />
+    <br />
+    <sub>Preview — App Spine UI is in development.</sub>
+  </p>
+</details>
+
+<details>
+<summary>Versions</summary>
+
+<details>
+<summary>0.3.3</summary>
+
+Improves paginated-session recovery: incompatible historical records no longer
+block a valid lineage, while broken files and lineage-boundary errors remain
+fatal. Adds regression coverage for malformed rate-limit records during replay.
+</details>
+
+<details>
+<summary>0.3.2</summary>
+
+Restores the upstream Codex compatibility identity (`0.147.0`) while keeping
+the SpineCodex product version independent. Also hardens update-cache
+isolation, resumed Spawn visibility, and release metadata checks.
+</details>
+
+<details>
+<summary>0.3.1</summary>
+
+Separates the SpineCodex update cache from upstream Codex installations so
+product updates cannot collide with the upstream client.
+</details>
+
+<details>
+<summary>0.3.0</summary>
+
+Moves Spine onto a sampling-boundary runtime: Work Units, recursive Spawn,
+Node Memory, replay, and projection are coordinated by SpineSDK and surfaced
+through the native Codex experience. The runtime owns tree state and context
+projection while the agent focuses on the current unit.
+</details>
+
+<details>
+<summary>0.2.2</summary>
+
+Introduces the public SpineJIT design: compile a linear message stream into a
+SpineTree, replace completed branches with Node Memory, and support recursive
+subagent scaling. Spine Spawn and Memory Projection were the first experimental
+surfaces of that design.
+</details>
+</details>
 
 ## Long-horizon performance
 
@@ -225,6 +307,14 @@ SpineJIT exposes Spine tools to let the LLM express these decisions. After a suc
 
 These tokens connect the model's task-boundary decisions to the LR(0) parser, which continuously updates the ParseStack and therefore the context seen by the next sampling step.
 
+<p align="center">
+  <a href="./.github/assets/spinecodex-loop.webp">
+    <img src="./.github/assets/spinecodex-loop.webp" width="700" alt="SpineCodex context tree growing through recursive agent spawning" />
+  </a>
+  <br />
+  <sub>Click to view the full animation.</sub>
+</p>
+
 ## Citation
 
 A technical report on SpineJIT will be released soon.
@@ -242,9 +332,9 @@ If you use SpineCodex in your research, please cite this repository:
 
 ## Project
 
-SpineCodex is an independently maintained fork based on and derived from
-[OpenAI Codex](https://github.com/openai/codex). It is not the official OpenAI
-Codex CLI or the official `@openai/codex` npm package.
+SpineCodex is an independently maintained [OpenAI Codex CLI](https://github.com/openai/codex)
+(upstream 0.147.0), maintained by [Jiahong Xiang](https://ghabix.github.io)
+and [Kunqiu Chen](https://camsyn.github.io).
 
 - [Source](https://github.com/GhabiX/SpineCodex)
 - [Releases](https://github.com/GhabiX/SpineCodex/releases)
@@ -256,3 +346,10 @@ Codex CLI or the official `@openai/codex` npm package.
 
 SpineCodex is licensed under the [Apache-2.0 License](LICENSE). OpenAI Codex
 and other derived components retain their attribution in [NOTICE](NOTICE).
+
+## Contributing
+
+We welcome bug reports, issue discussions, and ideas for new features. If you
+have a feature or PR idea, please open an issue and reach out to us first so we
+can confirm the direction, scope, and compatibility with the current SpineSDK
+and upstream Codex version. Please report any bugs through [GitHub Issues](https://github.com/GhabiX/SpineCodex/issues); we will follow up promptly and work toward a fix. You are also welcome to [reach out to me directly](https://ghabix.github.io).
