@@ -6,6 +6,11 @@
 
 <p align="center">English · <a href="./README.zh-CN.md">简体中文</a></p>
 
+> [!NOTE]
+> This is an unofficial fork maintained by [@GayStarc](https://github.com/GayStarc),
+> based on upstream `main` at `98ee631`. It adds historical-rollout compatibility
+> to `spine.spawn` fork preparation.
+
 <p align="center">
   <img src="./.github/assets/spinecodex-tui.gif" width="800" alt="SpineCodex TUI demonstration" />
 </p>

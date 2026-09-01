@@ -1,3 +1,5 @@
+// Modified by GayStarc on 2026-09-01:
+// accept historical rollout wire formats during Spine fork preparation.
 use std::fs::File;
 use std::io::BufRead;
 use std::io::BufReader;
@@ -5,7 +7,6 @@ use std::sync::Arc;
 
 use codex_protocol::protocol::HistoryPosition;
 use codex_protocol::protocol::RolloutItem;
-use codex_protocol::protocol::RolloutLine;
 use codex_protocol::protocol::SessionMetaLine;
 
 use super::LocalThreadStore;
@@ -286,14 +287,16 @@ fn find_spine_sampling_boundary_blocking(
             if line.trim().is_empty() {
                 continue;
             }
-            let record: RolloutLine = serde_json::from_str(line.trim_end()).map_err(|err| {
-                ThreadStoreError::InvalidRequest {
+            let Some(record) = super::rollout_migration::parse_legacy_rollout_line(line.as_bytes())
+                .map_err(|err| ThreadStoreError::InvalidRequest {
                     message: format!(
                         "invalid sampling-boundary record in {}: {err}",
                         segment.rollout_path.display()
                     ),
-                }
-            })?;
+                })?
+            else {
+                continue;
+            };
             let ordinal = record
                 .ordinal
                 .ok_or_else(|| ThreadStoreError::InvalidRequest {

@@ -6,6 +6,11 @@
 
 <p align="center"><a href="./README.md">English</a> · 简体中文</p>
 
+> [!NOTE]
+> 这是由 [@GayStarc](https://github.com/GayStarc) 维护的非官方 fork，
+> 基于上游 `main` 的 `98ee631`。它修复了 `spine.spawn` 在准备 fork 时无法兼容
+> 部分历史 rollout 记录的问题。
+
 <p align="center">
   <img src="./.github/assets/spinecodex-tui.gif" width="800" alt="SpineCodex TUI 演示" />
 </p>

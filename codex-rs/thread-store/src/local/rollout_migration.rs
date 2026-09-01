@@ -1,3 +1,5 @@
+// Modified by GayStarc on 2026-09-01:
+// share legacy rollout parsing with Spine fork preparation.
 //! Orchestrates legacy rollout migration into paginated history.
 //!
 //! This is the high-level migration state machine: find rollout files, decide whether each one is
@@ -39,6 +41,10 @@ mod canonicalizer;
 mod legacy_event;
 mod line_parser;
 mod publish;
+
+pub(super) fn parse_legacy_rollout_line(bytes: &[u8]) -> Result<Option<RolloutLine>, String> {
+    line_parser::parse_legacy_rollout_line(bytes)
+}
 
 use canonicalizer::LegacyRolloutCanonicalizer;
 use publish::compress_rollout_to_path;

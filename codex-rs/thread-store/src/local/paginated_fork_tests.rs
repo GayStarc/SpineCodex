@@ -1,3 +1,5 @@
+// Modified by GayStarc on 2026-09-01:
+// cover historical credit snapshots during Spine fork preparation.
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
@@ -131,6 +133,65 @@ async fn selects_open_sampling_boundary_from_ancestor_segment() {
 
     assert_eq!(selected.position, expected_position);
     assert_eq!(selected.complete_history.len(), 3);
+}
+
+#[tokio::test]
+async fn accepts_credit_snapshot_before_sampling_boundary() {
+    let home = TempDir::new().expect("temp dir");
+    let thread_id = ThreadId::new();
+    let path = write_rollout(
+        home.path(),
+        thread_id,
+        /*history_base*/ None,
+        0,
+        vec![event_item(), sampling_started("open")],
+    );
+    let contents = fs::read_to_string(path.as_path()).expect("read rollout");
+    let mut lines = contents.lines().map(str::to_string).collect::<Vec<_>>();
+    lines[1] = serde_json::to_string(&json!({
+        "timestamp": "2026-08-07T00:00:01Z",
+        "ordinal": 1,
+        "type": "event_msg",
+        "payload": {
+            "type": "token_count",
+            "info": null,
+            "rate_limits": {
+                "limit_id": "codex",
+                "limit_name": null,
+                "primary": {
+                    "used_percent": 2.0,
+                    "window_minutes": 10_080,
+                    "resets_at": 1_788_763_941
+                },
+                "secondary": null,
+                "credits": {
+                    "has_credits": false,
+                    "unlimited": false,
+                    "balance": "0"
+                },
+                "individual_limit": null,
+                "spend_control_reached": null,
+                "plan_type": "pro",
+                "rate_limit_reached_type": null
+            }
+        }
+    }))
+    .expect("serialize token count");
+    fs::write(path.as_path(), format!("{}\n", lines.join("\n"))).expect("rewrite rollout");
+    let lineage = RolloutLineage {
+        segments: vec![RolloutLineageSegment {
+            thread_id,
+            rollout_path: path,
+            start_ordinal: 1,
+            end: None,
+        }],
+    };
+
+    let selected = find_spine_sampling_boundary(&lineage)
+        .await
+        .expect("accept credit snapshot");
+
+    assert_eq!(selected.position.end_ordinal_exclusive, 3);
 }
 
 #[tokio::test]
