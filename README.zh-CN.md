@@ -28,6 +28,19 @@ npm install -g @spinejit/spine-codex@latest
 spine-codex
 ```
 
+#### 从源码构建
+
+如果你正在使用本地 fork 或修改过的代码，可以直接从 Rust workspace 构建并安装 CLI：
+
+```bash
+cd codex-rs
+cargo build --release -p codex-cli
+ln -s "$(pwd)/target/release/codex" ~/.local/bin/spine-codex
+spine-codex --version
+```
+
+这样会把 `spine-codex` 安装为指向新构建二进制的符号链接，且不会与通过 npm 安装的 `codex` 冲突。
+
 Spine Spawn 默认开启。运行 `/experimental` 启用可选的 Memory Projection，保存设置后开始新的对话。在 `~/.codex/config.toml` 中设置 `spine_spawn.max_concurrent_threads_per_session`，即可配置每个会话的总线程上限（含根线程）。
 
 ### 带来的能力

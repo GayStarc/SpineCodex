@@ -33,6 +33,21 @@ npm install -g @spinejit/spine-codex@latest
 spine-codex
 ```
 
+#### Build from source
+
+If you are working with a local fork or modified copy of the code, build and
+install the CLI directly from the Rust workspace:
+
+```bash
+cd codex-rs
+cargo build --release -p codex-cli
+ln -s "$(pwd)/target/release/codex" ~/.local/bin/spine-codex
+spine-codex --version
+```
+
+This installs `spine-codex` as a symlink to the freshly built binary without
+conflicting with an existing `codex` installed via npm.
+
 Spine Spawn is enabled by default. Run `/experimental` to enable the optional
 Memory Projection surface, then save and start a new conversation. Set
 `spine_spawn.max_concurrent_threads_per_session` in `~/.codex/config.toml` to
